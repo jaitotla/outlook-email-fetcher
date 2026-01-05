@@ -14,6 +14,8 @@ from services.ingestion import EmailIngestionService
 from services.embeddings import EmbeddingService
 from services.rag import RAGService
 from services.llm import LLMService
+from services.slack_ingestion import SlackIngestionService
+from services.file_processor import FileProcessor
 from database.mongodb import MongoDBClient
 
 app = FastAPI(
@@ -37,6 +39,12 @@ embedding_service = EmbeddingService()
 rag_service = RAGService()
 llm_service = LLMService()
 ingestion_service = EmailIngestionService()
+file_processor = FileProcessor()
+slack_service = SlackIngestionService(
+    backend_url=settings.BACKEND_API_URL,
+    llm_service=llm_service,
+    file_processor=file_processor
+)
 
 
 # Request/Response Models
@@ -267,6 +275,78 @@ async def analyze_sentiment(request: Dict[str, Any]):
         sentiment = await llm_service.analyze_sentiment(text)
         
         return {"sentiment": sentiment}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Slack Integration Endpoints
+class SlackIngestRequest(BaseModel):
+    userId: str
+    workspaceId: str
+    accessToken: str
+    botToken: Optional[str] = None
+    syncDays: int = 7
+    selectedChannels: Optional[List[str]] = None
+    selectedDMs: Optional[List[str]] = None
+    includePublic: bool = True
+    includePrivate: bool = False
+    includeDMs: bool = False
+    fileConfig: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/slack/ingest")
+async def ingest_slack(request: SlackIngestRequest):
+    """Ingest Slack workspace messages"""
+    try:
+        result = await slack_service.ingest_workspace(
+            user_id=request.userId,
+            workspace_id=request.workspaceId,
+            access_token=request.accessToken,
+            bot_token=request.botToken,
+            sync_days=request.syncDays,
+            selected_channels=request.selectedChannels,
+            selected_dms=request.selectedDMs,
+            include_public=request.includePublic,
+            include_private=request.includePrivate,
+            include_dms=request.includeDMs,
+            file_config=request.fileConfig
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SlackChannelsRequest(BaseModel):
+    accessToken: str
+
+
+@app.post("/api/slack/channels")
+async def get_slack_channels(request: SlackChannelsRequest):
+    """Get available Slack channels"""
+    try:
+        import httpx
+        
+        async with httpx.AsyncClient() as client:
+            # Fetch public channels
+            public_response = await client.get(
+                'https://slack.com/api/conversations.list',
+                headers={'Authorization': f'Bearer {request.accessToken}'},
+                params={'types': 'public_channel,private_channel', 'exclude_archived': True}
+            )
+            public_data = public_response.json()
+            
+            # Fetch DMs
+            dm_response = await client.get(
+                'https://slack.com/api/conversations.list',
+                headers={'Authorization': f'Bearer {request.accessToken}'},
+                params={'types': 'im,mpim', 'exclude_archived': True}
+            )
+            dm_data = dm_response.json()
+            
+            return {
+                "channels": public_data.get('channels', []) if public_data.get('ok') else [],
+                "dms": dm_data.get('channels', []) if dm_data.get('ok') else []
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

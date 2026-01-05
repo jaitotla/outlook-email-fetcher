@@ -1,6 +1,7 @@
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const MicrosoftStrategy = require('passport-microsoft').Strategy;
+const SlackStrategy = require('passport-slack-oauth2').Strategy;
 const User = require('../models/User');
 
 // Serialize user for session
@@ -83,6 +84,94 @@ passport.use(new MicrosoftStrategy({
       });
     }
     
+    return done(null, user);
+  } catch (error) {
+    return done(error, null);
+  }
+}));
+
+// Slack OAuth Strategy
+passport.use(new SlackStrategy({
+  clientID: process.env.SLACK_CLIENT_ID,
+  clientSecret: process.env.SLACK_CLIENT_SECRET,
+  callbackURL: process.env.SLACK_CALLBACK_URL,
+  scope: [
+    'channels:history',
+    'channels:read',
+    'groups:history',
+    'groups:read',
+    'im:history',
+    'im:read',
+    'mpim:history',
+    'mpim:read',
+    'users:read',
+    'users:read.email',
+    'files:read',
+    'links:read',
+    'chat:write',
+    'chat:write.public'
+  ],
+  skipUserProfile: false,
+  passReqToCallback: true
+}, async (req, accessToken, refreshToken, params, profile, done) => {
+  try {
+    // User must be authenticated to connect Slack
+    if (!req.user) {
+      return done(new Error('User must be logged in to connect Slack'), null);
+    }
+
+    const user = await User.findById(req.user._id);
+    
+    if (!user) {
+      return done(new Error('User not found'), null);
+    }
+
+    // Check if workspace already connected
+    const existingWorkspace = user.slackWorkspaces?.find(
+      ws => ws.workspaceId === profile.team.id
+    );
+
+    if (existingWorkspace) {
+      // Update tokens
+      existingWorkspace.accessToken = accessToken;
+      existingWorkspace.refreshToken = refreshToken;
+      existingWorkspace.botToken = params.bot?.token || existingWorkspace.botToken;
+      existingWorkspace.lastSyncedAt = new Date();
+    } else {
+      // Add new workspace
+      if (!user.slackWorkspaces) {
+        user.slackWorkspaces = [];
+      }
+      
+      user.slackWorkspaces.push({
+        workspaceId: profile.team.id,
+        workspaceName: profile.team.name,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        botToken: params.bot?.token,
+        connectedAt: new Date(),
+        syncConfig: {
+          enabled: true,
+          syncDays: 7,
+          selectedChannels: [],
+          selectedDMs: [],
+          includePublicChannels: true,
+          includePrivateChannels: false,
+          includeDMs: false,
+          dmSelection: 'selected',
+          autoSync: true,
+          syncInterval: 3600
+        },
+        fileProcessing: {
+          processPDFs: true,
+          processDocs: true,
+          processImages: false,
+          maxFileSize: 10485760
+        }
+      });
+    }
+
+    await user.save();
     return done(null, user);
   } catch (error) {
     return done(error, null);

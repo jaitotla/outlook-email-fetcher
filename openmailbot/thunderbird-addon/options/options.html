@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenMailBot Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🤖 OpenMailBot Settings</h1>
+      <p>Configure your AI email assistant</p>
+    </div>
+
+    <div class="content">
+      <!-- Connection Settings -->
+      <section class="section">
+        <h2>Connection</h2>
+        <div class="form-group">
+          <label for="backendUrl">Backend API URL</label>
+          <input type="text" id="backendUrl" placeholder="http://localhost:5000">
+          <small>URL of your OpenMailBot backend server</small>
+        </div>
+        
+        <div class="form-group">
+          <label for="agentUrl">Python Agent URL</label>
+          <input type="text" id="agentUrl" placeholder="http://localhost:8000">
+          <small>URL of your OpenMailBot AI agent</small>
+        </div>
+
+        <div class="form-group">
+          <label for="userId">User ID (Optional)</label>
+          <input type="text" id="userId" placeholder="your-email@example.com">
+          <small>Your email address or user identifier</small>
+        </div>
+      </section>
+
+      <!-- AI Configuration -->
+      <section class="section">
+        <h2>AI Configuration</h2>
+        
+        <div class="form-group">
+          <label for="llmProvider">LLM Provider</label>
+          <select id="llmProvider">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="ollama">Ollama (Local)</option>
+          </select>
+          <small>Choose your language model provider</small>
+        </div>
+
+        <div class="form-group">
+          <label for="llmModel">Model</label>
+          <select id="llmModel">
+            <option value="gpt-4">GPT-4</option>
+            <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+          </select>
+          <small>Select the AI model to use</small>
+        </div>
+
+        <div class="form-group">
+          <label for="tone">Default Reply Tone</label>
+          <select id="tone">
+            <option value="professional">Professional</option>
+            <option value="semi-professional">Semi-Professional</option>
+            <option value="casual">Casual</option>
+            <option value="personal">Personal</option>
+          </select>
+          <small>Default tone for generated replies</small>
+        </div>
+      </section>
+
+      <!-- Vector Database -->
+      <section class="section">
+        <h2>Vector Database</h2>
+        
+        <div class="form-group">
+          <label for="vectorDb">Vector DB Provider</label>
+          <select id="vectorDb">
+            <option value="faiss">FAISS (Local)</option>
+            <option value="pinecone">Pinecone (Cloud)</option>
+          </select>
+          <small>Choose vector database for semantic search</small>
+        </div>
+
+        <div class="form-group">
+          <label for="embeddingProvider">Embedding Provider</label>
+          <select id="embeddingProvider">
+            <option value="openai">OpenAI</option>
+            <option value="local">Local (Sentence Transformers)</option>
+          </select>
+          <small>Provider for generating email embeddings</small>
+        </div>
+      </section>
+
+      <!-- Status -->
+      <section class="section status-section">
+        <h2>Status</h2>
+        <div id="status" class="status">
+          <div class="status-item">
+            <span>Backend:</span>
+            <span id="backendStatus" class="status-indicator">Not Checked</span>
+          </div>
+          <div class="status-item">
+            <span>Agent:</span>
+            <span id="agentStatus" class="status-indicator">Not Checked</span>
+          </div>
+        </div>
+        <button id="checkConnectionBtn" class="btn btn-secondary">Test Connection</button>
+      </section>
+
+      <!-- Actions -->
+      <div class="actions">
+        <button id="saveBtn" class="btn btn-primary">Save Settings</button>
+        <button id="resetBtn" class="btn btn-secondary">Reset to Defaults</button>
+      </div>
+
+      <!-- Message -->
+      <div id="message" class="message hidden"></div>
+
+      <!-- About -->
+      <section class="section about">
+        <h3>About OpenMailBot</h3>
+        <p>Open-source AI email assistant for Thunderbird</p>
+        <p>Version: 1.0.0</p>
+        <p>
+          <a href="https://github.com/ankitgoel2004/openmailbot" target="_blank">GitHub</a> |
+          <a href="https://github.com/ankitgoel2004/openmailbot/issues" target="_blank">Report Issue</a>
+        </p>
+      </section>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

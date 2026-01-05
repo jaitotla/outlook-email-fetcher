@@ -52,6 +52,55 @@ const userSchema = new mongoose.Schema({
   microsoftId: String,
   microsoftAccessToken: String,
   microsoftRefreshToken: String,
+  slackWorkspaces: [{
+    workspaceId: String,
+    workspaceName: String,
+    accessToken: String,
+    refreshToken: String,
+    botToken: String,
+    connectedAt: Date,
+    lastSyncedAt: Date,
+    syncConfig: {
+      enabled: Boolean,
+      syncDays: {
+        type: Number,
+        default: 7
+      },
+      selectedChannels: [String],
+      selectedDMs: [String],
+      includePublicChannels: Boolean,
+      includePrivateChannels: Boolean,
+      includeDMs: Boolean,
+      dmSelection: {
+        type: String,
+        enum: ['all', 'selected'],
+        default: 'selected'
+      },
+      autoSync: Boolean,
+      syncInterval: {
+        type: Number,
+        default: 3600 // seconds
+      }
+    },
+    fileProcessing: {
+      processPDFs: {
+        type: Boolean,
+        default: true
+      },
+      processDocs: {
+        type: Boolean,
+        default: true
+      },
+      processImages: {
+        type: Boolean,
+        default: false
+      },
+      maxFileSize: {
+        type: Number,
+        default: 10485760 // 10MB
+      }
+    }
+  }],
   settings: {
     llmProvider: {
       type: String,

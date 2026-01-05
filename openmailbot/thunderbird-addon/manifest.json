@@ -1,0 +1,50 @@
+{
+  "manifest_version": 2,
+  "name": "OpenMailBot",
+  "description": "AI-powered email assistant for Thunderbird. Get smart summaries, AI-generated replies, and semantic search.",
+  "version": "1.0.0",
+  "author": "OpenMailBot Team",
+  "homepage_url": "https://github.com/ankitgoel2004/openmailbot",
+  
+  "applications": {
+    "gecko": {
+      "id": "openmailbot@thunderbird",
+      "strict_min_version": "102.0"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+
+  "permissions": [
+    "messagesRead",
+    "accountsRead",
+    "storage",
+    "tabs"
+  ],
+
+  "background": {
+    "scripts": ["background.js"]
+  },
+
+  "message_display_action": {
+    "default_title": "OpenMailBot",
+    "default_icon": "icons/icon-32.png",
+    "default_popup": "popup/popup.html"
+  },
+
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": false
+  },
+
+  "browser_action": {
+    "default_title": "OpenMailBot Settings",
+    "default_icon": "icons/icon-32.png",
+    "default_popup": "settings/settings.html"
+  }
+}
