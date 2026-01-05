@@ -24,7 +24,8 @@
     "messagesRead",
     "accountsRead",
     "storage",
-    "tabs"
+    "tabs",
+    "compose"
   ],
 
   "background": {

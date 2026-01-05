@@ -244,11 +244,136 @@ function generateReply(e) {
       emailData: emailData
     });
     
-    // Show reply draft
-    return showReplyCard(response.reply);
+    // Show reply card with option to insert into compose
+    return showReplyCard(response.reply, messageId, accessToken);
   } catch (error) {
     return showErrorCard('Failed to generate reply: ' + error.message);
   }
+}
+
+/**
+ * Show reply card with insert action
+ */
+function showReplyCard(replyText, messageId, accessToken) {
+  const card = CardService.newCardBuilder();
+  const section = CardService.newCardSection();
+  
+  section.setHeader('✍️ AI-Generated Reply');
+  
+  // Display the generated reply
+  section.addWidget(
+    CardService.newTextParagraph()
+      .setText(replyText)
+  );
+  
+  // Add buttons to insert into compose
+  section.addWidget(
+    CardService.newButtonSet()
+      .addButton(CardService.newTextButton()
+        .setText('📝 Insert into Reply')
+        .setOnClickAction(CardService.newAction()
+          .setFunctionName('insertIntoCompose')
+          .setParameters({
+            messageId: messageId,
+            replyText: replyText,
+            replyType: 'reply'
+          })))
+      .addButton(CardService.newTextButton()
+        .setText('📝 Insert into Reply All')
+        .setOnClickAction(CardService.newAction()
+          .setFunctionName('insertIntoCompose')
+          .setParameters({
+            messageId: messageId,
+            replyText: replyText,
+            replyType: 'replyAll'
+          })))
+  );
+  
+  section.addWidget(
+    CardService.newTextParagraph()
+      .setText('<font color="#666666"><i>💡 Click above to insert directly into Gmail compose</i></font>')
+  );
+  
+  card.addSection(section);
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(card.build()))
+    .build();
+}
+
+/**
+ * Insert AI-generated reply into Gmail compose window
+ */
+function insertIntoCompose(e) {
+  const messageId = e.parameters.messageId;
+  const replyText = e.parameters.replyText;
+  const replyType = e.parameters.replyType;
+  
+  try {
+    // Create a Gmail draft
+    const accessToken = ScriptApp.getOAuthToken();
+    const message = Gmail.Users.Messages.get('me', messageId);
+    
+    // Prepare reply
+    const draftBody = {
+      message: {
+        threadId: message.threadId
+      }
+    };
+    
+    // Set reply headers
+    if (replyType === 'reply') {
+      draftBody.message.raw = createReplyRaw(message, replyText, false);
+    } else {
+      draftBody.message.raw = createReplyRaw(message, replyText, true);
+    }
+    
+    // Create draft
+    const draft = Gmail.Users.Drafts.create(draftBody, 'me');
+    
+    // Open compose window with draft
+    const composeAction = CardService.newComposeAction()
+      .setDraftId(draft.id)
+      .setGmailCompose();
+    
+    return CardService.newActionResponseBuilder()
+      .setNotification(CardService.newNotification()
+        .setText('✅ Draft created! Opening compose window...')
+        .setType(CardService.NotificationType.INFO))
+      .setOpenLink(CardService.newOpenLink()
+        .setUrl('https://mail.google.com/mail/?view=cm&fs=1&tf=1#drafts/' + draft.id)
+        .setOpenAs(CardService.OpenAs.FULL_SIZE))
+      .build();
+  } catch (error) {
+    return showErrorCard('Failed to insert reply: ' + error.message);
+  }
+}
+
+/**
+ * Create raw email for reply/replyAll
+ */
+function createReplyRaw(originalMessage, replyText, replyAll) {
+  const headers = originalMessage.payload.headers;
+  const fromHeader = headers.find(h => h.name === 'From').value;
+  const toHeader = headers.find(h => h.name === 'To').value;
+  const ccHeader = headers.find(h => h.name === 'Cc')?.value || '';
+  const subjectHeader = headers.find(h => h.name === 'Subject').value;
+  const messageIdHeader = headers.find(h => h.name === 'Message-ID').value;
+  
+  let emailText = 'From: me\r\n';
+  emailText += 'To: ' + fromHeader + '\r\n';
+  
+  if (replyAll && (toHeader || ccHeader)) {
+    const allRecipients = [toHeader, ccHeader].filter(r => r).join(', ');
+    emailText += 'Cc: ' + allRecipients + '\r\n';
+  }
+  
+  emailText += 'Subject: Re: ' + subjectHeader.replace(/^Re: /, '') + '\r\n';
+  emailText += 'In-Reply-To: ' + messageIdHeader + '\r\n';
+  emailText += 'References: ' + messageIdHeader + '\r\n';
+  emailText += 'Content-Type: text/html; charset=utf-8\r\n\r\n';
+  emailText += '<div>' + replyText.replace(/\n/g, '<br>') + '</div>';
+  
+  return Utilities.base64EncodeWebSafe(emailText);
 }
 
 /**

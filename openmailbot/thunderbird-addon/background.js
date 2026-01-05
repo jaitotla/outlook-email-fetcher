@@ -156,6 +156,53 @@ async function generateReply(messageData, userContext = '') {
   }
 }
 
+// Insert reply into compose window
+async function insertReplyIntoCompose(messageHeader, replyText, replyType = 'replyToSender') {
+  try {
+    // Open compose window with reply
+    const composeTab = await browser.compose.beginReply(
+      messageHeader.id,
+      replyType  // 'replyToSender' or 'replyToAll'
+    );
+    
+    // Convert plain text to HTML with line breaks
+    const htmlBody = `<p>${replyText.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>')}</p>`;
+    
+    // Insert AI-generated text into compose window
+    await browser.compose.setComposeDetails(composeTab.id, {
+      body: htmlBody,
+      isPlainText: false
+    });
+    
+    return { success: true, composeTabId: composeTab.id };
+  } catch (error) {
+    console.error('Error inserting reply into compose:', error);
+    throw error;
+  }
+}
+
+// Insert forward into compose window
+async function insertForwardIntoCompose(messageHeader, forwardText) {
+  try {
+    const composeTab = await browser.compose.beginForward(
+      messageHeader.id,
+      'forwardAsAttachment'
+    );
+    
+    const htmlBody = `<p>${forwardText.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>')}</p>`;
+    
+    await browser.compose.setComposeDetails(composeTab.id, {
+      body: htmlBody,
+      isPlainText: false
+    });
+    
+    return { success: true, composeTabId: composeTab.id };
+  } catch (error) {
+    console.error('Error inserting forward into compose:', error);
+    throw error;
+  }
+}
+
 // Find related emails
 async function findRelatedEmails(messageData) {
   const settings = await getSettings();
@@ -231,6 +278,17 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'generateReply') {
     getCurrentMessage(message.tabId)
       .then(data => generateReply(data, message.context))
+      .then(sendResponse)
+      .catch(error => sendResponse({ error: error.message }));
+    return true;
+  }
+  
+  if (message.action === 'insertReply') {
+    getCurrentMessage(message.tabId)
+      .then(async (data) => {
+        const replyText = await generateReply(data, message.context);
+        return insertReplyIntoCompose(data.header, replyText, message.replyType || 'replyToSender');
+      })
       .then(sendResponse)
       .catch(error => sendResponse({ error: error.message }));
     return true;

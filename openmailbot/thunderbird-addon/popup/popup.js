@@ -149,6 +149,56 @@ elements.generateBtn.addEventListener('click', async () => {
       <div style="background: white; padding: 12px; border-radius: 6px; border: 1px solid #ddd;">
         ${response.replace(/\n/g, '<br>')}
       </div>
+      <div style="margin-top: 16px; display: flex; gap: 8px;">
+        <button id="insertReplyBtn" class="btn-primary" style="flex: 1;">
+          📝 Insert into Reply
+        </button>
+        <button id="insertReplyAllBtn" class="btn-secondary" style="flex: 1;">
+          📝 Insert into Reply All
+        </button>
+      </div>
+      <div style="margin-top: 8px; font-size: 12px; color: #666; text-align: center;">
+        💡 Or copy this text manually
+      </div>
+    `;
+    
+    showResults('✍️ AI-Generated Reply', html);
+    
+    // Add click handlers for insert buttons
+    document.getElementById('insertReplyBtn').addEventListener('click', async () => {
+      showLoading('Opening compose window...');
+      try {
+        await browser.runtime.sendMessage({
+          action: 'insertReply',
+          tabId: currentTabId,
+          context: context,
+          replyType: 'replyToSender'
+        });
+        showResults('✅ Success', 'Reply inserted into compose window! You can now review and send.');
+      } catch (error) {
+        showError('Failed to insert reply: ' + error.message);
+      }
+    });
+    
+    document.getElementById('insertReplyAllBtn').addEventListener('click', async () => {
+      showLoading('Opening compose window...');
+      try {
+        await browser.runtime.sendMessage({
+          action: 'insertReply',
+          tabId: currentTabId,
+          context: context,
+          replyType: 'replyToAll'
+        });
+        showResults('✅ Success', 'Reply inserted into compose window! You can now review and send.');
+      } catch (error) {
+        showError('Failed to insert reply: ' + error.message);
+      }
+    });
+  } catch (error) {
+    showError(error.message);
+  }
+});
+      </div>
       <div style="margin-top: 12px; font-size: 12px; color: #666;">
         💡 Copy this text and paste it into your reply
       </div>
