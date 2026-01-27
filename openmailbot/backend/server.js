@@ -17,6 +17,8 @@ const settingsRoutes = require('./routes/settings');
 const emailRoutes = require('./routes/emails');
 const slackRoutes = require('./routes/slack');
 const conversationRoutes = require('./routes/conversations');
+const chatRoutes = require('./routes/chat');
+const draftRoutes = require('./routes/draft');
 
 // Import config
 require('./config/passport');
@@ -76,6 +78,8 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/emails', emailRoutes);
 app.use('/api/slack', slackRoutes);
 app.use('/api/conversations', conversationRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/draft', draftRoutes);
 
 // Gmail Add-on specific routes
 app.post('/api/summarize', require('./controllers/addOnController').summarize);

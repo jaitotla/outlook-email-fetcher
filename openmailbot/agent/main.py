@@ -16,6 +16,8 @@ from services.rag import RAGService
 from services.llm import LLMService
 from services.slack_ingestion import SlackIngestionService
 from services.file_processor import FileProcessor
+from services.chat_pipeline import ChatWithThreadPipeline
+from services.draft_pipeline import DraftWithAttachmentsPipeline
 from database.mongodb import MongoDBClient
 
 app = FastAPI(
@@ -40,6 +42,8 @@ rag_service = RAGService()
 llm_service = LLMService()
 ingestion_service = EmailIngestionService()
 file_processor = FileProcessor()
+chat_pipeline = ChatWithThreadPipeline()
+draft_pipeline = DraftWithAttachmentsPipeline()
 slack_service = SlackIngestionService(
     backend_url=settings.BACKEND_API_URL,
     llm_service=llm_service,
@@ -311,6 +315,82 @@ async def ingest_slack(request: SlackIngestRequest):
             include_dms=request.includeDMs,
             file_config=request.fileConfig
         )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ChatWithThreadRequest(BaseModel):
+    user_id: str
+    thread_id: str
+    question: str
+
+
+class DraftWithAttachmentsRequest(BaseModel):
+    user_id: str
+    thread_id: str
+    user_preferences: Optional[Dict[str, Any]] = None
+
+
+@app.post("/chat-with-thread")
+async def chat_with_thread(request: ChatWithThreadRequest):
+    """
+    Chat with an email thread using RAG pipeline
+    
+    This endpoint processes unprocessed emails and attachments,
+    then uses OpenAI for tool selection and Ollama for final answer generation.
+    """
+    try:
+        result = chat_pipeline.process_and_chat(
+            user_id=request.user_id,
+            thread_id=request.thread_id,
+            user_question=request.question
+        )
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/draft-with-attachments")
+async def draft_with_attachments(request: DraftWithAttachmentsRequest):
+    """
+    Generate email draft with attachment context using hybrid approach
+    
+    This endpoint processes attachments and generates a professional email draft
+    using OpenAI for tool selection and Ollama for final draft generation.
+    
+    Request:
+    {
+        "user_id": "user@example.com",
+        "thread_id": "gmail_thread_id",
+        "user_preferences": {
+            "name": "John Doe",
+            "position": "Manager",
+            "tone": "professional",
+            "custom_instructions": "Always include bullet points"
+        }
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "response": "Generated draft email...",
+        "processing_info": {
+            "attachments_found": 2,
+            "attachments_processed": 1,
+            "attachments_skipped": 1,
+            "errors": []
+        }
+    }
+    """
+    try:
+        result = draft_pipeline.process_email_request(
+            user_id=request.user_id,
+            thread_id=request.thread_id,
+            user_preferences=request.user_preferences
+        )
+        
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
