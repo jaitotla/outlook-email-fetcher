@@ -9,16 +9,16 @@ from typing import List, Optional, Dict, Any
 import uvicorn
 from datetime import datetime
 
-from openmailbot.agent.config import settings
-from services.ingestion import EmailIngestionService
+from config import settings
+#from services.ingestion import EmailIngestionService
 from services.embeddings import EmbeddingService
 from services.rag import RAGService
 from services.llm import LLMService
-from services.slack_ingestion import SlackIngestionService
-from services.file_processor import FileProcessor
+#from services.slack_ingestion import SlackIngestionService
+#from services.file_processor import FileProcessor
 from services.chat_pipeline import ChatWithThreadPipeline
 from services.draft_pipeline import DraftWithAttachmentsPipeline
-from database.mongodb import MongoDBClient
+#from database.mongodb import MongoDBClient
 
 app = FastAPI(
     title="OpenMailBot Agent",
@@ -36,19 +36,19 @@ app.add_middleware(
 )
 
 # Initialize services
-db_client = MongoDBClient(settings.MONGODB_URI)
+#db_client = MongoDBClient(settings.MONGODB_URI)
 embedding_service = EmbeddingService()
 rag_service = RAGService()
 llm_service = LLMService()
-ingestion_service = EmailIngestionService()
-file_processor = FileProcessor()
+#ingestion_service = EmailIngestionService()
+#file_processor = FileProcessor()
 chat_pipeline = ChatWithThreadPipeline()
 draft_pipeline = DraftWithAttachmentsPipeline()
-slack_service = SlackIngestionService(
-    backend_url=settings.BACKEND_API_URL,
-    llm_service=llm_service,
-    file_processor=file_processor
-)
+#slack_service = SlackIngestionService(
+#    backend_url=settings.BACKEND_API_URL,
+#    llm_service=llm_service,
+#    file_processor=file_processor
+#)
 
 
 # Request/Response Models
@@ -102,11 +102,83 @@ class IngestEmailsRequest(BaseModel):
 # Health check
 @app.get("/health")
 async def health_check():
+    """Basic health check - returns immediately"""
     return {
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "openmailbot-agent"
     }
+
+
+# Detailed health check with provider status
+@app.get("/health/detailed")
+async def detailed_health_check(user_id: Optional[str] = None, tenant_id: Optional[str] = None):
+    """
+    Detailed health check that tests configured providers.
+    Pass user_id and tenant_id to test user-specific provider configuration.
+    """
+    health_status = {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "service": "openmailbot-agent",
+        "providers": {}
+    }
+    
+    # Get effective settings if user context provided
+    effective_settings = None
+    if user_id and tenant_id:
+        # TODO: Fetch from backend /api/settings
+        pass
+    
+    # Test LLM provider
+    try:
+        # Simple test - just check if provider is configured
+        provider = effective_settings.get("llm_provider", "inbuilt") if effective_settings else settings.LLM_PROVIDER
+        health_status["providers"]["llm"] = {
+            "provider": provider,
+            "status": "configured"
+        }
+    except Exception as e:
+        health_status["providers"]["llm"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Test embedding provider
+    try:
+        provider = effective_settings.get("embedding_provider", "inbuilt") if effective_settings else settings.EMBEDDING_PROVIDER
+        health_status["providers"]["embedding"] = {
+            "provider": provider,
+            "status": "configured"
+        }
+    except Exception as e:
+        health_status["providers"]["embedding"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Test vector provider
+    try:
+        provider = effective_settings.get("vector_provider", "inbuilt") if effective_settings else settings.VECTOR_PROVIDER
+        health_status["providers"]["vector"] = {
+            "provider": provider,
+            "status": "configured"
+        }
+    except Exception as e:
+        health_status["providers"]["vector"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Set overall status based on provider health
+    has_errors = any(
+        p.get("status") == "error" 
+        for p in health_status["providers"].values()
+    )
+    if has_errors:
+        health_status["status"] = "degraded"
+    
+    return health_status
 
 
 # Email Ingestion
@@ -341,7 +413,7 @@ async def chat_with_thread(request: ChatWithThreadRequest):
     then uses OpenAI for tool selection and Ollama for final answer generation.
     """
     try:
-        result = chat_pipeline.process_and_chat(
+        result = await chat_pipeline.process_and_chat(
             user_id=request.user_id,
             thread_id=request.thread_id,
             user_question=request.question
@@ -385,7 +457,7 @@ async def draft_with_attachments(request: DraftWithAttachmentsRequest):
     }
     """
     try:
-        result = draft_pipeline.process_email_request(
+        result = await draft_pipeline.process_email_request(
             user_id=request.user_id,
             thread_id=request.thread_id,
             user_preferences=request.user_preferences
@@ -399,10 +471,10 @@ async def draft_with_attachments(request: DraftWithAttachmentsRequest):
 class SlackChannelsRequest(BaseModel):
     accessToken: str
 
-
+"""
 @app.post("/api/slack/channels")
 async def get_slack_channels(request: SlackChannelsRequest):
-    """Get available Slack channels"""
+  
     try:
         import httpx
         
@@ -430,7 +502,7 @@ async def get_slack_channels(request: SlackChannelsRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
+"""
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",

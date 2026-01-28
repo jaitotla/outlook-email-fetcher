@@ -1,77 +1,235 @@
 """
 Embedding Service
 Generates and manages embeddings for email content
+Supports multiple embedding providers: OpenAI, Nomic, Gemini, Sentence-Transformers, Inbuilt
 """
 from typing import List, Dict, Any, Optional
 import numpy as np
-from sentence_transformers import SentenceTransformer
-import openai
+import requests
+import os
+import logging
 
 from config import settings
-from vector.pinecone_client import PineconeClient
-from vector.faiss_client import FAISSClient
+from vector import get_vector_client
+from services.llm import ProviderError
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingService:
-    def __init__(self):
-        self.model_name = settings.EMBEDDING_MODEL
-        self.vector_db_type = settings.VECTOR_DB_TYPE
+    """
+    Embedding service that supports multiple providers:
+    - openai: OpenAI text-embedding-ada-002 or text-embedding-3-*
+    - nomic: Nomic nomic-embed-text-v1.5
+    - gemini: Google Gemini embeddings
+    - sentence-transformers: Local sentence-transformers models
+    - inbuilt: Uses utils.py call_embed_api for central server
+    """
+    
+    def __init__(self, effective_settings: Optional[Dict[str, Any]] = None):
+        """
+        Initialize embedding service.
         
-        # Initialize local model if needed
-        if self.model_name.startswith("sentence-transformers/") or \
-           self.model_name.startswith("all-"):
-            self.local_model = SentenceTransformer(self.model_name)
-        else:
-            self.local_model = None
+        Args:
+            effective_settings: Dict with:
+                - embeddingProvider: 'openai', 'nomic', 'gemini', 'sentence-transformers', 'inbuilt'
+                - embeddingModel: Model name (provider-specific)
+                - embeddingApiKey: API key for the provider
+                - vectorDbProvider: 'pinecone', 'chroma', 'weaviate', 'inbuilt'
+                - Additional vector DB settings (chromaUrl, weaviateUrl, etc.)
+        """
+        self.effective_settings = effective_settings or {}
         
-        # Initialize vector DB client
-        if self.vector_db_type == "pinecone":
-            self.vector_client = PineconeClient()
-        elif self.vector_db_type == "faiss":
-            self.vector_client = FAISSClient()
-        else:
-            raise ValueError(f"Unsupported vector DB type: {self.vector_db_type}")
+        # Embedding provider config
+        self.embedding_provider = self.effective_settings.get("embeddingProvider") or "inbuilt"
+        self.embedding_model = self.effective_settings.get("embeddingModel")
+        
+        # Legacy fallback for embedding API URL
+        self.embedding_api_url = settings.EMBEDDING_API_URL if hasattr(settings, 'EMBEDDING_API_URL') else None
+        
+        # Vector DB config
+        vector_db_provider = self.effective_settings.get("vectorDbProvider") or settings.VECTOR_DB_TYPE or "inbuilt"
+        
+        # Initialize vector client via factory
+        try:
+            self.vector_client = get_vector_client(vector_db_provider, self.effective_settings)
+        except Exception as e:
+            logger.error(f"Failed to initialize vector client: {e}")
+            raise ProviderError(vector_db_provider, f"Vector DB initialization failed: {e}")
+        
+        # Initialize embedding provider-specific clients
+        self._init_embedding_clients()
+    
+    def _init_embedding_clients(self):
+        """Initialize clients for embedding providers"""
+        
+        # OpenAI embeddings
+        if self.embedding_provider == "openai":
+            import openai
+            openai_key = self.effective_settings.get("openaiApiKey") or settings.OPENAI_API_KEY
+            if openai_key:
+                openai.api_key = openai_key
+            self.embedding_model = self.embedding_model or "text-embedding-ada-002"
+        
+        # Nomic embeddings
+        elif self.embedding_provider == "nomic":
+            nomic_key = self.effective_settings.get("nomicApiKey") or os.environ.get("NOMIC_API_KEY")
+            if nomic_key:
+                try:
+                    import nomic
+                    nomic.login(nomic_key)
+                    self._nomic_available = True
+                except ImportError:
+                    logger.warning("nomic package not installed")
+                    self._nomic_available = False
+            else:
+                self._nomic_available = False
+            self.embedding_model = self.embedding_model or "nomic-embed-text-v1.5"
+        
+        # Gemini embeddings
+        elif self.embedding_provider == "gemini":
+            gemini_key = self.effective_settings.get("geminiApiKey") or os.environ.get("GEMINI_API_KEY")
+            if gemini_key:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=gemini_key)
+                    self._gemini_available = True
+                except ImportError:
+                    logger.warning("google-generativeai package not installed")
+                    self._gemini_available = False
+            else:
+                self._gemini_available = False
+            self.embedding_model = self.embedding_model or "models/embedding-001"
+        
+        # Sentence-transformers (local)
+        elif self.embedding_provider == "sentence-transformers":
+            try:
+                from sentence_transformers import SentenceTransformer
+                model_name = self.embedding_model or "all-MiniLM-L6-v2"
+                self._st_model = SentenceTransformer(model_name)
+                self._st_available = True
+            except ImportError:
+                logger.warning("sentence-transformers package not installed")
+                self._st_available = False
     
     async def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for text"""
+        """Generate embedding for text using configured provider"""
         
-        if self.local_model:
-            # Use local sentence-transformers model
-            embedding = self.local_model.encode(text, convert_to_numpy=True)
-            return embedding.tolist()
+        provider = self.embedding_provider
+        
+        if provider == "openai":
+            return await self._embed_openai(text)
+        elif provider == "nomic":
+            return await self._embed_nomic(text)
+        elif provider == "gemini":
+            return await self._embed_gemini(text)
+        elif provider == "sentence-transformers":
+            return await self._embed_sentence_transformers(text)
+        elif provider == "inbuilt":
+            return await self._embed_inbuilt(text)
         else:
-            # Use OpenAI API
-            if not settings.OPENAI_API_KEY:
-                raise ValueError("OpenAI API key not configured")
-            
-            openai.api_key = settings.OPENAI_API_KEY
-            
+            # Fallback to inbuilt
+            return await self._embed_inbuilt(text)
+    
+    async def _embed_openai(self, text: str) -> List[float]:
+        """Generate embedding using OpenAI"""
+        try:
+            import openai
             response = openai.embeddings.create(
-                model=self.model_name,
+                model=self.embedding_model,
                 input=text
             )
-            
             return response.data[0].embedding
+        except Exception as e:
+            raise ProviderError("openai", f"Embedding error: {str(e)}", e)
+    
+    async def _embed_nomic(self, text: str) -> List[float]:
+        """Generate embedding using Nomic"""
+        if not getattr(self, '_nomic_available', False):
+            raise ProviderError("nomic", "Nomic not configured or package not installed")
+        
+        try:
+            from nomic import embed
+            result = embed.text(
+                texts=[text],
+                model=self.embedding_model,
+                task_type="search_document"
+            )
+            return result['embeddings'][0]
+        except Exception as e:
+            raise ProviderError("nomic", f"Embedding error: {str(e)}", e)
+    
+    async def _embed_gemini(self, text: str) -> List[float]:
+        """Generate embedding using Google Gemini"""
+        if not getattr(self, '_gemini_available', False):
+            raise ProviderError("gemini", "Gemini not configured or package not installed")
+        
+        try:
+            import google.generativeai as genai
+            result = genai.embed_content(
+                model=self.embedding_model,
+                content=text,
+                task_type="retrieval_document"
+            )
+            return result['embedding']
+        except Exception as e:
+            raise ProviderError("gemini", f"Embedding error: {str(e)}", e)
+    
+    async def _embed_sentence_transformers(self, text: str) -> List[float]:
+        """Generate embedding using local sentence-transformers"""
+        if not getattr(self, '_st_available', False):
+            raise ProviderError("sentence-transformers", "Sentence-transformers not installed")
+        
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            embedding = await loop.run_in_executor(None, self._st_model.encode, text)
+            return embedding.tolist()
+        except Exception as e:
+            raise ProviderError("sentence-transformers", f"Embedding error: {str(e)}", e)
+    
+    async def _embed_inbuilt(self, text: str) -> List[float]:
+        """Generate embedding using inbuilt service (utils.py)"""
+        try:
+            from utils import call_embed_api
+            import asyncio
+            
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, call_embed_api, text)
+            
+            if isinstance(result, dict) and "error" in result:
+                raise ProviderError("inbuilt", result["error"])
+            
+            return result
+        except ImportError:
+            # Fallback to embedding API URL if utils.py not available
+            if self.embedding_api_url:
+                try:
+                    response = requests.post(
+                        self.embedding_api_url,
+                        json={"text": text}
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    if "embedding" in data:
+                        return data["embedding"]
+                    return data
+                except Exception as e:
+                    raise ProviderError("inbuilt", f"Embedding API error: {str(e)}", e)
+            raise ProviderError("inbuilt", "Neither utils.py nor embedding API URL available")
+        except Exception as e:
+            if isinstance(e, ProviderError):
+                raise
+            raise ProviderError("inbuilt", f"Embedding error: {str(e)}", e)
     
     async def generate_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for multiple texts"""
+        """Generate embeddings for multiple texts using embedding API"""
         
-        if self.local_model:
-            embeddings = self.local_model.encode(texts, convert_to_numpy=True)
-            return embeddings.tolist()
-        else:
-            # Use OpenAI API
-            if not settings.OPENAI_API_KEY:
-                raise ValueError("OpenAI API key not configured")
-            
-            openai.api_key = settings.OPENAI_API_KEY
-            
-            response = openai.embeddings.create(
-                model=self.model_name,
-                input=texts
-            )
-            
-            return [item.embedding for item in response.data]
+        embeddings = []
+        for text in texts:
+            embedding = await self.generate_embedding(text)
+            embeddings.append(embedding)
+        return embeddings
     
     async def store_embedding(
         self,
@@ -143,17 +301,24 @@ class EmbeddingService:
     
     async def delete_embeddings(
         self,
-        vector_ids: List[str],
+        vector_id: str,
         namespace: str
     ):
-        """Delete embeddings from vector database"""
+        """Delete an embedding from vector database"""
         
         await self.vector_client.delete(
-            vector_ids=vector_ids,
+            vector_id=vector_id,
             namespace=namespace
         )
     
-    async def delete_namespace(self, namespace: str):
-        """Delete entire namespace"""
+    async def get_embedding_by_id(
+        self,
+        vector_id: str,
+        namespace: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get embedding by ID"""
         
-        await self.vector_client.delete_namespace(namespace)
+        return await self.vector_client.get_by_id(
+            vector_id=vector_id,
+            namespace=namespace
+        )

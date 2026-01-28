@@ -4,6 +4,11 @@
 .env
 .env.local
 .env.*.local
+agent/.env
+agent/config.json
+
+# Jupyter checkpoints
+**/.ipynb_checkpoints/
 
 # Dependencies
 node_modules/

@@ -1,6 +1,7 @@
 """
 Chat Pipeline Service - RAG-based email thread chatting
-Handles email and attachment processing with semantic search using ChromaDB
+Handles email and attachment processing with semantic search
+Uses existing services for embeddings, LLM, and vector storage
 """
 
 import os
@@ -11,14 +12,15 @@ from typing import Dict, List, Optional, Set
 import logging
 from datetime import datetime
 
-import chromadb
-import requests
-import ollama
 from llama_index.core import SimpleDirectoryReader
 from llama_index.readers.file import PDFReader, CSVReader, PptxReader
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
+
+from services.embeddings import EmbeddingService
+from services.llm import LLMService
+from config import settings
 
 from prompt import (
     TOOL_CALLING_SYSTEM_PROMPT,
@@ -72,15 +74,9 @@ logger = logging.getLogger(__name__)
 
 # Constants
 BASE_PATH = "./data_pipeline"
-EMAIL_LOGS_PATH = os.getenv("EMAIL_LOGS_PATH", "/home/manotr/swapnil/email_logs")
+EMAIL_LOGS_PATH = os.getenv("EMAIL_LOGS_PATH", "/home/ubuntu/openmailbot/openmailbot/agent/data/chroma/sample_data")
 EMAIL_ATTACHMENTS_PATH = os.getenv("EMAIL_ATTACHMENTS_PATH", "./email_attachments")
 DB_PATH = os.path.join(BASE_PATH, "chat_thread_processing.db")
-FLASK_EMBED_URL = os.getenv('FLASK_EMBED_URL', 'http://localhost:5050/embed')
-OPENAI_KEY = os.getenv('OPENAI_API_KEY')
-
-# Ollama settings
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-OLLAMA_TEMP = float(os.getenv("OLLAMA_TEMP", "0.4"))
 
 # File readers configuration
 FILE_EXTRACTOR = {
@@ -91,30 +87,22 @@ FILE_EXTRACTOR = {
 }
 
 
-def call_ollama_chat_params(modelName: str, sysPrompt: str, usrPrompt: str, temp: float) -> Dict:
-    """Call Ollama local model for final answer generation"""
-    expand_res = ollama.chat(
-        model=modelName,
-        messages=[
-            {"role": "system", "content": sysPrompt},
-            {"role": "user", "content": usrPrompt}
-        ],
-        options={"temperature": temp}
-    )
-    return expand_res
-
-
 class ChatWithThreadPipeline:
     """Pipeline for chatting with email threads using RAG"""
     
     def __init__(self):
         self.db_path = DB_PATH
         self.setup_database()
+        
+        # Initialize services
+        self.embedding_service = EmbeddingService()
+        self.llm_service = LLMService()
+        
         # OpenAI for tool calling only
         self.tool_caller_llm = ChatOpenAI(
             model="gpt-4o-mini",
             temperature=0,
-            api_key=OPENAI_KEY
+            api_key=settings.OPENAI_API_KEY
         )
     
     def setup_database(self):
@@ -130,9 +118,9 @@ class ChatWithThreadPipeline:
                 user_id TEXT NOT NULL,
                 thread_id TEXT NOT NULL,
                 message_id TEXT NOT NULL,
+                vector_id TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 processed_status TEXT DEFAULT 'completed',
-                chroma_collection TEXT,
                 UNIQUE(user_id, thread_id, message_id)
             )
         ''')
@@ -145,10 +133,10 @@ class ChatWithThreadPipeline:
                 thread_id TEXT NOT NULL,
                 message_id TEXT,
                 attachment_id TEXT,
+                vector_id TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 processed_status TEXT DEFAULT 'pending',
                 processed_timestamp DATETIME,
-                chroma_collection TEXT,
                 metadata TEXT,
                 UNIQUE(user_id, thread_id, attachment_id)
             )
@@ -158,57 +146,26 @@ class ChatWithThreadPipeline:
         conn.close()
         logger.info("Database initialized successfully")
     
-    def get_user_chroma_client(self, user_id: str):
-        """Get or create ChromaDB client for a specific user"""
-        user_chroma_path = os.path.join(BASE_PATH, f"cdb_{user_id}")
-        os.makedirs(user_chroma_path, exist_ok=True)
-        return chromadb.PersistentClient(path=user_chroma_path)
+    def get_namespace(self, user_id: str, thread_id: str) -> str:
+        """Get namespace for user and thread"""
+        return f"{user_id}_{thread_id}"
     
-    def get_user_collection(self, user_id: str, collection_name: str = "email_threads"):
-        """Get or create collection for a user's email threads"""
-        client = self.get_user_chroma_client(user_id)
-        return client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
-    
-    def call_embed_api(self, text: str) -> List[float]:
-        """Get embedding from Flask API"""
+    def get_existing_message_ids(self, user_id: str, thread_id: str) -> Set[str]:
+        """Get all existing message IDs for a thread from database"""
         try:
-            response = requests.post(
-                FLASK_EMBED_URL,
-                json={"text": text},
-                timeout=30
-            )
-            response.raise_for_status()
-            return response.json()["embedding"]
-        except Exception as e:
-            logger.error(ERROR_EMBEDDING_API.format(error=e))
-            raise
-    
-    def get_existing_message_ids_from_chroma(self, user_id: str, thread_id: str) -> Set[str]:
-        """Get all existing message IDs for a thread from ChromaDB"""
-        try:
-            collection = self.get_user_collection(user_id)
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
             
-            results = collection.get(
-                where={
-                    "$and": [
-                        {"thread_id": thread_id},
-                        {"type": "email_data"}
-                    ]
-                },
-                include=["metadatas"]
-            )
+            cursor.execute('''
+                SELECT message_id FROM email_embeddings
+                WHERE user_id = ? AND thread_id = ?
+            ''', (user_id, thread_id))
             
-            existing_message_ids = {
-                meta["message_id"]
-                for meta in results.get("metadatas", [])
-                if "message_id" in meta
-            }
+            result = set(row[0] for row in cursor.fetchall())
+            conn.close()
             
-            logger.info(INFO_FOUND_EXISTING_MESSAGES.format(count=len(existing_message_ids), thread_id=thread_id))
-            return existing_message_ids
+            logger.info(INFO_FOUND_EXISTING_MESSAGES.format(count=len(result), thread_id=thread_id))
+            return result
             
         except Exception as e:
             logger.error(f"Error fetching existing message IDs: {e}")
@@ -243,7 +200,7 @@ class ChatWithThreadPipeline:
     
     def get_unprocessed_messages(self, user_id: str, thread_id: str) -> List[Dict]:
         """Filter out already processed messages and return unprocessed ones"""
-        existing_message_ids = self.get_existing_message_ids_from_chroma(user_id, thread_id)
+        existing_message_ids = self.get_existing_message_ids(user_id, thread_id)
         all_messages = self.get_thread_messages(thread_id)
         
         unprocessed_messages = [
@@ -257,7 +214,7 @@ class ChatWithThreadPipeline:
         ))
         return unprocessed_messages
     
-    def process_email_message(self, user_id: str, thread_id: str, message_data: Dict):
+    async def process_email_message(self, user_id: str, thread_id: str, message_data: Dict):
         """Process a single email message and store embeddings"""
         message_id = message_data.get('message_id', 'unknown')
         logger.info(f"Processing email message: {message_id}")
@@ -290,34 +247,37 @@ class ChatWithThreadPipeline:
                 "to": to_email
             }
             
-            embedding = self.call_embed_api(text_to_embed)
-            collection = self.get_user_collection(user_id)
+            # Generate embedding
+            embedding = await self.embedding_service.generate_embedding(text_to_embed)
+            namespace = self.get_namespace(user_id, thread_id)
             doc_id = f"{user_id}_{thread_id}_{message_id}"
             
-            collection.add(
-                documents=[text_to_embed],
-                embeddings=[embedding],
-                ids=[doc_id],
-                metadatas=[metadata]
+            # Store embedding
+            vector_id = await self.embedding_service.store_embedding(
+                embedding=embedding,
+                metadata=metadata,
+                namespace=namespace,
+                vector_id=doc_id
             )
             
-            self.mark_message_processed(user_id, thread_id, message_id)
+            # Mark as processed
+            self.mark_message_processed(user_id, thread_id, message_id, vector_id)
             logger.info(MESSAGE_PROCESSED_SUCCESS.format(message_id=message_id))
             
         except Exception as e:
             logger.error(ERROR_PROCESSING_MESSAGE.format(message_id=message_id, error=e))
             raise
     
-    def mark_message_processed(self, user_id: str, thread_id: str, message_id: str):
+    def mark_message_processed(self, user_id: str, thread_id: str, message_id: str, vector_id: str):
         """Mark message as processed in database"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         cursor.execute('''
             INSERT OR REPLACE INTO email_embeddings 
-            (user_id, thread_id, message_id, processed_status, chroma_collection)
-            VALUES (?, ?, ?, 'completed', 'email_threads')
-        ''', (user_id, thread_id, message_id))
+            (user_id, thread_id, message_id, vector_id, processed_status)
+            VALUES (?, ?, ?, ?, 'completed')
+        ''', (user_id, thread_id, message_id, vector_id))
         
         conn.commit()
         conn.close()
@@ -376,7 +336,7 @@ class ChatWithThreadPipeline:
         
         return attachments
     
-    def process_attachment(self, user_id: str, thread_id: str, message_id: str, 
+    async def process_attachment(self, user_id: str, thread_id: str, message_id: str, 
                           attachment_path: str, attachment_id: str):
         """Process a single attachment and store embeddings"""
         logger.info(f"Processing attachment: {attachment_path}")
@@ -391,7 +351,7 @@ class ChatWithThreadPipeline:
                 logger.warning(f"No content extracted from {attachment_path}")
                 return
             
-            collection = self.get_user_collection(user_id)
+            namespace = self.get_namespace(user_id, thread_id)
             
             for idx, doc in enumerate(documents):
                 text = doc.text.strip()
@@ -407,14 +367,16 @@ class ChatWithThreadPipeline:
                     "type": "attachment_data"
                 }
                 
-                embedding = self.call_embed_api(text)
+                # Generate embedding
+                embedding = await self.embedding_service.generate_embedding(text)
                 doc_id = f"{user_id}_{thread_id}_{attachment_id}_{idx}"
                 
-                collection.add(
-                    documents=[text],
-                    embeddings=[embedding],
-                    ids=[doc_id],
-                    metadatas=[metadata]
+                # Store embedding
+                vector_id = await self.embedding_service.store_embedding(
+                    embedding=embedding,
+                    metadata=metadata,
+                    namespace=namespace,
+                    vector_id=doc_id
                 )
                 
                 logger.info(f"Stored chunk {idx} for attachment {attachment_id}")
@@ -441,7 +403,7 @@ class ChatWithThreadPipeline:
         conn.commit()
         conn.close()
     
-    def process_thread_emails(self, user_id: str, thread_id: str) -> Dict:
+    async def process_thread_emails(self, user_id: str, thread_id: str) -> Dict:
         """Process all unprocessed emails in a thread"""
         logger.info(EMAIL_PROCESSING_START.format(user_id=user_id, thread_id=thread_id))
         
@@ -461,7 +423,7 @@ class ChatWithThreadPipeline:
             
             for message_data in unprocessed_messages:
                 try:
-                    self.process_email_message(user_id, thread_id, message_data)
+                    await self.process_email_message(user_id, thread_id, message_data)
                     processing_info['newly_processed'] += 1
                 except Exception as e:
                     message_id = message_data.get('message_id', 'unknown')
@@ -477,7 +439,7 @@ class ChatWithThreadPipeline:
             processing_info['errors'].append(str(e))
             return processing_info
     
-    def process_thread_attachments(self, user_id: str, thread_id: str, message_id: str = None) -> Dict:
+    async def process_thread_attachments(self, user_id: str, thread_id: str, message_id: str = None) -> Dict:
         """Process all unprocessed attachments in a thread"""
         logger.info(ATTACHMENT_PROCESSING_START.format(thread_id=thread_id))
         
@@ -509,7 +471,7 @@ class ChatWithThreadPipeline:
                     continue
                 
                 try:
-                    self.process_attachment(
+                    await self.process_attachment(
                         user_id, thread_id, attach_message_id,
                         attachment_path, attachment_id
                     )
@@ -526,92 +488,91 @@ class ChatWithThreadPipeline:
             attachment_info['errors'].append(str(e))
             return attachment_info
     
-    def _search_thread_emails_internal(self, user_id: str, thread_id: str, 
+    async def _search_thread_emails_internal(self, user_id: str, thread_id: str, 
                                        query: str, k: int = 5) -> str:
         """Internal method to search email messages"""
         logger.info(INFO_SEARCHING_EMAILS.format(query=query))
         
-        collection = self.get_user_collection(user_id)
-        query_embedding = self.call_embed_api(query)
+        namespace = self.get_namespace(user_id, thread_id)
+        filter_dict = {
+            "$and": [
+                {"thread_id": thread_id},
+                {"type": "email_data"}
+            ]
+        }
         
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=k,
-            where={
-                "$and": [
-                    {"thread_id": thread_id},
-                    {"type": "email_data"}
-                ]
-            },
-            include=["documents", "metadatas", "distances"]
+        results = await self.embedding_service.find_similar_by_text(
+            text=query,
+            namespace=namespace,
+            limit=k,
+            filter=filter_dict
         )
         
-        docs = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
-        
-        if not docs:
+        if not results:
             return NO_EMAILS_FOUND
         
         response_parts = [EMAIL_SEARCH_RESULTS_HEADER]
-        for idx, (doc, meta, distance) in enumerate(zip(docs, metadatas, distances), 1):
-            timestamp = meta.get('timestamp', 'Unknown')
-            from_email = meta.get('from', 'Unknown')
-            subject = meta.get('subject', 'No subject')
-            message_id = meta.get('message_id', 'Unknown')
+        for idx, result in enumerate(results, 1):
+            metadata = result.get('metadata', {})
+            timestamp = metadata.get('timestamp', 'Unknown')
+            from_email = metadata.get('from', 'Unknown')
+            subject = metadata.get('subject', 'No subject')
+            message_id = metadata.get('message_id', 'Unknown')
+            content = result.get('text', result.get('document', ''))
+            relevance = result.get('score', 0)
             
             response_parts.append(
                 format_email_result(
                     index=idx,
-                    relevance=1-distance,
+                    relevance=relevance,
                     message_id=message_id,
                     from_email=from_email,
                     subject=subject,
                     timestamp=timestamp,
-                    content=doc
+                    content=content
                 )
             )
         
         return "\n".join(response_parts)
     
-    def _search_attachments_internal(self, user_id: str, thread_id: str, 
+    async def _search_attachments_internal(self, user_id: str, thread_id: str, 
                                     query: str, k: int = 3) -> str:
         """Internal method to search attachment content"""
         logger.info(INFO_SEARCHING_ATTACHMENTS.format(query=query))
         
-        collection = self.get_user_collection(user_id)
-        query_embedding = self.call_embed_api(query)
+        namespace = self.get_namespace(user_id, thread_id)
+        filter_dict = {
+            "$and": [
+                {"thread_id": thread_id},
+                {"type": "attachment_data"}
+            ]
+        }
         
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=k,
-            where={
-                "$and": [
-                    {"thread_id": thread_id},
-                    {"type": "attachment_data"}
-                ]
-            },
-            include=["documents", "metadatas", "distances"]
+        results = await self.embedding_service.find_similar_by_text(
+            text=query,
+            namespace=namespace,
+            limit=k,
+            filter=filter_dict
         )
         
-        docs = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
-        
-        if not docs:
+        if not results:
             return NO_ATTACHMENTS_FOUND
         
         response_parts = [ATTACHMENT_SEARCH_RESULTS_HEADER]
-        for idx, (doc, meta, distance) in enumerate(zip(docs, metadatas, distances), 1):
-            filename = meta.get('filename', 'Unknown')
-            chunk_index = meta.get('chunk_index', '0')
+        for idx, result in enumerate(results, 1):
+            metadata = result.get('metadata', {})
+            filename = metadata.get('filename', 'Unknown')
+            chunk_index = metadata.get('chunk_index', '0')
+            content = result.get('text', result.get('document', ''))
+            relevance = result.get('score', 0)
+            
             response_parts.append(
                 format_attachment_result(
                     index=idx,
-                    relevance=1-distance,
+                    relevance=relevance,
                     filename=filename,
                     chunk_index=chunk_index,
-                    content=doc
+                    content=content
                 )
             )
         
@@ -646,15 +607,15 @@ class ChatWithThreadPipeline:
         
         return [search_thread_emails, search_attachments]
     
-    def chat_with_thread_hybrid(self, user_id: str, thread_id: str, 
+    async def chat_with_thread_hybrid(self, user_id: str, thread_id: str, 
                            user_question: str) -> str:
         """
-        Hybrid approach: OpenAI for tool selection, Ollama for final answer
+        Hybrid approach: OpenAI for tool selection, LLMService for final answer
         
         Flow:
         1. OpenAI LLM decides which tools to call
         2. Execute the tools to retrieve context
-        3. Pass context to Ollama for final answer generation
+        3. Pass context to LLMService for final answer generation
         """
         logger.info(INFO_HYBRID_CHAT_START.format(thread_id=thread_id, user_question=user_question))
     
@@ -693,7 +654,7 @@ class ChatWithThreadPipeline:
                     query = tool_args.get("query", user_question)
                     k = tool_args.get("k", 5)
     
-                    result = self._search_thread_emails_internal(
+                    result = await self._search_thread_emails_internal(
                         user_id, thread_id, query, k
                     )
                     retrieved_context.append(result)
@@ -702,7 +663,7 @@ class ChatWithThreadPipeline:
                     query = tool_args.get("query", user_question)
                     k = tool_args.get("k", 3)
     
-                    result = self._search_attachments_internal(
+                    result = await self._search_attachments_internal(
                         user_id, thread_id, query, k
                     )
                     retrieved_context.append(result)
@@ -711,10 +672,10 @@ class ChatWithThreadPipeline:
             # Fallback: search both
             logger.warning(WARNING_NO_TOOL_CALLS)
     
-            email_results = self._search_thread_emails_internal(
+            email_results = await self._search_thread_emails_internal(
                 user_id, thread_id, user_question, 5
             )
-            attachment_results = self._search_attachments_internal(
+            attachment_results = await self._search_attachments_internal(
                 user_id, thread_id, user_question, 3
             )
     
@@ -725,26 +686,27 @@ class ChatWithThreadPipeline:
         combined_context = "\n\n".join(retrieved_context)
         logger.info(INFO_CONTEXT_LENGTH.format(length=len(combined_context)))
     
-        # Step 4: Ollama final answer generation
+        # Step 4: LLM final answer generation using LLMService
         system_prompt = get_final_answer_system_prompt(thread_id, user_id)
         user_prompt = get_final_answer_user_prompt(user_question, combined_context)
     
         logger.info(INFO_OLLAMA_CALLING)
     
-        ollama_response = call_ollama_chat_params(
-            modelName=OLLAMA_MODEL,
-            sysPrompt=system_prompt,
-            usrPrompt=user_prompt,
-            temp=OLLAMA_TEMP
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        final_answer = await self.llm_service.generate(
+            messages=messages,
+            provider=settings.DEFAULT_LLM_PROVIDER
         )
-    
-        final_answer = ollama_response["message"]["content"]
     
         logger.info(HYBRID_CHAT_COMPLETE)
     
         return final_answer
     
-    def process_and_chat(self, user_id: str, thread_id: str, 
+    async def process_and_chat(self, user_id: str, thread_id: str, 
                         user_question: str) -> Dict:
         """
         Main entry point: Process thread and answer question using hybrid approach
@@ -762,15 +724,15 @@ class ChatWithThreadPipeline:
         try:
             # Step 1: Process unprocessed emails
             logger.info("📥 Processing thread emails...")
-            email_processing_info = self.process_thread_emails(user_id, thread_id)
+            email_processing_info = await self.process_thread_emails(user_id, thread_id)
             
             # Step 2: Process unprocessed attachments
             logger.info("📎 Processing thread attachments...")
-            attachment_processing_info = self.process_thread_attachments(user_id, thread_id)
+            attachment_processing_info = await self.process_thread_attachments(user_id, thread_id)
             
             # Step 3: Chat with thread using hybrid approach
             logger.info("💬 Generating response with hybrid approach...")
-            answer = self.chat_with_thread_hybrid(user_id, thread_id, user_question)
+            answer = await self.chat_with_thread_hybrid(user_id, thread_id, user_question)
             
             logger.info(HYBRID_CHAT_COMPLETE)
             

@@ -1,71 +1,44 @@
-from openmailbot.agent.chat_pipeline import ChatWithThreadPipeline
-import logging
-print("🔥 test.py file is executing 🔥")
-print("📍 __file__ =", __file__)
-logging.basicConfig(level=logging.INFO)
+import requests
+import json
 
-def test1():
-    print("🚀 Starting test script")
+url = "http://localhost:8000/chat-with-thread"
 
-    user_id = "user@example.com"
-    thread_id = "19b3b6bd4843dd1d"
-    question = "Summarize the main discussion points in this email thread"
+payload = {
+    "user_id": "test_user",
+    "thread_id": "19b3b6bd4843dd1d",
+    "question": "Summarize this thread"
+}
 
-    print("⚙️ Initializing pipeline")
-    pipeline = ChatWithThreadPipeline()
-
-    print("📥 Starting processing + chat")
-    result = pipeline.process_and_chat(
-        user_id=user_id,
-        thread_id=thread_id,
-        user_question=question
-    )
-
-    print("\n========= RESULT =========\n")
-    print("Success:", result["success"])
-    print("Answer:\n", result["answer"])
-    print("\nProcessing Info:\n", result["processing_info"])
-
-
-from openmailbot.agent.draft_pipeline import DraftWithAttachmentsPipeline
-
-def main():
-    print("🚀 Starting Draft Pipeline Test")
-
-    user_id = "user@example.com"
-    thread_id = "19b3b6bd4843dd1d"
-
-    user_preferences = {
-        "name": "Swapnil",
-        "position": "AI Engineer",
-        "tone": "professional and crisp",
-        "custom_instructions": "Keep it short, direct, and business focused"
-    }
-
-    print("⚙️ Initializing Draft Pipeline")
-    pipeline = DraftWithAttachmentsPipeline()
-
-    print("📝 Running Draft Generation Pipeline")
-    result = pipeline.process_email_request(
-        user_id=user_id,
-        thread_id=thread_id,
-        user_preferences=user_preferences
-    )
-
-    print("\n========= DRAFT RESULT =========\n")
-    print("Success:", result["success"])
-
-    if result["success"]:
-        print("\nGenerated Draft:\n")
-        print(result["draft_content"])
+try:
+    response = requests.post(url, json=payload, timeout=30)
+    
+    print(f"Status: {response.status_code}")
+    
+    # Handle response based on status code
+    if response.status_code == 200:
+        print("✅ Success")
+        data = response.json()
+        print(json.dumps(data, indent=2))
+    
+    elif response.status_code == 400:
+        print("❌ Bad Request")
+        print(response.text)
+    
+    elif response.status_code == 404:
+        print("❌ Not Found")
+        print(response.text)
+    
+    elif response.status_code == 500:
+        print("❌ Server Error")
+        print(response.text)
+    
     else:
-        print("\nError:", result.get("error"))
+        print(f"⚠️  Unexpected status: {response.status_code}")
+        print(response.text)
 
-    print("\nProcessing Info:\n", result["processing_info"])
-
-
-
-
-
-if __name__ == "__main__":
-    main()
+except requests.exceptions.ConnectionError:
+    print("❌ Connection Error: Agent not running at http://localhost:8000")
+except requests.exceptions.Timeout:
+    print("❌ Timeout: Request took too long")
+except Exception as e:
+    print(f"❌ Error: {e}")

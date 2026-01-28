@@ -1,7 +1,7 @@
 """
 Services initialization
 """
-from .ingestion import EmailIngestionService
+#from .ingestion import EmailIngestionService
 from .embeddings import EmbeddingService
 from .rag import RAGService
 from .llm import LLMService

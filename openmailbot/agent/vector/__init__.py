@@ -1,7 +1,38 @@
 """
 Vector database clients initialization
 """
+from typing import Dict, Any, Optional
+from .base import BaseVectorStore
 from .pinecone_client import PineconeClient
-from .faiss_client import FAISSClient
+from .chroma_client import ChromaDBClient
 
-__all__ = ['PineconeClient', 'FAISSClient']
+
+def get_vector_client(provider: str, settings: Optional[Dict[str, Any]] = None) -> BaseVectorStore:
+    """
+    Factory function to get the appropriate vector client based on provider.
+    
+    Args:
+        provider: One of 'pinecone', 'chroma', 'weaviate', 'inbuilt'
+        settings: Optional settings dict with provider-specific config
+    
+    Returns:
+        BaseVectorStore implementation
+    """
+    provider = (provider or "").lower()
+    
+    if provider == "pinecone":
+        return PineconeClient(settings=settings)
+    elif provider == "chroma":
+        return ChromaDBClient(settings=settings)
+    elif provider == "weaviate":
+        from .weaviate_client import WeaviateClient
+        return WeaviateClient(settings=settings)
+    elif provider == "inbuilt":
+        # Inbuilt mode uses tenant's Chroma instance
+        return ChromaDBClient(settings=settings, inbuilt_mode=True)
+    else:
+        raise ValueError(f"Unsupported vector DB provider: {provider}. "
+                        f"Supported: pinecone, chroma, weaviate, inbuilt")
+
+
+__all__ = ['BaseVectorStore', 'PineconeClient', 'ChromaDBClient', 'get_vector_client']

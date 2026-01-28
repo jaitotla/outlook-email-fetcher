@@ -6,9 +6,10 @@ import pinecone
 from uuid import uuid4
 
 from config import settings
+from .base import BaseVectorStore
 
 
-class PineconeClient:
+class PineconeClient(BaseVectorStore):
     def __init__(self):
         if not settings.PINECONE_API_KEY:
             raise ValueError("Pinecone API key not configured")
@@ -103,19 +104,32 @@ class PineconeClient:
     
     async def delete(
         self,
-        vector_ids: List[str],
+        vector_id: str,
         namespace: str
-    ):
-        """Delete vectors by IDs"""
+    ) -> bool:
+        """Delete a vector"""
         
-        self.index.delete(ids=vector_ids, namespace=namespace)
+        try:
+            self.index.delete(ids=[vector_id], namespace=namespace)
+            return True
+        except Exception:
+            return False
     
-    async def delete_namespace(self, namespace: str):
-        """Delete all vectors in a namespace"""
+    async def get_by_id(
+        self,
+        vector_id: str,
+        namespace: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get a vector by ID"""
         
-        self.index.delete(delete_all=True, namespace=namespace)
-    
-    async def get_stats(self) -> Dict[str, Any]:
-        """Get index statistics"""
-        
-        return self.index.describe_index_stats()
+        try:
+            results = self.index.fetch(ids=[vector_id], namespace=namespace)
+            if vector_id in results.vectors:
+                vector = results.vectors[vector_id]
+                return {
+                    "id": vector_id,
+                    "metadata": vector.metadata
+                }
+            return None
+        except Exception:
+            return None

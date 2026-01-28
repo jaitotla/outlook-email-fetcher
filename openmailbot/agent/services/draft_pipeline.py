@@ -10,14 +10,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 
-import chromadb
-import requests
-import ollama
 from llama_index.core import SimpleDirectoryReader
 from llama_index.readers.file import PDFReader, CSVReader, PptxReader
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
+
+from services.embeddings import EmbeddingService
+from services.llm import LLMService
+from config import settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,12 +29,6 @@ BASE_PATH = "./data_pipeline"
 EMAIL_ATTACHMENTS_PATH = os.getenv("EMAIL_ATTACHMENTS_PATH", "./email_attachments")
 EMAIL_LOGS_PATH = os.getenv("EMAIL_LOGS_PATH", "/home/manotr/swapnil/email_logs")
 DB_PATH = os.path.join(BASE_PATH, "draft_processing.db")
-FLASK_EMBED_URL = os.getenv('FLASK_EMBED_URL', 'http://localhost:5050/embed')
-OPENAI_KEY = os.getenv('OPENAI_API_KEY')
-
-# Ollama settings
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-OLLAMA_TEMP = float(os.getenv("OLLAMA_TEMP", "0.4"))
 
 # File readers configuration
 FILE_EXTRACTOR = {
@@ -44,30 +39,22 @@ FILE_EXTRACTOR = {
 }
 
 
-def call_ollama_chat_params(modelName: str, sysPrompt: str, usrPrompt: str, temp: float) -> Dict:
-    """Call Ollama local model for final draft generation"""
-    expand_res = ollama.chat(
-        model=modelName,
-        messages=[
-            {"role": "system", "content": sysPrompt},
-            {"role": "user", "content": usrPrompt}
-        ],
-        options={"temperature": temp}
-    )
-    return expand_res
-
-
 class DraftWithAttachmentsPipeline:
     """Pipeline for generating email drafts with attachment context"""
     
     def __init__(self):
         self.db_path = DB_PATH
         self.setup_database()
+        
+        # Initialize services
+        self.embedding_service = EmbeddingService()
+        self.llm_service = LLMService()
+        
         # OpenAI only for tool calling decisions
         self.tool_caller_llm = ChatOpenAI(
             model="gpt-4o-mini",
             temperature=0,
-            api_key=OPENAI_KEY
+            api_key=settings.OPENAI_API_KEY
         )
     
     def setup_database(self):
@@ -82,10 +69,10 @@ class DraftWithAttachmentsPipeline:
                 user_id TEXT NOT NULL,
                 thread_id TEXT NOT NULL,
                 attachment_id TEXT,
+                vector_id TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 processed_status TEXT DEFAULT 'pending',
                 processed_timestamp DATETIME,
-                chroma_collection TEXT,
                 metadata TEXT,
                 UNIQUE(user_id, thread_id, attachment_id)
             )
@@ -95,33 +82,10 @@ class DraftWithAttachmentsPipeline:
         conn.close()
         logger.info("Draft database initialized successfully")
     
-    def get_user_chroma_client(self, user_id: str):
-        """Get or create ChromaDB client for a specific user"""
-        user_chroma_path = os.path.join(BASE_PATH, f"draft_cdb_{user_id}")
-        os.makedirs(user_chroma_path, exist_ok=True)
-        return chromadb.PersistentClient(path=user_chroma_path)
+    def get_namespace(self, user_id: str, thread_id: str) -> str:
+        """Get namespace for user and thread"""
+        return f"{user_id}_{thread_id}_draft"
     
-    def get_user_collection(self, user_id: str, collection_name: str = "draft_documents"):
-        """Get or create collection for a user's draft attachments"""
-        client = self.get_user_chroma_client(user_id)
-        return client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
-    
-    def call_embed_api(self, text: str) -> List[float]:
-        """Get embedding from Flask API"""
-        try:
-            response = requests.post(
-                FLASK_EMBED_URL,
-                json={"text": text},
-                timeout=30
-            )
-            response.raise_for_status()
-            return response.json()["embedding"]
-        except Exception as e:
-            logger.error(f"Embedding API error: {e}")
-            raise
     
     def check_attachment_processed(self, user_id: str, thread_id: str, attachment_id: str) -> bool:
         """Check if attachment is already processed"""
@@ -193,7 +157,7 @@ class DraftWithAttachmentsPipeline:
         
         return attachments
     
-    def process_attachment(self, user_id: str, thread_id: str, 
+    async def process_attachment(self, user_id: str, thread_id: str, 
                           attachment_path: str, attachment_id: str):
         """Process a single attachment and store embeddings"""
         logger.info(f"Processing attachment: {attachment_path}")
@@ -209,8 +173,7 @@ class DraftWithAttachmentsPipeline:
                 logger.warning(f"No content extracted from {attachment_path}")
                 return
             
-            # Get user's collection
-            collection = self.get_user_collection(user_id)
+            namespace = self.get_namespace(user_id, thread_id)
             
             # Store each document chunk
             for idx, doc in enumerate(documents):
@@ -228,16 +191,16 @@ class DraftWithAttachmentsPipeline:
                 }
                 
                 # Get embedding
-                embedding = self.call_embed_api(text)
+                embedding = await self.embedding_service.generate_embedding(text)
                 
-                # Store in ChromaDB
+                # Store in vector DB
                 doc_id = f"{user_id}_{thread_id}_{attachment_id}_{idx}"
                 
-                collection.add(
-                    documents=[text],
-                    embeddings=[embedding],
-                    ids=[doc_id],
-                    metadatas=[metadata]
+                vector_id = await self.embedding_service.store_embedding(
+                    embedding=embedding,
+                    metadata=metadata,
+                    namespace=namespace,
+                    vector_id=doc_id
                 )
                 
                 logger.info(f"Stored chunk {idx} for attachment {attachment_id}")
@@ -264,62 +227,65 @@ class DraftWithAttachmentsPipeline:
         conn.commit()
         conn.close()
     
-    def _get_attachments_by_id_internal(self, user_id: str, thread_id: str, 
+    async def _get_attachments_by_id_internal(self, user_id: str, thread_id: str, 
                                        attachment_query: str) -> str:
         """Internal method to retrieve attachment content"""
         logger.info(f"🔧 Retrieving attachments for: {attachment_query}")
         
-        collection = self.get_user_collection(user_id)
+        namespace = self.get_namespace(user_id, thread_id)
+        filter_dict = {"thread_id": thread_id}
         
         # Get all documents for this thread
-        results = collection.get(
-            where={"thread_id": thread_id}
+        results = await self.embedding_service.find_similar_by_text(
+            text=attachment_query,
+            namespace=namespace,
+            limit=10,
+            filter=filter_dict
         )
         
-        docs = results.get("documents", [])
-        metadatas = results.get("metadatas", [])
-        
-        if not docs:
+        if not results:
             return "No attachments found for this thread."
         
         # Format response with metadata
         response_parts = []
-        for doc, meta in zip(docs, metadatas):
-            filename = meta.get('filename', 'Unknown')
-            response_parts.append(f"📎 From {filename}:\n{doc}\n")
+        for result in results:
+            metadata = result.get('metadata', {})
+            filename = metadata.get('filename', 'Unknown')
+            content = result.get('text', result.get('document', ''))
+            response_parts.append(f"📎 From {filename}:\n{content}\n")
         
         result = "\n".join(response_parts)
-        logger.info(f"📄 Returned {len(docs)} document chunks")
+        logger.info(f"📄 Returned {len(results)} document chunks")
         return result
     
-    def _query_attachments_internal(self, user_id: str, thread_id: str, 
+    async def _query_attachments_internal(self, user_id: str, thread_id: str, 
                                    query: str, k: int = 3) -> str:
         """Internal method to search attachment content"""
         logger.info(f"🔍 Querying attachments: {query}")
         
-        collection = self.get_user_collection(user_id)
-        query_embedding = self.call_embed_api(query)
+        namespace = self.get_namespace(user_id, thread_id)
+        filter_dict = {"thread_id": thread_id}
         
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=k,
-            where={"thread_id": thread_id}
+        results = await self.embedding_service.find_similar_by_text(
+            text=query,
+            namespace=namespace,
+            limit=k,
+            filter=filter_dict
         )
         
-        docs = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        
-        if not docs:
+        if not results:
             return "No relevant information found in attachments."
         
         # Format with metadata
         response_parts = []
-        for doc, meta in zip(docs, metadatas):
-            filename = meta.get('filename', 'Unknown')
-            response_parts.append(f"📎 {filename}:\n{doc}\n")
+        for result in results:
+            metadata = result.get('metadata', {})
+            filename = metadata.get('filename', 'Unknown')
+            content = result.get('text', result.get('document', ''))
+            response_parts.append(f"📎 {filename}:\n{content}\n")
         
         result = "\n".join(response_parts)
-        logger.info(f"📄 Query returned {len(docs)} relevant chunks")
+        logger.info(f"📄 Query returned {len(results)} relevant chunks")
         return result
     
     def create_tools_for_binding(self):
@@ -350,15 +316,15 @@ class DraftWithAttachmentsPipeline:
         
         return [get_attachments_by_id, query_attachments]
     
-    def generate_draft_hybrid(self, user_id: str, thread_id: str, 
+    async def generate_draft_hybrid(self, user_id: str, thread_id: str, 
                              email_data: str, user_preferences: Dict = None) -> str:
         """
-        Hybrid approach: OpenAI for tool selection, Ollama for final draft
+        Hybrid approach: OpenAI for tool selection, LLMService for final draft
         
         Flow:
         1. OpenAI LLM decides which tools to call
         2. Execute the tools to retrieve context from attachments
-        3. Pass email thread + retrieved context to Ollama for draft generation
+        3. Pass email thread + retrieved context to LLMService for draft generation
         """
         logger.info("📝 Starting hybrid draft generation...")
         
@@ -413,7 +379,7 @@ Decide which tools (if any) are needed to retrieve attachment information.""")
                 
                 if tool_name == "get_attachments_by_id":
                     attachment_query = tool_args.get("attachment_query", "")
-                    result = self._get_attachments_by_id_internal(
+                    result = await self._get_attachments_by_id_internal(
                         user_id, thread_id, attachment_query
                     )
                     retrieved_context.append(
@@ -423,7 +389,7 @@ Decide which tools (if any) are needed to retrieve attachment information.""")
                 elif tool_name == "query_attachments":
                     query = tool_args.get("query", "")
                     k = tool_args.get("k", 3)
-                    result = self._query_attachments_internal(
+                    result = await self._query_attachments_internal(
                         user_id, thread_id, query, k
                     )
                     retrieved_context.append(
@@ -437,7 +403,7 @@ Decide which tools (if any) are needed to retrieve attachment information.""")
         
         logger.info(f"📚 Retrieved context length: {len(combined_context)} characters")
         
-        # Step 4: Generate draft with Ollama
+        # Step 4: Generate draft with LLMService
         system_prompt = f"""You are an AI email assistant helping {name}, a {position}, to draft professional email responses.
 
 Your responsibilities:
@@ -478,22 +444,23 @@ Please draft a professional email response that:
 3. Maintains the conversation's current context and tone
 4. Is ready to send without further editing"""
         
-        logger.info("🦙 Calling Ollama for draft generation...")
+        logger.info("🦙 Calling LLM for draft generation...")
         
-        ollama_response = call_ollama_chat_params(
-            modelName=OLLAMA_MODEL,
-            sysPrompt=system_prompt,
-            usrPrompt=user_prompt,
-            temp=OLLAMA_TEMP
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        draft_content = await self.llm_service.generate(
+            messages=messages,
+            provider=settings.DEFAULT_LLM_PROVIDER
         )
-        
-        draft_content = ollama_response["message"]["content"]
         
         logger.info("✅ Draft generated successfully with hybrid approach")
         
         return draft_content
     
-    def process_email_request(self, user_id: str, thread_id: str, 
+    async def process_email_request(self, user_id: str, thread_id: str, 
                              user_preferences: Dict = None) -> Dict:
         """
         Main pipeline entry point - processes email and generates draft using hybrid approach
@@ -535,7 +502,7 @@ Please draft a professional email response that:
             
             logger.info(f"Found {len(attachments)} attachments for thread {thread_id}")
             
-            # Step 3: Process unprocessed attachments (synchronous)
+            # Step 3: Process unprocessed attachments
             for attachment in attachments:
                 attachment_id = attachment.get('attachment_id') or attachment.get('filename')
                 attachment_path = attachment.get('path')
@@ -552,7 +519,7 @@ Please draft a professional email response that:
                 
                 # Process attachment
                 try:
-                    self.process_attachment(
+                    await self.process_attachment(
                         user_id, thread_id,
                         attachment_path, attachment_id
                     )
@@ -562,9 +529,9 @@ Please draft a professional email response that:
                     logger.error(error_msg)
                     processing_info['errors'].append(error_msg)
             
-            # Step 4: Generate draft using hybrid approach (OpenAI + Ollama)
+            # Step 4: Generate draft using hybrid approach (OpenAI + LLMService)
             logger.info("📝 Generating draft with hybrid approach...")
-            draft_content = self.generate_draft_hybrid(
+            draft_content = await self.generate_draft_hybrid(
                 user_id, thread_id,
                 email_data, user_preferences
             )

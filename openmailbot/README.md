@@ -105,8 +105,8 @@ cd frontend && npm run dev
 
 ### Python Agent
 - **FastAPI** for async API server
-- **OpenAI / Anthropic / Ollama** for LLM
-- **Pinecone / FAISS** for vector search
+- **OpenAI / Anthropic / Gemini / Ollama** for LLM
+- **Pinecone / ChromaDB / Weaviate** for vector search
 - **Neo4j** for relationship mapping
 
 ### Frontend
@@ -118,6 +118,7 @@ cd frontend && npm run dev
 ### Gmail Add-on
 - **Google Apps Script**
 - **CardService** for UI
+- **Per-user settings** for LLM/Vector/Embedding providers
 
 ### Thunderbird Add-on
 - **WebExtension** API
@@ -137,7 +138,8 @@ openmailbot/
 │   │   ├── embeddings.py
 │   │   ├── llm.py
 │   │   ├── rag.py
-│   │   └── ingestion.py
+│   │   ├── chat_pipeline.py
+│   │   └── draft_pipeline.py
 │   ├── vector/        # Vector DB clients
 │   ├── graph/         # Graph DB client
 │   └── database/      # MongoDB client
@@ -154,37 +156,50 @@ openmailbot/
 │   ├── popup/         # UI components
 │   └── options/       # Settings page
 ├── docker/            # Docker configs
+├── docs/              # Documentation
+│   ├── API.md
+│   ├── PIPELINES.md
+│   └── SLACK_APP_SETUP.md
 └── docker-compose.yml # Multi-service setup
 ```
 
 ## 🔧 Configuration
 
-OpenMailBot is highly configurable. Choose your preferred providers:
+OpenMailBot supports per-user configuration. Users can choose their preferred providers via the Gmail add-on settings or web UI.
 
 ### LLM Providers
-- **OpenAI** (GPT-4, GPT-3.5) - Best quality, costs money
-- **Anthropic** (Claude 3) - Great quality, costs money
-- **Ollama** (Llama 2, Mistral) - Free, runs locally
+- **OpenAI** (GPT-4o, GPT-4o-mini) - Best quality
+- **Anthropic** (Claude 3) - Great quality
+- **Google Gemini** (gemini-pro) - Good balance
+- **Ollama** (Llama 3.2, Mistral) - Self-hosted, free
+- **Inbuilt** - Zero-config central servers
 
 ### Vector Databases
 - **Pinecone** - Cloud-based, scalable
-- **FAISS** - Local, privacy-focused, free
+- **ChromaDB** - Self-hosted, HTTP API
+- **Weaviate** - Self-hosted, feature-rich
+- **Inbuilt** - Zero-config central servers
 
 ### Embedding Models
-- **OpenAI** (text-embedding-ada-002) - 1536 dimensions
+- **OpenAI** (text-embedding-3-small) - 1536 dimensions
+- **Nomic** (nomic-embed-text-v1.5) - Open source
+- **Google Gemini** - Integrated with Gemini LLM
 - **Sentence Transformers** - Local, free
+- **Inbuilt** - Zero-config central servers
 
 ## 📖 Documentation
 
 - **[Setup Guide](SETUP.md)** - Detailed installation instructions
+- **[Changelog](CHANGELOG.md)** - Version history and changes
+- **[Future Work](FUTURE_WORK.md)** - Roadmap and planned features
 - **[API Documentation](docs/API.md)** - REST API reference
-- **[Backend Guide](backend/README.md)** - Backend architecture
-- **[Agent Guide](agent/README.md)** - Python agent details
-- **[Development Status](../DEVELOPMENT_STATUS.md)** - Project roadmap
+- **[Pipeline Guide](docs/PIPELINES.md)** - Chat & Draft pipeline details
+- **[Slack Setup](docs/SLACK_APP_SETUP.md)** - Slack integration guide
+- **[Contributing](CONTRIBUTING.md)** - How to contribute
 
 ## 🤝 Contributing
 
-We welcome contributions! Here's how:
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
