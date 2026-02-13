@@ -2,134 +2,139 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenMailBot Settings</title>
+  <title>Email Thread Assistant - Settings</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <h1>🤖 OpenMailBot Settings</h1>
-      <p>Configure your AI email assistant</p>
+      <h1>⚙️ Email Thread Assistant Settings</h1>
+      <p class="subtitle">Configure your AI providers and preferences</p>
     </div>
 
-    <div class="content">
-      <!-- Connection Settings -->
-      <section class="section">
-        <h2>Connection</h2>
+    <form id="settings-form">
+      <!-- Mode Selection -->
+      <section class="settings-section">
+        <h2>🔧 Configuration Mode</h2>
         <div class="form-group">
-          <label for="backendUrl">Backend API URL</label>
-          <input type="text" id="backendUrl" placeholder="http://localhost:5000">
-          <small>URL of your OpenMailBot backend server</small>
-        </div>
-        
-        <div class="form-group">
-          <label for="agentUrl">Python Agent URL</label>
-          <input type="text" id="agentUrl" placeholder="http://localhost:8000">
-          <small>URL of your OpenMailBot AI agent</small>
-        </div>
-
-        <div class="form-group">
-          <label for="userId">User ID (Optional)</label>
-          <input type="text" id="userId" placeholder="your-email@example.com">
-          <small>Your email address or user identifier</small>
+          <label for="mode">Mode</label>
+          <select id="mode" name="mode">
+            <option value="inbuilt">Inbuilt (Zero Configuration)</option>
+            <option value="custom">Custom (Your API Keys)</option>
+          </select>
+          <p class="help-text">
+            <em>Inbuilt: Uses central servers, no API keys needed.<br>
+            Custom: Use your own API keys for each provider.</em>
+          </p>
         </div>
       </section>
 
-      <!-- AI Configuration -->
-      <section class="section">
-        <h2>AI Configuration</h2>
-        
+      <!-- LLM Provider -->
+      <section class="settings-section">
+        <h2>🤖 LLM Provider</h2>
         <div class="form-group">
-          <label for="llmProvider">LLM Provider</label>
-          <select id="llmProvider">
+          <label for="llm_provider">Provider</label>
+          <select id="llm_provider" name="llm_provider">
+            <option value="inbuilt">Inbuilt</option>
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic (Claude)</option>
-            <option value="ollama">Ollama (Local)</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="ollama">Ollama (Self-hosted)</option>
           </select>
-          <small>Choose your language model provider</small>
         </div>
-
         <div class="form-group">
-          <label for="llmModel">Model</label>
-          <select id="llmModel">
-            <option value="gpt-4">GPT-4</option>
-            <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-          </select>
-          <small>Select the AI model to use</small>
+          <label for="llm_api_key">API Key (for OpenAI/Anthropic/Gemini)</label>
+          <input type="password" id="llm_api_key" name="llm_api_key" placeholder="Leave empty for Inbuilt/Ollama">
         </div>
-
         <div class="form-group">
-          <label for="tone">Default Reply Tone</label>
-          <select id="tone">
-            <option value="professional">Professional</option>
-            <option value="semi-professional">Semi-Professional</option>
-            <option value="casual">Casual</option>
-            <option value="personal">Personal</option>
+          <label for="llm_model">Model Name</label>
+          <input type="text" id="llm_model" name="llm_model" placeholder="e.g., gpt-4o-mini, claude-3-sonnet, gemini-pro">
+        </div>
+        <div class="form-group">
+          <label for="llm_base_url">Base URL (for Ollama/Custom)</label>
+          <input type="text" id="llm_base_url" name="llm_base_url" placeholder="e.g., http://localhost:11434">
+        </div>
+      </section>
+
+      <!-- Embedding Provider -->
+      <section class="settings-section">
+        <h2>📊 Embedding Provider</h2>
+        <div class="form-group">
+          <label for="embedding_provider">Provider</label>
+          <select id="embedding_provider" name="embedding_provider">
+            <option value="inbuilt">Inbuilt</option>
+            <option value="openai">OpenAI</option>
+            <option value="nomic">Nomic</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="sentence-transformers">Sentence Transformers</option>
           </select>
-          <small>Default tone for generated replies</small>
+        </div>
+        <div class="form-group">
+          <label for="embedding_api_key">API Key</label>
+          <input type="password" id="embedding_api_key" name="embedding_api_key" placeholder="Leave empty for Inbuilt">
+        </div>
+        <div class="form-group">
+          <label for="embedding_model">Model Name</label>
+          <input type="text" id="embedding_model" name="embedding_model" placeholder="e.g., text-embedding-3-small, nomic-embed-text-v1.5">
         </div>
       </section>
 
       <!-- Vector Database -->
-      <section class="section">
-        <h2>Vector Database</h2>
-        
+      <section class="settings-section">
+        <h2>🗄️ Vector Database</h2>
         <div class="form-group">
-          <label for="vectorDb">Vector DB Provider</label>
-          <select id="vectorDb">
-            <option value="faiss">FAISS (Local)</option>
-            <option value="pinecone">Pinecone (Cloud)</option>
+          <label for="vector_provider">Provider</label>
+          <select id="vector_provider" name="vector_provider">
+            <option value="inbuilt">Inbuilt</option>
+            <option value="pinecone">Pinecone</option>
+            <option value="chroma">ChromaDB</option>
+            <option value="weaviate">Weaviate</option>
           </select>
-          <small>Choose vector database for semantic search</small>
         </div>
-
         <div class="form-group">
-          <label for="embeddingProvider">Embedding Provider</label>
-          <select id="embeddingProvider">
-            <option value="openai">OpenAI</option>
-            <option value="local">Local (Sentence Transformers)</option>
-          </select>
-          <small>Provider for generating email embeddings</small>
+          <label for="vector_url">Server URL</label>
+          <input type="text" id="vector_url" name="vector_url" placeholder="e.g., https://your-index.pinecone.io">
+        </div>
+        <div class="form-group">
+          <label for="vector_api_key">API Key</label>
+          <input type="password" id="vector_api_key" name="vector_api_key" placeholder="Leave empty for Inbuilt">
         </div>
       </section>
 
-      <!-- Status -->
-      <section class="section status-section">
-        <h2>Status</h2>
-        <div id="status" class="status">
-          <div class="status-item">
-            <span>Backend:</span>
-            <span id="backendStatus" class="status-indicator">Not Checked</span>
-          </div>
-          <div class="status-item">
-            <span>Agent:</span>
-            <span id="agentStatus" class="status-indicator">Not Checked</span>
-          </div>
+      <!-- User Profile -->
+      <section class="settings-section">
+        <h2>👤 User Profile (for drafts)</h2>
+        <div class="form-group">
+          <label for="user_name">Your Name</label>
+          <input type="text" id="user_name" name="user_name" placeholder="Used in email signatures">
         </div>
-        <button id="checkConnectionBtn" class="btn btn-secondary">Test Connection</button>
+        <div class="form-group">
+          <label for="user_position">Your Position/Title</label>
+          <input type="text" id="user_position" name="user_position" placeholder="e.g., Product Manager, Developer">
+        </div>
+        <div class="form-group">
+          <label for="user_tone">Preferred Tone</label>
+          <select id="user_tone" name="user_tone">
+            <option value="professional">Professional</option>
+            <option value="friendly">Friendly</option>
+            <option value="formal">Formal</option>
+            <option value="casual">Casual</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="system_prompt">Custom System Prompt</label>
+          <textarea id="system_prompt" name="system_prompt" rows="4" placeholder="Optional: Override default AI behavior"></textarea>
+        </div>
       </section>
 
-      <!-- Actions -->
-      <div class="actions">
-        <button id="saveBtn" class="btn btn-primary">Save Settings</button>
-        <button id="resetBtn" class="btn btn-secondary">Reset to Defaults</button>
+      <!-- Action Buttons -->
+      <div class="button-group">
+        <button type="submit" class="btn btn-primary">💾 Save Settings</button>
+        <button type="button" id="reset-btn" class="btn btn-default">🔄 Reset to Defaults</button>
       </div>
 
-      <!-- Message -->
-      <div id="message" class="message hidden"></div>
-
-      <!-- About -->
-      <section class="section about">
-        <h3>About OpenMailBot</h3>
-        <p>Open-source AI email assistant for Thunderbird</p>
-        <p>Version: 1.0.0</p>
-        <p>
-          <a href="https://github.com/ankitgoel2004/openmailbot" target="_blank">GitHub</a> |
-          <a href="https://github.com/ankitgoel2004/openmailbot/issues" target="_blank">Report Issue</a>
-        </p>
-      </section>
-    </div>
+      <div id="status-message" class="status-message hidden"></div>
+    </form>
   </div>
 
   <script src="options.js"></script>

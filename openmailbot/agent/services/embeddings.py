@@ -8,13 +8,17 @@ import numpy as np
 import requests
 import os
 import logging
-
-from config import settings
+import json
+#from config import settings
 from vector import get_vector_client
 from services.llm import ProviderError
 
 logger = logging.getLogger(__name__)
 
+# Load configuration
+CONFIG_PATH = "/home/ubuntu/openmailbot/openmailbot/agent/config.json"
+with open(CONFIG_PATH, 'r') as f:
+    CONFIG = json.load(f)
 
 class EmbeddingService:
     """
@@ -32,23 +36,25 @@ class EmbeddingService:
         
         Args:
             effective_settings: Dict with:
-                - embeddingProvider: 'openai', 'nomic', 'gemini', 'sentence-transformers', 'inbuilt'
-                - embeddingModel: Model name (provider-specific)
-                - embeddingApiKey: API key for the provider
-                - vectorDbProvider: 'pinecone', 'chroma', 'weaviate', 'inbuilt'
-                - Additional vector DB settings (chromaUrl, weaviateUrl, etc.)
+                - embedding_provider: 'openai', 'nomic', 'gemini', 'sentence-transformers', 'inbuilt'
+                - embedding_model: Model name (provider-specific)
+                - embedding_api_key: API key for the provider
+                - vector_provider: 'pinecone', 'chroma', 'weaviate', 'inbuilt'
+                - Additional vector DB settings (chroma_url, weaviate_url, etc.)
+                If not provided, uses CONFIG as fallback
         """
-        self.effective_settings = effective_settings or {}
+        # Use provided settings or fall back to global CONFIG
+        self.effective_settings = effective_settings if effective_settings else (CONFIG or {})
         
         # Embedding provider config
-        self.embedding_provider = self.effective_settings.get("embeddingProvider") or "inbuilt"
-        self.embedding_model = self.effective_settings.get("embeddingModel")
+        self.embedding_provider = self.effective_settings.get("embedding_provider") 
+        self.embedding_model = self.effective_settings.get("embedding_model")
         
         # Legacy fallback for embedding API URL
-        self.embedding_api_url = settings.EMBEDDING_API_URL if hasattr(settings, 'EMBEDDING_API_URL') else None
+        #self.embedding_api_url = settings.EMBEDDING_API_URL if hasattr(settings, 'EMBEDDING_API_URL') else None
         
         # Vector DB config
-        vector_db_provider = self.effective_settings.get("vectorDbProvider") or settings.VECTOR_DB_TYPE or "inbuilt"
+        vector_db_provider = self.effective_settings.get("vector_provider") or "inbuilt"
         
         # Initialize vector client via factory
         try:
@@ -66,14 +72,14 @@ class EmbeddingService:
         # OpenAI embeddings
         if self.embedding_provider == "openai":
             import openai
-            openai_key = self.effective_settings.get("openaiApiKey") or settings.OPENAI_API_KEY
+            openai_key = self.effective_settings.get("embedding_api_key") or os.environ.get("OPENAI_API_KEY")
             if openai_key:
                 openai.api_key = openai_key
             self.embedding_model = self.embedding_model or "text-embedding-ada-002"
         
         # Nomic embeddings
         elif self.embedding_provider == "nomic":
-            nomic_key = self.effective_settings.get("nomicApiKey") or os.environ.get("NOMIC_API_KEY")
+            nomic_key = self.effective_settings.get("embedding_api_key") or os.environ.get("NOMIC_API_KEY")
             if nomic_key:
                 try:
                     import nomic
@@ -88,7 +94,7 @@ class EmbeddingService:
         
         # Gemini embeddings
         elif self.embedding_provider == "gemini":
-            gemini_key = self.effective_settings.get("geminiApiKey") or os.environ.get("GEMINI_API_KEY")
+            gemini_key = self.effective_settings.get("embedding_api_key") or os.environ.get("GEMINI_API_KEY")
             if gemini_key:
                 try:
                     import google.generativeai as genai

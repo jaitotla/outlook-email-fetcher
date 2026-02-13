@@ -2,6 +2,9 @@
  * Entry point for Gmail Add-on
  */
 function buildAddOn(e) {
+  // Create all labels with colors when add-on loads
+  createAllLabelsWithColors();
+  
   return CardService.newCardBuilder()
     .addSection(
       CardService.newCardSection()
@@ -126,7 +129,7 @@ function draftWithAttachments(e) {
       subject = "Re: " + subject;
     }
     
-    var draftContent = draftResult.response || "No draft content received";
+    var draftContent = draftResult.draft_content || draftResult.response || "No draft content received";
     var processingInfo = draftResult.processing_info || {};
     
     try {
@@ -221,7 +224,7 @@ function callPipelineAPI(requestData) {
     throw new Error("Flask server URL not configured. Please set FLASK_SERVER_URL in Script Properties.");
   }
   
-  var apiEndpoint = flaskUrl.replace(/\/$/, '') + '/draft-with-attachments';
+  var apiEndpoint = flaskUrl.replace(/\/$/, '') + '/api/draft-with-attachments';
   
   var options = {
     method: "post",
@@ -788,7 +791,9 @@ function chatWithThread(e) {
       throw new Error("Flask server URL not configured.");
     }
     
-    var apiEndpoint = flaskUrl.replace(/\/$/, '') + '/chat-with-thread';
+    // Normalize base URL: remove trailing slash and /api suffix to avoid double /api
+    var baseUrl = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
+    var apiEndpoint = baseUrl + '/api/chat-with-thread';
     
     var payload = {
       user_id: userId,
@@ -1051,13 +1056,24 @@ function testFlaskConnection() {
  * Sends all messages in one API call
  */
 function logEmailMessages(threadId, messages) {
-  var endpoint = 'https://lsdiedb39c.pagekite.me/log-email';
-
+  var flaskUrl = PropertiesService.getScriptProperties()
+    .getProperty("FLASK_SERVER_URL");
+  
+  if (!flaskUrl) {
+    throw new Error("FLASK_SERVER_URL not configured in Script Properties.");
+  }
+  
+  // Normalize base URL: remove trailing slash and /api suffix to avoid double /api
+  var baseUrl = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
+  var endpoint = baseUrl + '/api/log-email';
+  
+  var userId = Session.getEffectiveUser().getEmail();
+  
   // Convert all GmailMessages to array format
   var messageArray = messages.map(function (msg) {
     return {
       message_id: msg.getId(),
-      from: msg.getFrom(),
+      from_address: msg.getFrom(),
       to: msg.getTo().split(',').map(function (email) {
         return email.trim();
       }),
@@ -1069,6 +1085,7 @@ function logEmailMessages(threadId, messages) {
 
   // Build payload in required format
   var payload = {
+    user_id: userId,
     thread_id: threadId,
     messages: messageArray
   };
@@ -1099,36 +1116,60 @@ function logEmailMessages(threadId, messages) {
 
 /**
  * NEW: Store attachments of a given GmailMessage to your Flask server /store-attachments
- * Only sends files with allowed extensions: .pdf, .csv, .pptx, .ppt
+ * Sends only allowed file types: PDF, CSV, PPTX, PPT
  */
 function storeMessageAttachments(threadId, message) {
   var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
   if (!flaskUrl) {
     throw new Error("FLASK_SERVER_URL not configured.");
   }
-  var endpoint = flaskUrl.replace(/\/$/, '') + '/store-attachments';
+  // Normalize base URL: remove trailing slash and /api suffix to avoid double /api
+  var baseUrl = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
+  var endpoint = baseUrl + '/api/store-attachments';
   
-  // Define allowed file extensions
-  var allowedExtensions = ['.pdf', '.csv', '.pptx', '.ppt'];
+  // Allowed file extensions
+  var ALLOWED_EXTENSIONS = ['.pdf', '.csv', '.pptx', '.ppt'];
   
   // message may be a GmailMessage; extract id and attachments
   var messageId = (message.getId && message.getId()) || "unknown";
   var blobs = (message.getAttachments && message.getAttachments()) || [];
+  
+  Logger.log("📎 storeMessageAttachments called for message: " + messageId);
+  Logger.log("   Total blobs/attachments found: " + blobs.length);
+  
   if (!blobs || blobs.length === 0) {
+    Logger.log("   No attachments to process");
     return null;
   }
   
-  // Filter attachments by allowed extensions
+  // Filter out inline attachments AND filter by allowed extensions
   var filteredBlobs = blobs.filter(function(b) {
+    var isInline = b.isInline ? b.isInline() : false;
     var filename = b.getName ? b.getName() : "";
-    var lowerFilename = filename.toLowerCase();
-    return allowedExtensions.some(function(ext) {
-      return lowerFilename.endsWith(ext);
+    var filenameLower = filename.toLowerCase();
+    
+    // Check if file has an allowed extension
+    var hasAllowedExtension = ALLOWED_EXTENSIONS.some(function(ext) {
+      return filenameLower.endsWith(ext);
     });
+    
+    if (isInline) {
+      Logger.log("   ⊘ " + filename + " - inline, skipping");
+      return false;
+    }
+    
+    if (!hasAllowedExtension) {
+      Logger.log("   ⊘ " + filename + " - not an allowed file type, skipping");
+      return false;
+    }
+    
+    Logger.log("   ✓ " + filename + " - will upload");
+    return true;
   });
   
   // If no valid attachments after filtering, return null
   if (filteredBlobs.length === 0) {
+    Logger.log("   No valid attachments to upload (after filtering inline and file types)");
     return null;
   }
   
@@ -1140,7 +1181,10 @@ function storeMessageAttachments(threadId, message) {
     };
   });
   
+  var userId = Session.getEffectiveUser().getEmail();
+  
   var payload = {
+    user_id: userId,
     thread_id: threadId || "unknown",
     message_id: messageId,
     attachments: attachments
@@ -1153,10 +1197,18 @@ function storeMessageAttachments(threadId, message) {
     muteHttpExceptions: true
   };
   
+  Logger.log("📤 Uploading " + attachments.length + " attachments to: " + endpoint);
+  
   try {
     var resp = UrlFetchApp.fetch(endpoint, options);
+    var responseCode = resp.getResponseCode();
+    Logger.log("✅ Upload response code: " + responseCode);
+    if (responseCode !== 200) {
+      Logger.log("❌ Upload error: " + resp.getContentText());
+    }
     return resp.getContentText();
   } catch (err) {
+    Logger.log("❌ Attachment upload error: " + err.message);
     throw new Error("Failed to store attachments: " + err.message);
   }
 }
@@ -1329,6 +1381,20 @@ function showSettingsCard(e) {
         .setMultiline(true)
     );
   card.addSection(userInfoSection);
+  var advancedSection = CardService.newCardSection()
+    .setHeader("🔧 Advanced")
+    .addWidget(
+      CardService.newTextButton()
+        .setText("🔒 Background Monitor Filters")
+        .setOnClickAction(
+          CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+        )
+    )
+    .addWidget(
+      CardService.newTextParagraph()
+        .setText("<i>Configure which emails the background monitor should exclude</i>")
+    );
+  card.addSection(advancedSection);
   
   // Save Button Section
   var actionSection = CardService.newCardSection()
@@ -1456,13 +1522,19 @@ function saveSettings(e) {
  * Backend is the authoritative source - local is a cache
  */
 function syncSettingsToBackend(settings) {
-  var backendUrl = PropertiesService.getScriptProperties().getProperty("BACKEND_URL");
-  if (!backendUrl) {
-    throw new Error("BACKEND_URL not configured in Script Properties");
+  var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
+  if (!flaskUrl) {
+    throw new Error("FLASK_SERVER_URL not configured in Script Properties");
   }
   
   var userId = Session.getEffectiveUser().getEmail();
-  var endpoint = backendUrl.replace(/\/$/, '') + '/api/settings';
+  var baseUrl = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
+  var endpoint = baseUrl + '/api/settings';
+  
+  // ADD DEBUG LOGGING
+  Logger.log("🔍 Syncing settings to: " + endpoint);
+  Logger.log("🔍 User ID: " + userId);
+  Logger.log("🔍 Settings: " + JSON.stringify(settings));
   
   var payload = {
     user_id: userId,
@@ -1478,6 +1550,10 @@ function syncSettingsToBackend(settings) {
   
   var resp = UrlFetchApp.fetch(endpoint, options);
   var code = resp.getResponseCode();
+  
+  // ADD DEBUG LOGGING
+  Logger.log("🔍 Response code: " + code);
+  Logger.log("🔍 Response body: " + resp.getContentText());
   
   if (code >= 400) {
     throw new Error("Backend returned error: " + code + " - " + resp.getContentText());
@@ -1580,4 +1656,574 @@ function getEffectiveSettings() {
   }
   
   return settings;
+}
+
+
+
+/**
+ * Get current domain filters from Script Properties
+ * NOTE: These filters are ONLY applied in the background monitor script
+ */
+function getDomainFilters() {
+  var scriptProps = PropertiesService.getScriptProperties();
+  var filtersJson = scriptProps.getProperty("domain_filters");
+  
+  if (!filtersJson) {
+    return [];
+  }
+  
+  try {
+    return JSON.parse(filtersJson);
+  } catch (e) {
+    Logger.log("Failed to parse domain filters: " + e.message);
+    return [];
+  }
+}
+
+/**
+ * Save domain filters to Script Properties
+ */
+function saveDomainFilters(filters) {
+  var scriptProps = PropertiesService.getScriptProperties();
+  scriptProps.setProperty("domain_filters", JSON.stringify(filters));
+}
+/**
+ * Get current domain and email filters from Script Properties
+ * NOTE: These filters are ONLY applied in the background monitor script
+ * Supports both full email addresses and domain names
+ */
+function getDomainFilters() {
+  var scriptProps = PropertiesService.getScriptProperties();
+  var filtersJson = scriptProps.getProperty("domain_filters");
+  
+  if (!filtersJson) {
+    return [];
+  }
+  
+  try {
+    return JSON.parse(filtersJson);
+  } catch (e) {
+    Logger.log("Failed to parse domain filters: " + e.message);
+    return [];
+  }
+}
+
+/**
+ * Save domain and email filters to Script Properties
+ */
+function saveDomainFilters(filters) {
+  var scriptProps = PropertiesService.getScriptProperties();
+  scriptProps.setProperty("domain_filters", JSON.stringify(filters));
+}
+
+/**
+ * Check if an email address should be filtered
+ * Returns true if the email should be EXCLUDED from background monitoring
+ * @param {string} emailAddress - Full email address to check (e.g., "user@example.com")
+ * @returns {boolean} - true if should be filtered out
+ */
+function shouldFilterEmail(emailAddress) {
+  if (!emailAddress) return false;
+  
+  var filters = getDomainFilters();
+  if (!filters || filters.length === 0) return false;
+  
+  emailAddress = emailAddress.toLowerCase().trim();
+  
+  // Extract email from "Name <email@domain.com>" format
+  var emailMatch = emailAddress.match(/<(.+?)>/);
+  if (emailMatch) {
+    emailAddress = emailMatch[1].toLowerCase().trim();
+  }
+  
+  // Check each filter
+  for (var i = 0; i < filters.length; i++) {
+    var filter = filters[i].toLowerCase().trim();
+    
+    if (!filter) continue;
+    
+    // Check if filter is a full email address (contains @)
+    if (filter.indexOf('@') !== -1) {
+      // Exact email match
+      if (emailAddress === filter) {
+        Logger.log("Email filtered (exact match): " + emailAddress + " matches " + filter);
+        return true;
+      }
+    } else {
+      // Domain-only filter - check if email ends with this domain
+      var emailDomain = emailAddress.split('@')[1];
+      if (emailDomain && emailDomain === filter) {
+        Logger.log("Email filtered (domain match): " + emailAddress + " matches domain " + filter);
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Check if any participant in a message should be filtered
+ * Checks From, To, CC, BCC fields
+ * @param {GmailMessage} message - Gmail message object
+ * @returns {boolean} - true if message should be filtered out
+ */
+function shouldFilterMessage(message) {
+  // Check From address
+  if (shouldFilterEmail(message.getFrom())) {
+    return true;
+  }
+  
+  // Check To addresses
+  var toAddresses = message.getTo().split(',');
+  for (var i = 0; i < toAddresses.length; i++) {
+    if (shouldFilterEmail(toAddresses[i])) {
+      return true;
+    }
+  }
+  
+  // Check CC addresses
+  var ccAddresses = message.getCc().split(',');
+  for (var i = 0; i < ccAddresses.length; i++) {
+    if (shouldFilterEmail(ccAddresses[i])) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+function showAdvancedSettingsCard(e) {
+  var filters = JSON.parse(
+    PropertiesService.getScriptProperties()
+      .getProperty("domain_filters") || "[]"
+  );
+
+  var filtersText = filters.join('\n');
+
+  var card = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("🔧 Advanced Settings")
+        .setSubtitle("Background Monitor Configuration")
+    )
+    .addSection(
+      CardService.newCardSection()
+        .setHeader("📧 Email & Domain Filters (Background Monitor Only)")
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              "<b>⚠️ Important: These filters apply ONLY to the background email monitor</b>\n\n" +
+
+              "📌 <b>Editing rule:</b> Saving will REPLACE the entire list.\n" +
+              "Remove a line = deleted filter.\n\n" +
+
+              "Emails matching these filters will NOT be sent to the server.\n\n" +
+              "✅ Manual actions always send data.\n\n" +
+
+              "<b>Supported formats:</b>\n" +
+              "• user@example.com\n" +
+              "• example.com"
+            )
+        )
+        .addWidget(
+          CardService.newTextInput()
+            .setFieldName("domain_filters")
+            .setTitle("Emails/Domains to Exclude")
+            .setValue(filtersText)
+            .setMultiline(true)
+            .setHint("One per line")
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .setHeader("ℹ️ Current Filters")
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              filters.length > 0
+                ? "<b>Active filters: " + filters.length + "</b>\n\n" +
+                  filters.map(function(d) {
+                    return "• " + d;
+                  }).join('\n')
+                : "No filters active"
+            )
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextButton()
+            .setText("💾 Save Filters")
+            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName("saveDomainFiltersFromUI")
+            )
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText("🧪 Test Filters")
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName("testDomainFilters")
+            )
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText("🔙 Back")
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName("showSettingsCard")
+            )
+        )
+    );
+
+  return card.build();
+}
+
+
+function saveDomainFiltersFromUI(e) {
+  var input = e.formInput.domain_filters || "";
+
+  // Split by line
+  var lines = input.split('\n');
+
+  var filters = [];
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim().toLowerCase();
+
+    if (!line) continue; // skip empty lines
+
+    // Normalize
+    if (line.indexOf('@') === 0) {
+      line = line.substring(1);
+    }
+
+    filters.push(line);
+  }
+
+  // Remove duplicates
+  var uniqueFilters = [];
+  for (var i = 0; i < filters.length; i++) {
+    if (uniqueFilters.indexOf(filters[i]) === -1) {
+      uniqueFilters.push(filters[i]);
+    }
+  }
+
+  // OVERWRITE (Option A behavior)
+  saveDomainFilters(uniqueFilters);
+
+  return CardService.newCardBuilder()
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              "✅ <b>Filters saved!</b>\n\n" +
+              "Total active filters: " + uniqueFilters.length
+            )
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText("🔙 Back")
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName("showAdvancedSettingsCard")
+            )
+        )
+    )
+    .build();
+}
+
+/**
+ * CREATE ALL LABELS WITH COLORS
+ * This runs when the Gmail add-on loads to ensure all labels exist with proper colors
+ * The background monitor will then just apply these existing labels
+ */
+function createAllLabelsWithColors() {
+  console.log("🎨 Creating all email labels with colors...");
+  
+  // Define all possible labels from Python backend with their Gmail color constants
+  // Gmail supports: BLUE, GREEN, PURPLE, RED, YELLOW, ORANGE, CYAN, GRAY, PINK
+  var labelConfigs = {
+    "response": "BLUE",
+    "FYI": "CYAN", 
+    "Notification": "GRAY",
+    "meeting": "PURPLE",
+    "Escalation": "RED",
+    "hotels": "ORANGE",
+    "airlines": "ORANGE", 
+    "travel": "ORANGE",
+    "restaurant": "YELLOW",  // Changed from cocoa since Gmail doesn't have cocoa
+    "booking": "GREEN",
+    "bank": "BLUE",
+    "Insurance": "YELLOW",
+    "Other": "GRAY",
+    "Awaiting Reply": "PINK"  // Changed to PINK for distinction
+  };
+  
+  // Get existing labels
+  var existingLabels = GmailApp.getUserLabels();
+  var existingLabelNames = {};
+  
+  for (var i = 0; i < existingLabels.length; i++) {
+    existingLabelNames[existingLabels[i].getName().toLowerCase()] = existingLabels[i];
+  }
+  
+  // Create or update each label
+  for (var labelName in labelConfigs) {
+    var colorName = labelConfigs[labelName];
+    var formattedName = labelName.charAt(0).toUpperCase() + labelName.slice(1).toLowerCase();
+    var lowerFormattedName = formattedName.toLowerCase();
+    
+    try {
+      var label;
+      
+      if (existingLabelNames[lowerFormattedName]) {
+        // Label exists, just apply color
+        label = existingLabelNames[lowerFormattedName];
+        console.log("✓ Found existing label: " + formattedName);
+      } else {
+        // Create new label
+        label = GmailApp.createLabel(formattedName);
+        console.log("+ Created new label: " + formattedName);
+      }
+      
+      // Apply color using Gmail color constants
+      if (label && colorName) {
+        try {
+          console.log("→ Attempting to set color '" + colorName + "' for " + formattedName);
+          
+          // Method 1: Use Gmail's UserLabelColor constants
+          if (typeof GmailApp.UserLabelColor !== 'undefined' && GmailApp.UserLabelColor[colorName]) {
+            label.setColor(GmailApp.UserLabelColor[colorName]);
+            console.log("🎨 SUCCESS: Applied Gmail constant '" + colorName + "' to " + formattedName);
+          } 
+          // Method 2: Try direct string
+          else {
+            label.setColor(colorName);
+            console.log("🎨 SUCCESS: Applied color string '" + colorName + "' to " + formattedName);
+          }
+        } catch (colorError) {
+          console.log("⚠️ Primary color methods failed for " + formattedName + ": " + colorError.message);
+          console.log("   Trying hex color fallback...");
+          
+          // Method 3: Try hex color fallback
+          try {
+            var hexColor = getHexColorForLabel(labelName);
+            if (hexColor) {
+              label.setColor(hexColor);
+              console.log("🎨 SUCCESS: Applied hex color '" + hexColor + "' to " + formattedName);
+            } else {
+              console.log("⚠️ No hex color defined for: " + labelName);
+            }
+          } catch (hexError) {
+            console.log("❌ All color methods failed for " + formattedName + ": " + hexError.message);
+          }
+        }
+      }
+      
+    } catch (error) {
+      console.log("❌ Error creating label '" + labelName + "': " + error.message);
+    }
+  }
+  
+  console.log("✅ Label creation complete!");
+}
+
+/**
+ * Get hex color code for a label (fallback method)
+ */
+function getHexColorForLabel(labelName) {
+  var hexColors = {
+    "response": "#1a73e8",       // Blue
+    "FYI": "#00bcd4",            // Cyan
+    "Notification": "#9e9e9e",   // Gray
+    "meeting": "#9c27b0",        // Purple
+    "Escalation": "#f44336",     // Red
+    "hotels": "#ff9800",         // Orange
+    "airlines": "#ff9800",       // Orange
+    "travel": "#ff9800",         // Orange
+    "restaurant": "#ffeb3b",     // Yellow
+    "booking": "#4caf50",        // Green
+    "bank": "#2196f3",           // Blue
+    "Insurance": "#ffc107",      // Amber/Yellow
+    "Other": "#757575",          // Dark Gray
+    "Awaiting Reply": "#e91e63"  // Pink
+  };
+  
+  return hexColors[labelName] || null;
+}
+
+/**
+ * TEST FUNCTION: Manually create all labels with colors
+ * Run this to test the label creation system
+ */
+function testCreateLabelsWithColors() {
+  Logger.log("=== TESTING LABEL CREATION WITH COLORS ===");
+  createAllLabelsWithColors();
+  Logger.log("=== TEST COMPLETE ===");
+  Logger.log("Check your Gmail to see the labels with colors!");
+}
+
+/**
+ * TEST FUNCTION: Try different color methods
+ * Run this to debug what color method works
+ */
+function testLabelColorMethods() {
+  Logger.log("=== TESTING DIFFERENT COLOR METHODS ===");
+  
+  var testLabelName = "TestColor_" + Date.now();
+  
+  try {
+    // Create a test label
+    var testLabel = GmailApp.createLabel(testLabelName);
+    Logger.log("✓ Created test label: " + testLabelName);
+    
+    // Method 1: Try Gmail color constants
+    try {
+      Logger.log("Testing Method 1: Gmail constants...");
+      testLabel.setColor(GmailApp.UserLabelColor.RED);
+      Logger.log("✓ Method 1 (Constants) SUCCESS - RED applied");
+    } catch (e1) {
+      Logger.log("✗ Method 1 (Constants) FAILED: " + e1.message);
+    }
+    
+    // Method 2: Try string constants
+    try {
+      Logger.log("Testing Method 2: String constants...");
+      testLabel.setColor("BLUE");
+      Logger.log("✓ Method 2 (Strings) SUCCESS - BLUE applied");
+    } catch (e2) {
+      Logger.log("✗ Method 2 (Strings) FAILED: " + e2.message);
+    }
+    
+    // Method 3: Try hex colors
+    try {
+      Logger.log("Testing Method 3: Hex colors...");
+      testLabel.setColor("#4caf50");
+      Logger.log("✓ Method 3 (Hex) SUCCESS - Green applied");
+    } catch (e3) {
+      Logger.log("✗ Method 3 (Hex) FAILED: " + e3.message);
+    }
+    
+    // Clean up - delete test label
+    try {
+      GmailApp.deleteLabel(testLabel);
+      Logger.log("✓ Cleaned up test label");
+    } catch (cleanupError) {
+      Logger.log("⚠️ Could not delete test label: " + cleanupError.message);
+    }
+    
+  } catch (error) {
+    Logger.log("❌ Test setup failed: " + error.message);
+  }
+  
+  Logger.log("=== COLOR TESTING COMPLETE ===");
+}
+
+
+/**
+ * Test domain filters with current inbox
+ * Shows which emails would be filtered
+ */
+function testDomainFilters(e) {
+  try {
+    var filters = getDomainFilters();
+    
+    if (!filters || filters.length === 0) {
+      return CardService.newCardBuilder()
+        .addSection(
+          CardService.newCardSection()
+            .addWidget(
+              CardService.newTextParagraph()
+                .setText("⚠️ No filters configured. Please add filters first.")
+            )
+            .addWidget(
+              CardService.newTextButton()
+                .setText("🔙 Back")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+                )
+            )
+        )
+        .build();
+    }
+    
+    // Get recent threads to test
+    var threads = GmailApp.getInboxThreads(0, 20);
+    var filteredCount = 0;
+    var allowedCount = 0;
+    var examples = [];
+    
+    for (var i = 0; i < threads.length; i++) {
+      var messages = threads[i].getMessages();
+      var threadFiltered = false;
+      
+      for (var j = 0; j < messages.length; j++) {
+        if (shouldFilterMessage(messages[j])) {
+          threadFiltered = true;
+          if (examples.length < 5) {
+            examples.push("🚫 " + messages[j].getSubject().substring(0, 50) + 
+                         " (From: " + messages[j].getFrom() + ")");
+          }
+          break;
+        }
+      }
+      
+      if (threadFiltered) {
+        filteredCount++;
+      } else {
+        allowedCount++;
+      }
+    }
+    
+    var resultText = "<b>🧪 Filter Test Results</b>\n\n" +
+      "Tested " + threads.length + " recent inbox threads:\n\n" +
+      "✅ <b>Allowed:</b> " + allowedCount + " threads\n" +
+      "🚫 <b>Filtered:</b> " + filteredCount + " threads\n\n";
+    
+    if (examples.length > 0) {
+      resultText += "<b>Example filtered emails:</b>\n" + examples.join('\n');
+    } else {
+      resultText += "No emails matched your filters.";
+    }
+    
+    return CardService.newCardBuilder()
+      .addSection(
+        CardService.newCardSection()
+          .addWidget(
+            CardService.newTextParagraph()
+              .setText(resultText)
+          )
+          .addWidget(
+            CardService.newTextButton()
+              .setText("🔙 Back")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+              )
+          )
+      )
+      .build();
+      
+  } catch (error) {
+    return CardService.newCardBuilder()
+      .addSection(
+        CardService.newCardSection()
+          .addWidget(
+            CardService.newTextParagraph()
+              .setText("❌ Error testing filters:\n\n" + error.message)
+          )
+          .addWidget(
+            CardService.newTextButton()
+              .setText("🔙 Back")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+              )
+          )
+      )
+      .build();
+  }
 }

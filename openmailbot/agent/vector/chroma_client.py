@@ -29,19 +29,41 @@ class ChromaDBClient(BaseVectorStore):
             inbuilt_mode: If True, uses INBUILT_CHROMA_URL env var
         """
         settings = settings or {}
-        
+
+        # Check if a persistent local path is requested (per-user persistent storage)
+        # Default to agent/data/vector_db when not provided by settings or env
+        persistent_path = os.path.join(os.path.dirname(__file__), "..", "data", "vector_db")
+
+        if persistent_path:
+            # Ensure directory exists
+            os.makedirs(persistent_path, exist_ok=True)
+            try:
+                # Initialize local persistent ChromaDB (stores chroma.sqlite3 files)
+                self.client = chromadb.PersistentClient(
+                    path=persistent_path,
+                    settings=ChromaSettings(anonymized_telemetry=False)
+                )
+                logger.info(f"Initialized local persistent ChromaDB at {persistent_path}")
+            except Exception as e:
+                raise ConnectionError(
+                    f"Failed to initialize persistent ChromaDB at {persistent_path}: {e}"
+                )
+            self.collections = {}
+            self._persistent = True
+            return
+
+        # Otherwise fall back to HTTP client (remote Chroma server)
         if inbuilt_mode:
-            # Inbuilt mode uses central tenant Chroma server
             chroma_url = os.environ.get("INBUILT_CHROMA_URL", "http://localhost:8000")
         else:
             chroma_url = settings.get("chromaUrl") or os.environ.get("CHROMA_URL")
-        
+
         if not chroma_url:
             raise ValueError(
                 "ChromaDB URL not configured. Set 'chromaUrl' in settings or "
                 "CHROMA_URL environment variable. ChromaDB runs in HTTP-only mode."
             )
-        
+
         # Parse host and port from URL
         try:
             from urllib.parse import urlparse
@@ -52,7 +74,7 @@ class ChromaDBClient(BaseVectorStore):
             logger.warning(f"Failed to parse Chroma URL '{chroma_url}': {e}. Using defaults.")
             host = "localhost"
             port = 8000
-        
+
         # Initialize HTTP client - no local storage
         try:
             self.client = chromadb.HttpClient(
@@ -68,8 +90,9 @@ class ChromaDBClient(BaseVectorStore):
                 f"Failed to connect to ChromaDB at {host}:{port}. "
                 f"Ensure the Chroma server is running. Error: {e}"
             )
-        
+
         self.collections = {}
+        self._persistent = False
     
     def _get_collection(self, namespace: str):
         """Get collection for namespace (must already exist on server)"""

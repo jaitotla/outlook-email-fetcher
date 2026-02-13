@@ -33,12 +33,12 @@ class WeaviateClient(BaseVectorStore):
         """
         settings = settings or {}
         
-        weaviate_url = settings.get("weaviateUrl") or os.environ.get("WEAVIATE_URL")
-        weaviate_api_key = settings.get("weaviateApiKey") or os.environ.get("WEAVIATE_API_KEY")
+        weaviate_url = settings.get("vector_url") or os.environ.get("WEAVIATE_URL")
+        weaviate_api_key = settings.get("vector_api_key") or os.environ.get("WEAVIATE_API_KEY")
         
         if not weaviate_url:
             raise ValueError(
-                "Weaviate URL not configured. Set 'weaviateUrl' in settings or "
+                "Weaviate URL not configured. Set 'vector_url' in settings or "
                 "WEAVIATE_URL environment variable."
             )
         

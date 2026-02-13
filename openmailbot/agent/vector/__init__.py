@@ -5,6 +5,8 @@ from typing import Dict, Any, Optional
 from .base import BaseVectorStore
 from .pinecone_client import PineconeClient
 from .chroma_client import ChromaDBClient
+from .noop_client import NoOpVectorClient
+import logging
 
 
 def get_vector_client(provider: str, settings: Optional[Dict[str, Any]] = None) -> BaseVectorStore:
@@ -21,7 +23,11 @@ def get_vector_client(provider: str, settings: Optional[Dict[str, Any]] = None) 
     provider = (provider or "").lower()
     
     if provider == "pinecone":
-        return PineconeClient(settings=settings)
+        try:
+            return PineconeClient()
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Pinecone init failed, falling back to NoOpVectorClient: {e}")
+            return NoOpVectorClient()
     elif provider == "chroma":
         return ChromaDBClient(settings=settings)
     elif provider == "weaviate":

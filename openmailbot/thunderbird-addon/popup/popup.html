@@ -2,82 +2,105 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenMailBot</title>
+  <title>Email Thread Assistant</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="container">
-    <!-- Header -->
     <div class="header">
-      <h1>🤖 OpenMailBot</h1>
-      <p class="subtitle">AI Email Assistant</p>
+      <h1>✨ Email Thread Assistant</h1>
+      <p class="subtitle">Analyze and interact with your email threads using AI</p>
     </div>
 
-    <!-- Loading State -->
-    <div id="loading" class="loading hidden">
+    <div id="main-menu" class="section">
+      <button id="summarize-btn" class="btn btn-primary">
+        📝 Summarize Thread
+      </button>
+      <button id="chat-btn" class="btn btn-default">
+        💬 Chat with Thread
+      </button>
+      <button id="draft-btn" class="btn btn-success">
+        📎 Draft with Attachments
+      </button>
+      <button id="settings-btn" class="btn btn-default">
+        ⚙️ Settings
+      </button>
+    </div>
+
+    <div id="loading" class="section hidden">
       <div class="spinner"></div>
-      <p>Processing...</p>
+      <p id="loading-text">Processing...</p>
     </div>
 
-    <!-- Error State -->
-    <div id="error" class="error hidden">
-      <p id="errorMessage"></p>
-      <button id="retryBtn" class="btn btn-secondary">Retry</button>
+    <div id="summary-view" class="section hidden">
+      <h2>📊 Thread Summary</h2>
+      <div id="summary-content" class="content-box"></div>
+      <div class="button-group">
+        <button id="draft-response-btn" class="btn btn-primary">
+          ✉️ Draft Response
+        </button>
+        <button id="back-from-summary-btn" class="btn btn-default">
+          🔙 Back
+        </button>
+      </div>
     </div>
 
-    <!-- Main Content -->
-    <div id="content" class="content">
-      <!-- Quick Actions -->
-      <div class="section">
-        <h2>Quick Actions</h2>
-        <div class="actions">
-          <button id="summarizeBtn" class="btn btn-primary">
-            📝 Summarize Email
+    <div id="draft-view" class="section hidden">
+      <h2>✅ Draft Created</h2>
+      <div id="draft-message" class="info-box"></div>
+      <div id="draft-processing" class="info-box"></div>
+      <details>
+        <summary>📧 Draft Preview</summary>
+        <div id="draft-preview" class="content-box"></div>
+      </details>
+      <div class="button-group">
+        <button id="back-from-draft-btn" class="btn btn-default">
+          🔙 Back
+        </button>
+      </div>
+    </div>
+
+    <div id="chat-view" class="section hidden">
+      <h2>💬 Chat with Thread (RAG)</h2>
+      <p class="subtitle">Ask questions about emails and attachments</p>
+      
+      <div id="chat-processing" class="info-box hidden"></div>
+      
+      <div id="chat-history" class="chat-container"></div>
+      
+      <div id="example-questions" class="info-box">
+        <strong>💡 Example Questions:</strong>
+        <ul>
+          <li>What are the key points in the attachments?</li>
+          <li>Summarize the decisions made</li>
+          <li>What data is in the Excel file?</li>
+          <li>What does the PDF say about...?</li>
+          <li>Who approved what and when?</li>
+        </ul>
+      </div>
+      
+      <div class="chat-input-section">
+        <textarea id="chat-input" placeholder="Ask about emails or attachments..." rows="3"></textarea>
+        <div class="button-group">
+          <button id="send-chat-btn" class="btn btn-primary">
+            Send 📤
           </button>
-          <button id="generateReplyBtn" class="btn btn-primary">
-            ✍️ Generate Reply
+          <button id="clear-chat-btn" class="btn btn-default">
+            Clear Chat
           </button>
-          <button id="findRelatedBtn" class="btn btn-secondary">
-            🔍 Find Related
-          </button>
-          <button id="sentimentBtn" class="btn btn-secondary">
-            😊 Analyze Sentiment
+          <button id="back-from-chat-btn" class="btn btn-default">
+            🔙 Back
           </button>
         </div>
       </div>
+    </div>
 
-      <!-- Results Area -->
-      <div id="results" class="section hidden">
-        <h2 id="resultsTitle">Results</h2>
-        <div id="resultsContent" class="results-content"></div>
-      </div>
-
-      <!-- Reply Context -->
-      <div id="replyContext" class="section hidden">
-        <h2>Generate Reply</h2>
-        <textarea 
-          id="contextInput" 
-          placeholder="Add context for the reply (optional)..."
-          rows="3"
-        ></textarea>
-        <div class="tone-selector">
-          <label>Tone:</label>
-          <select id="toneSelect">
-            <option value="professional">Professional</option>
-            <option value="semi-professional">Semi-Professional</option>
-            <option value="casual">Casual</option>
-            <option value="personal">Personal</option>
-          </select>
-        </div>
-        <button id="generateBtn" class="btn btn-primary">Generate</button>
-        <button id="cancelBtn" class="btn btn-secondary">Cancel</button>
-      </div>
-
-      <!-- Settings Link -->
-      <div class="footer">
-        <button id="settingsBtn" class="btn-link">⚙️ Settings</button>
-      </div>
+    <div id="error-view" class="section hidden">
+      <h2>❌ Error</h2>
+      <div id="error-message" class="error-box"></div>
+      <button id="back-from-error-btn" class="btn btn-default">
+        🔙 Back
+      </button>
     </div>
   </div>
 

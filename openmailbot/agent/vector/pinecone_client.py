@@ -2,35 +2,101 @@
 Pinecone Vector Database Client
 """
 from typing import List, Dict, Any, Optional
-import pinecone
 from uuid import uuid4
+import logging
+import json
+import os
 
-from config import settings
+try:
+    # Newer Pinecone versions expose a Pinecone class
+    from pinecone import Pinecone, ServerlessSpec
+    _HAS_PINECONE_CLASS = True
+except Exception:
+    Pinecone = None
+    ServerlessSpec = None
+    _HAS_PINECONE_CLASS = False
+
+# Also attempt to import the pinecone module (may be present without top-level init)
+try:
+    import pinecone
+except Exception:
+    pinecone = None
+
 from .base import BaseVectorStore
+
+
+# Load settings from config_settings.json
+def _load_settings():
+    """Load settings from config_settings.json"""
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config_settings.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Failed to load config_settings.json: {e}")
+    return {}
+
+
+class _SettingsProxy:
+    """Proxy to access settings from JSON config"""
+    def __init__(self):
+        self._settings = _load_settings()
+    
+    def __getattr__(self, name):
+        return self._settings.get(name)
+
+
+settings = _SettingsProxy()
 
 
 class PineconeClient(BaseVectorStore):
     def __init__(self):
         if not settings.PINECONE_API_KEY:
             raise ValueError("Pinecone API key not configured")
-        
-        # Initialize Pinecone
-        pinecone.init(
-            api_key=settings.PINECONE_API_KEY,
-            environment=settings.PINECONE_ENVIRONMENT
-        )
-        
+
         self.index_name = settings.PINECONE_INDEX_NAME
-        
-        # Create index if it doesn't exist
-        if self.index_name not in pinecone.list_indexes():
-            pinecone.create_index(
-                name=self.index_name,
-                dimension=settings.EMBEDDING_DIMENSION,
-                metric="cosine"
-            )
-        
-        self.index = pinecone.Index(self.index_name)
+
+        # Use new Pinecone class if available
+        if _HAS_PINECONE_CLASS:
+            try:
+                pc = Pinecone(api_key=settings.PINECONE_API_KEY)
+
+                # Get list of existing index names
+                try:
+                    index_list = pc.list_indexes()
+                    existing_names = index_list.names() if hasattr(index_list, 'names') else [idx.name for idx in index_list]
+                except Exception:
+                    existing_names = []
+
+                if self.index_name not in existing_names:
+                    # Create index with ServerlessSpec (required in new API)
+                    spec = ServerlessSpec(
+                        cloud=getattr(settings, 'PINECONE_CLOUD', 'aws'),
+                        region=getattr(settings, 'PINECONE_REGION', 'us-west-2')
+                    )
+                    pc.create_index(
+                        name=self.index_name,
+                        dimension=settings.EMBEDDING_DIMENSION,
+                        metric="cosine",
+                        spec=spec
+                    )
+
+                # Keep reference to client and index
+                self.client = pc
+                self.index = self.client.Index(self.index_name)
+                return
+            except Exception as e:
+                logging.getLogger(__name__).error(
+                    f"Failed to initialize Pinecone via new Pinecone class: {e}"
+                )
+                raise
+
+        # New Pinecone class API is required; legacy pinecone.init() is no longer supported
+        raise RuntimeError(
+            "Pinecone initialization failed. The installed pinecone package only supports the new Pinecone class API. "
+            "Ensure PINECONE_API_KEY, PINECONE_INDEX_NAME, and PINECONE_CLOUD/PINECONE_REGION are configured."
+        )
     
     async def upsert(
         self,

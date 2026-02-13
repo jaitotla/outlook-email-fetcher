@@ -48,7 +48,8 @@ motor==3.3.2
 # Utilities
 tiktoken==0.5.1
 
-# Langchain and related
+# Encryption and Security
+cryptography>=41.0.0# Langchain and related
 langchain==0.0.340
 langchain-community==0.0.1
 

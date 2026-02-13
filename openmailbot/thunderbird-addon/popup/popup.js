@@ -1,314 +1,397 @@
 /**
- * OpenMailBot - Thunderbird Popup Script
+ * Popup script for Email Thread Assistant
+ * Handles UI interactions and communication with background script
  */
 
-// DOM Elements
-const elements = {
-  loading: document.getElementById('loading'),
-  error: document.getElementById('error'),
-  errorMessage: document.getElementById('errorMessage'),
-  retryBtn: document.getElementById('retryBtn'),
-  content: document.getElementById('content'),
-  results: document.getElementById('results'),
-  resultsTitle: document.getElementById('resultsTitle'),
-  resultsContent: document.getElementById('resultsContent'),
-  replyContext: document.getElementById('replyContext'),
-  contextInput: document.getElementById('contextInput'),
-  toneSelect: document.getElementById('toneSelect'),
-  
-  // Buttons
-  summarizeBtn: document.getElementById('summarizeBtn'),
-  generateReplyBtn: document.getElementById('generateReplyBtn'),
-  findRelatedBtn: document.getElementById('findRelatedBtn'),
-  sentimentBtn: document.getElementById('sentimentBtn'),
-  generateBtn: document.getElementById('generateBtn'),
-  cancelBtn: document.getElementById('cancelBtn'),
-  settingsBtn: document.getElementById('settingsBtn')
-};
+let currentMessageId = null;
+let currentThreadId = null;
+let chatHistory = [];
 
-let currentTabId = null;
-let currentAction = null;
-
-// Initialize
-async function init() {
+// Initialize popup
+document.addEventListener("DOMContentLoaded", async () => {
   try {
-    // Get current tab
+    // Get current message
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-    currentTabId = tabs[0].id;
+    const messageDisplay = await browser.messageDisplay.getDisplayedMessage(tabs[0].id);
     
-    // Load settings and set tone
-    const settings = await browser.runtime.sendMessage({ action: 'getSettings' });
-    if (settings.tone) {
-      elements.toneSelect.value = settings.tone;
-    }
-    
-    // Check if configured
-    if (!settings.isConfigured) {
-      showWarning('Please configure OpenMailBot in settings first.');
-    }
-  } catch (error) {
-    showError('Failed to initialize: ' + error.message);
-  }
-}
-
-// Show/Hide UI States
-function showLoading(message = 'Processing...') {
-  elements.loading.querySelector('p').textContent = message;
-  elements.loading.classList.remove('hidden');
-  elements.content.classList.add('hidden');
-  elements.error.classList.add('hidden');
-}
-
-function showError(message) {
-  elements.errorMessage.textContent = message;
-  elements.error.classList.remove('hidden');
-  elements.loading.classList.add('hidden');
-  elements.content.classList.add('hidden');
-}
-
-function showWarning(message) {
-  showResults('⚠️ Notice', message);
-}
-
-function showContent() {
-  elements.loading.classList.add('hidden');
-  elements.error.classList.add('hidden');
-  elements.content.classList.remove('hidden');
-}
-
-function showResults(title, content) {
-  elements.resultsTitle.textContent = title;
-  elements.resultsContent.innerHTML = content;
-  elements.results.classList.remove('hidden');
-  elements.replyContext.classList.add('hidden');
-  showContent();
-}
-
-function hideResults() {
-  elements.results.classList.add('hidden');
-}
-
-// Summarize Email
-elements.summarizeBtn.addEventListener('click', async () => {
-  showLoading('Generating summary...');
-  currentAction = 'summarize';
-  
-  try {
-    const response = await browser.runtime.sendMessage({
-      action: 'summarize',
-      tabId: currentTabId
-    });
-    
-    if (response.error) {
-      throw new Error(response.error);
-    }
-    
-    showResults('📝 Email Summary', response);
-  } catch (error) {
-    showError(error.message);
-  }
-});
-
-// Generate Reply - Show Context Input
-elements.generateReplyBtn.addEventListener('click', () => {
-  hideResults();
-  elements.replyContext.classList.remove('hidden');
-  elements.contextInput.value = '';
-  elements.contextInput.focus();
-});
-
-// Generate Reply - Execute
-elements.generateBtn.addEventListener('click', async () => {
-  const context = elements.contextInput.value.trim();
-  const tone = elements.toneSelect.value;
-  
-  // Save tone preference
-  await browser.runtime.sendMessage({
-    action: 'saveSettings',
-    settings: { tone }
-  });
-  
-  showLoading('Generating reply...');
-  currentAction = 'generateReply';
-  
-  try {
-    const response = await browser.runtime.sendMessage({
-      action: 'generateReply',
-      tabId: currentTabId,
-      context: context
-    });
-    
-    if (response.error) {
-      throw new Error(response.error);
-    }
-    
-    const html = `
-      <div style="margin-bottom: 12px;">
-        <strong>Generated Reply (${tone}):</strong>
-      </div>
-      <div style="background: white; padding: 12px; border-radius: 6px; border: 1px solid #ddd;">
-        ${response.replace(/\n/g, '<br>')}
-      </div>
-      <div style="margin-top: 16px; display: flex; gap: 8px;">
-        <button id="insertReplyBtn" class="btn-primary" style="flex: 1;">
-          📝 Insert into Reply
-        </button>
-        <button id="insertReplyAllBtn" class="btn-secondary" style="flex: 1;">
-          📝 Insert into Reply All
-        </button>
-      </div>
-      <div style="margin-top: 8px; font-size: 12px; color: #666; text-align: center;">
-        💡 Or copy this text manually
-      </div>
-    `;
-    
-    showResults('✍️ AI-Generated Reply', html);
-    
-    // Add click handlers for insert buttons
-    document.getElementById('insertReplyBtn').addEventListener('click', async () => {
-      showLoading('Opening compose window...');
-      try {
-        await browser.runtime.sendMessage({
-          action: 'insertReply',
-          tabId: currentTabId,
-          context: context,
-          replyType: 'replyToSender'
-        });
-        showResults('✅ Success', 'Reply inserted into compose window! You can now review and send.');
-      } catch (error) {
-        showError('Failed to insert reply: ' + error.message);
-      }
-    });
-    
-    document.getElementById('insertReplyAllBtn').addEventListener('click', async () => {
-      showLoading('Opening compose window...');
-      try {
-        await browser.runtime.sendMessage({
-          action: 'insertReply',
-          tabId: currentTabId,
-          context: context,
-          replyType: 'replyToAll'
-        });
-        showResults('✅ Success', 'Reply inserted into compose window! You can now review and send.');
-      } catch (error) {
-        showError('Failed to insert reply: ' + error.message);
-      }
-    });
-  } catch (error) {
-    showError(error.message);
-  }
-});
-      </div>
-      <div style="margin-top: 12px; font-size: 12px; color: #666;">
-        💡 Copy this text and paste it into your reply
-      </div>
-    `;
-    
-    showResults('✍️ AI-Generated Reply', html);
-  } catch (error) {
-    showError(error.message);
-  }
-});
-
-// Cancel Reply Generation
-elements.cancelBtn.addEventListener('click', () => {
-  elements.replyContext.classList.add('hidden');
-  showContent();
-});
-
-// Find Related Emails
-elements.findRelatedBtn.addEventListener('click', async () => {
-  showLoading('Finding related emails...');
-  currentAction = 'findRelated';
-  
-  try {
-    const response = await browser.runtime.sendMessage({
-      action: 'findRelated',
-      tabId: currentTabId
-    });
-    
-    if (response.error) {
-      throw new Error(response.error);
-    }
-    
-    if (!response || response.length === 0) {
-      showResults('🔍 Related Emails', 'No related emails found.');
+    if (messageDisplay) {
+      currentMessageId = messageDisplay.id;
+      console.log("Current message ID:", currentMessageId);
+    } else {
+      showError("No email selected. Please select an email to analyze.");
       return;
     }
     
-    const html = `
-      <ul class="related-list">
-        ${response.map(email => `
-          <li class="related-item">
-            <strong>${email.subject || 'No Subject'}</strong>
-            <small>From: ${email.from || 'Unknown'} | Similarity: ${Math.round(email.score * 100)}%</small>
-          </li>
-        `).join('')}
-      </ul>
-    `;
-    
-    showResults('🔍 Related Emails', html);
+    setupEventListeners();
   } catch (error) {
-    showError(error.message);
+    console.error("Initialization error:", error);
+    showError("Failed to initialize: " + error.message);
   }
 });
 
-// Analyze Sentiment
-elements.sentimentBtn.addEventListener('click', async () => {
-  showLoading('Analyzing sentiment...');
-  currentAction = 'analyzeSentiment';
+/**
+ * Setup event listeners for buttons
+ */
+function setupEventListeners() {
+  // Main menu
+  document.getElementById("summarize-btn").addEventListener("click", handleSummarize);
+  document.getElementById("chat-btn").addEventListener("click", handleShowChat);
+  document.getElementById("draft-btn").addEventListener("click", handleDraftWithAttachments);
+  document.getElementById("settings-btn").addEventListener("click", handleSettings);
   
+  // Summary view
+  document.getElementById("draft-response-btn").addEventListener("click", handleDraftResponse);
+  document.getElementById("back-from-summary-btn").addEventListener("click", showMainMenu);
+  
+  // Draft view
+  document.getElementById("back-from-draft-btn").addEventListener("click", showMainMenu);
+  
+  // Chat view
+  document.getElementById("send-chat-btn").addEventListener("click", handleSendChat);
+  document.getElementById("clear-chat-btn").addEventListener("click", handleClearChat);
+  document.getElementById("back-from-chat-btn").addEventListener("click", showMainMenu);
+  
+  // Error view
+  document.getElementById("back-from-error-btn").addEventListener("click", showMainMenu);
+  
+  // Enter key in chat input
+  document.getElementById("chat-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.ctrlKey) {
+      handleSendChat();
+    }
+  });
+}
+
+/**
+ * Show/hide views
+ */
+function showView(viewId) {
+  const views = ["main-menu", "loading", "summary-view", "draft-view", "chat-view", "error-view"];
+  views.forEach(id => {
+    document.getElementById(id).classList.add("hidden");
+  });
+  document.getElementById(viewId).classList.remove("hidden");
+}
+
+function showMainMenu() {
+  showView("main-menu");
+}
+
+function showLoading(text = "Processing...") {
+  document.getElementById("loading-text").textContent = text;
+  showView("loading");
+}
+
+function showError(message) {
+  document.getElementById("error-message").textContent = message;
+  showView("error-view");
+}
+
+/**
+ * Handle summarize thread
+ */
+async function handleSummarize() {
   try {
+    showLoading("Analyzing thread...");
+    
     const response = await browser.runtime.sendMessage({
-      action: 'analyzeSentiment',
-      tabId: currentTabId
+      action: "summarizeThread",
+      data: { messageId: currentMessageId }
     });
     
     if (response.error) {
       throw new Error(response.error);
     }
     
-    const sentimentClass = response.label === 'positive' ? 'sentiment-positive' :
-                          response.label === 'negative' ? 'sentiment-negative' :
-                          'sentiment-neutral';
+    currentThreadId = response.threadId;
+    displaySummary(response.summary);
     
-    const emoji = response.label === 'positive' ? '😊' :
-                 response.label === 'negative' ? '😟' :
-                 '😐';
-    
-    const html = `
-      <div style="text-align: center; padding: 20px;">
-        <div style="font-size: 48px; margin-bottom: 16px;">${emoji}</div>
-        <div>
-          <span class="sentiment-badge ${sentimentClass}">
-            ${response.label.toUpperCase()}
-          </span>
-        </div>
-        <div style="margin-top: 12px; font-size: 14px; color: #666;">
-          Confidence: ${Math.round(response.score * 100)}%
-        </div>
-      </div>
-    `;
-    
-    showResults('😊 Sentiment Analysis', html);
   } catch (error) {
-    showError(error.message);
+    console.error("Summarize error:", error);
+    showError("Error generating summary: " + error.message);
   }
-});
+}
 
-// Retry Button
-elements.retryBtn.addEventListener('click', () => {
-  if (currentAction) {
-    elements[currentAction + 'Btn'].click();
+/**
+ * Display summary
+ */
+function displaySummary(summary) {
+  const summaryContent = document.getElementById("summary-content");
+  summaryContent.innerHTML = formatMarkdownToHtml(summary);
+  showView("summary-view");
+}
+
+/**
+ * Handle draft response
+ */
+async function handleDraftResponse() {
+  try {
+    showLoading("Creating draft...");
+    
+    const summary = document.getElementById("summary-content").textContent;
+    
+    // Build draft prompt
+    const draftPrompt = `### Draft Response Email (Based on Current State)
+
+I am a professional email user
+Draft response from me
+
+Write a professional, neutral email that:
+- Acknowledges the current status
+- Restates pending actions
+- Requests the next expected step
+- Does NOT introduce new information
+
+Email format only. No explanations.
+
+Summary:
+${summary}`;
+    
+    // Call background to create draft
+    const response = await browser.runtime.sendMessage({
+      action: "createDraft",
+      data: { 
+        messageId: currentMessageId,
+        draftPrompt: draftPrompt
+      }
+    });
+    
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    
+    showMainMenu();
+    
+  } catch (error) {
+    console.error("Draft error:", error);
+    showError("Error creating draft: " + error.message);
+  }
+}
+
+/**
+ * Handle draft with attachments
+ */
+async function handleDraftWithAttachments() {
+  try {
+    showLoading("Creating draft with attachments...");
+    
+    const response = await browser.runtime.sendMessage({
+      action: "draftWithAttachments",
+      data: { messageId: currentMessageId }
+    });
+    
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    
+    displayDraftResult(response);
+    
+  } catch (error) {
+    console.error("Draft with attachments error:", error);
+    showError("Error creating draft with attachments: " + error.message);
+  }
+}
+
+/**
+ * Display draft result
+ */
+function displayDraftResult(result) {
+  const { draftContent, processingInfo, attachmentCount } = result;
+  
+  // Set message
+  document.getElementById("draft-message").innerHTML = 
+    "✅ <strong>A draft has been created and opened in a compose window!</strong>";
+  
+  // Set processing info
+  let processingMsg = "";
+  if (attachmentCount > 0) {
+    processingMsg = `📊 <strong>Processing Summary:</strong><br>
+• Attachments found: ${processingInfo.attachments_found || attachmentCount}<br>
+• Newly processed: ${processingInfo.attachments_processed || attachmentCount}<br>
+• Already cached: ${processingInfo.attachments_skipped || 0}`;
   } else {
-    init();
+    processingMsg = "ℹ️ No attachments found in this thread.";
   }
-});
+  document.getElementById("draft-processing").innerHTML = processingMsg;
+  
+  // Set preview
+  const preview = draftContent.substring(0, 800);
+  document.getElementById("draft-preview").textContent = 
+    preview + (draftContent.length > 800 ? "\n\n... (draft continues)" : "");
+  
+  showView("draft-view");
+}
 
-// Settings Button
-elements.settingsBtn.addEventListener('click', () => {
+/**
+ * Handle show chat
+ */
+async function handleShowChat() {
+  try {
+    showLoading("Loading chat interface...");
+    
+    // Get current message to extract thread ID
+    const message = await browser.messages.get(currentMessageId);
+    currentThreadId = message.headerMessageId || currentMessageId.toString();
+    
+    // Clear chat history
+    chatHistory = [];
+    
+    // Let background.js handle logging emails and attachments via the chat pipeline
+    // No need to call them directly here
+    
+    displayChat();
+  } catch (error) {
+    console.error("Show chat error:", error);
+    showError("Error opening chat: " + error.message);
+  }
+}
+
+/**
+ * Display chat interface
+ */
+function displayChat() {
+  const chatHistoryEl = document.getElementById("chat-history");
+  chatHistoryEl.innerHTML = "";
+  
+  if (chatHistory.length === 0) {
+    document.getElementById("example-questions").classList.remove("hidden");
+    document.getElementById("chat-processing").classList.add("hidden");
+  } else {
+    document.getElementById("example-questions").classList.add("hidden");
+    
+    chatHistory.forEach(msg => {
+      const messageDiv = document.createElement("div");
+      messageDiv.className = `chat-message ${msg.role}`;
+      
+      const label = msg.role === "user" ? "You:" : "AI:";
+      const content = msg.role === "assistant" ? formatMarkdownToHtml(msg.content) : escapeHtml(msg.content);
+      
+      messageDiv.innerHTML = `<strong>${label}</strong>${content}`;
+      chatHistoryEl.appendChild(messageDiv);
+    });
+    
+    // Scroll to bottom
+    chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
+  }
+  
+  document.getElementById("chat-input").value = "";
+  showView("chat-view");
+}
+
+/**
+ * Handle send chat message
+ */
+async function handleSendChat() {
+  const input = document.getElementById("chat-input");
+  const question = input.value.trim();
+  
+  if (!question) {
+    return;
+  }
+  
+  try {
+    // Add user message to history
+    chatHistory.push({ role: "user", content: question });
+    input.value = "";
+    displayChat();
+    
+    showLoading("Getting answer...");
+    
+    const response = await browser.runtime.sendMessage({
+      action: "chatWithThread",
+      data: {
+        messageId: currentMessageId,
+        question: question
+      }
+    });
+    
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    
+    // Add AI response to history
+    chatHistory.push({ role: "assistant", content: response.answer });
+    
+    // Show processing info on first message
+    if (chatHistory.length === 2 && response.processingInfo) {
+      const info = response.processingInfo;
+      let msg = "📊 <strong>Processing Summary:</strong><br>";
+      
+      if (info.emails) {
+        msg += `• Total messages: ${info.emails.total_messages}<br>`;
+        msg += `• Already processed: ${info.emails.already_processed}<br>`;
+        msg += `• Newly processed: ${info.emails.newly_processed}<br>`;
+      }
+      
+      if (info.attachments && info.attachments.attachments_found > 0) {
+        msg += `• Attachments found: ${info.attachments.attachments_found}<br>`;
+        msg += `• Attachments processed: ${info.attachments.attachments_processed}<br>`;
+        msg += `• Attachments cached: ${info.attachments.attachments_skipped}`;
+      }
+      
+      document.getElementById("chat-processing").innerHTML = msg;
+      document.getElementById("chat-processing").classList.remove("hidden");
+    }
+    
+    displayChat();
+    
+  } catch (error) {
+    console.error("Chat error:", error);
+    // Remove user message from history on error
+    chatHistory.pop();
+    showError("Error in chat: " + error.message);
+  }
+}
+
+/**
+ * Handle clear chat
+ */
+function handleClearChat() {
+  chatHistory = [];
+  displayChat();
+}
+
+/**
+ * Handle settings
+ */
+function handleSettings() {
   browser.runtime.openOptionsPage();
-});
+}
 
-// Initialize on load
-init();
+/**
+ * Format markdown to HTML
+ */
+function formatMarkdownToHtml(text) {
+  if (!text) return "";
+  
+  // Convert line breaks to HTML breaks
+  text = text.replace(/\n/g, '<br>');
+  
+  // Replace markdown headers
+  text = text.replace(/####\s+(.*?)<br>/g, '<br><strong>$1</strong><br>');
+  text = text.replace(/###\s+(.*?)<br>/g, '<br><strong>$1</strong><br>');
+  
+  // Bold text between **
+  text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  
+  // Horizontal rules
+  text = text.replace(/---<br>/g, '━━━━━━━━━━━━━━<br>');
+  
+  // Bullet points
+  text = text.replace(/<br>-\s+(.*?)<br>/g, '<br>  • $1<br>');
+  
+  // Clean up multiple consecutive breaks
+  text = text.replace(/(<br>){3,}/g, '<br><br>');
+  
+  return text;
+}
+
+/**
+ * Escape HTML special characters
+ */
+function escapeHtml(text) {
+  if (!text) return "";
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}

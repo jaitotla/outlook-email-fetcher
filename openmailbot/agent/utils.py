@@ -49,20 +49,14 @@ ollama_url = os.environ.get("INBUILT_OLLAMA_URL", "http://localhost:11434/")
 # INBUILT LLM FUNCTIONS
 # =============================================================================
 
-def call_chat_api(prompt, timeout_seconds=3000):
+def call_chat_api(prompt, timeout_seconds=300):
     """
-    Call the /chat endpoint of the inbuilt Flask API.
-    
-    This is the primary LLM interface for inbuilt mode. The Flask server
-    forwards requests to an Ollama instance (typically llama3.2).
-    
+    Calls the /chat endpoint of the Ollama Flask API.
+    Returns the response or error dict.
+
     Args:
         prompt: The prompt text to send to the LLM
-        timeout_seconds: Request timeout (default 3000 for long generations)
-    
-    Returns:
-        str: The generated response text
-        dict: Error dict with 'error' key if something went wrong
+        timeout_seconds: Request timeout (default 300 seconds)
     """
     url = ollama_flask.rstrip('/') + '/chat'
     try:

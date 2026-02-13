@@ -8,11 +8,15 @@ from anthropic import Anthropic
 import httpx
 import logging
 import os
-
+import json
 from config import settings
 
 logger = logging.getLogger(__name__)
 
+# Load configuration
+CONFIG_PATH = "/home/ubuntu/openmailbot/openmailbot/agent/config.json"
+with open(CONFIG_PATH, 'r') as f:
+    CONFIG = json.load(f)
 
 class ProviderError(Exception):
     """Exception raised when an LLM provider fails"""
@@ -30,16 +34,18 @@ class LLMService:
         
         Args:
             effective_settings: Optional dict with user-specific settings including:
-                - llmProvider: 'openai', 'anthropic', 'gemini', 'ollama', 'inbuilt'
-                - llmApiKey: API key for the provider
-                - llmModel: Model name to use
-                - ollamaUrl: URL for Ollama server (if using ollama)
+                - llm_provider: 'openai', 'anthropic', 'gemini', 'ollama', 'inbuilt'
+                - llm_api_key: API key for the provider
+                - llm_model: Model name to use
+                - ollama_url: URL for Ollama server (if using ollama)
+                If not provided, uses CONFIG as fallback
         """
-        self.effective_settings = effective_settings or {}
+        # Use provided settings or fall back to global CONFIG
+        self.effective_settings = effective_settings if effective_settings else (CONFIG or {})
         
         # Use effective settings if provided, otherwise fall back to global config
-        self.default_provider = self.effective_settings.get("llmProvider") or settings.DEFAULT_LLM_PROVIDER
-        self.default_model = self.effective_settings.get("llmModel") or settings.DEFAULT_MODEL
+        self.default_provider = self.effective_settings.get("llm_provider") or settings.DEFAULT_LLM_PROVIDER
+        self.default_model = self.effective_settings.get("llm_model") or settings.DEFAULT_MODEL
         
         # Initialize clients based on settings
         self._init_clients()
@@ -47,29 +53,29 @@ class LLMService:
     def _init_clients(self):
         """Initialize LLM clients based on settings"""
         # OpenAI
-        openai_key = self.effective_settings.get("openaiApiKey") or settings.OPENAI_API_KEY
+        openai_key = self.effective_settings.get("llm_api_key") or settings.OPENAI_API_KEY
         if openai_key:
             openai.api_key = openai_key
         
         # Anthropic
-        anthropic_key = self.effective_settings.get("anthropicApiKey") or settings.ANTHROPIC_API_KEY
+        anthropic_key = self.effective_settings.get("llm_api_key") or settings.ANTHROPIC_API_KEY
         if anthropic_key:
             self.anthropic_client = Anthropic(api_key=anthropic_key)
         else:
             self.anthropic_client = None
         
-        # Gemini
-        gemini_key = self.effective_settings.get("geminiApiKey") or os.environ.get("GEMINI_API_KEY")
-        if gemini_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_key)
-                self.gemini_configured = True
-            except ImportError:
-                logger.warning("google-generativeai not installed. Gemini support disabled.")
-                self.gemini_configured = False
-        else:
-            self.gemini_configured = False
+        # # Gemini
+        # gemini_key = self.effective_settings.get("llm_api_key") or os.environ.get("GEMINI_API_KEY")
+        # if gemini_key:
+        #     try:
+        #         import google.generativeai as genai
+        #         genai.configure(api_key=gemini_key)
+        #         self.gemini_configured = True
+        #     except ImportError:
+        #         logger.warning("google-generativeai not installed. Gemini support disabled.")
+        #         self.gemini_configured = False
+        # else:
+        #     self.gemini_configured = False
     
     async def _call_openai(
         self,
@@ -107,7 +113,7 @@ class LLMService:
         Uses /v1/responses endpoint with 'input' format.
         """
         try:
-            api_key = self.effective_settings.get("openaiApiKey") or settings.OPENAI_API_KEY
+            api_key = self.effective_settings.get("llm_api_key") or settings.OPENAI_API_KEY
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -241,7 +247,7 @@ class LLMService:
     ) -> str:
         """Call Ollama local LLM"""
         
-        ollama_url = self.effective_settings.get("ollamaUrl") or settings.OLLAMA_BASE_URL
+        ollama_url ="http://localhost:11434"
         
         try:
             async with httpx.AsyncClient() as client:

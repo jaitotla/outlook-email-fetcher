@@ -8,17 +8,36 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uvicorn
 from datetime import datetime
+import os
+import json
+import base64
+import re
+import html
+import sqlite3
+import asyncio
 
 from config import settings
 #from services.ingestion import EmailIngestionService
-from services.embeddings import EmbeddingService
-from services.rag import RAGService
-from services.llm import LLMService
+# from services.embeddings import EmbeddingService
+# from services.rag import RAGService
+# from services.llm import LLMService
 #from services.slack_ingestion import SlackIngestionService
 #from services.file_processor import FileProcessor
 from services.chat_pipeline import ChatWithThreadPipeline
-from services.draft_pipeline import DraftWithAttachmentsPipeline
+from services.draft_pipeline import DraftPipeline
+from services.settings_manager import SettingsManager
+from services.preprocessing_emails import EmailPreprocessingPipeline
+from services.label_pipeline import EmailLabelPipeline
 #from database.mongodb import MongoDBClient
+
+# Import request logger
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+try:
+    from agent_request_logger import log_request
+except:
+    def log_request(*args, **kwargs):
+        pass  # Fallback if logger not available
 
 app = FastAPI(
     title="OpenMailBot Agent",
@@ -26,29 +45,249 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
+
+# Data Storage Pipeline Configuration
+BASE_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+def get_user_data_dir(user_id: str) -> Dict[str, str]:
+    """
+    Get all data directories for a specific user.
+    Creates user-isolated folder structure:
+    data/
+    └── {user_id}/
+        ├── log_emails/
+        ├── store_attachments/
+        ├── vector_db/
+        └── sql_data/
+            ├── chat_thread_processing.db
+            └── draft_processing.db
+    """
+    user_data_dir = os.path.join(BASE_DATA_DIR, user_id)
+    
+    dirs = {
+        "user_base": user_data_dir,
+        "log_emails": os.path.join(user_data_dir, "log_emails"),
+        "attachments": os.path.join(user_data_dir, "store_attachments"),
+        "vector_db": os.path.join(user_data_dir, "vector_db"),
+        "sql_data": os.path.join(user_data_dir, "sql_data"),
+    }
+    
+    # Create all directories
+    for dir_path in dirs.values():
+        os.makedirs(dir_path, exist_ok=True)
+    
+    return dirs
+
+
+def get_sql_db_paths(user_id: str) -> Dict[str, str]:
+    """Get SQLite database file paths for a user"""
+    sql_dir = os.path.join(BASE_DATA_DIR, user_id, "sql_data")
+    os.makedirs(sql_dir, exist_ok=True)
+    
+    return {
+        "chat_thread_db": os.path.join(sql_dir, "chat_thread_processing.db"),
+        "draft_db": os.path.join(sql_dir, "draft_processing.db"),
+    }
+
+
 # CORS
+# Configure CORS to allow requests from Thunderbird add-on (moz-extension://) and other clients
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.BACKEND_API_URL, "http://localhost:3001"],
+    allow_origins=[
+        settings.BACKEND_API_URL,
+        "http://localhost:3001",
+        "http://localhost:3000",
+        "moz-extension://*",  # Thunderbird add-on origin
+        "*"  # Allow all origins as fallback
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Custom exception handler for validation errors
+from fastapi.exceptions import RequestValidationError
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    """Handle validation errors with detailed messages"""
+    error_details = []
+    for error in exc.errors():
+        error_details.append({
+            "field": ".".join(str(x) for x in error["loc"][1:]),
+            "message": error["msg"],
+            "type": error["type"]
+        })
+    
+    print(f"Validation Error: {error_details}")
+    
+    return {
+        "detail": "Request validation failed",
+        "errors": error_details,
+        "body": str(exc.body) if hasattr(exc, 'body') else None
+    }
+
 # Initialize services
 #db_client = MongoDBClient(settings.MONGODB_URI)
-embedding_service = EmbeddingService()
-rag_service = RAGService()
-llm_service = LLMService()
+# embedding_service = EmbeddingService()
+# rag_service = RAGService()
+# llm_service = LLMService()
 #ingestion_service = EmailIngestionService()
 #file_processor = FileProcessor()
-chat_pipeline = ChatWithThreadPipeline()
-draft_pipeline = DraftWithAttachmentsPipeline()
+# Pipelines will be initialized per-user in endpoints
 #slack_service = SlackIngestionService(
 #    backend_url=settings.BACKEND_API_URL,
 #    llm_service=llm_service,
 #    file_processor=file_processor
 #)
+
+
+# ==================== Data Storage Helper Functions ====================
+
+def clean_email_body(body):
+    """
+    Clean email body by removing:
+    - HTML tags and code
+    - All URLs/links
+    - Email disclaimers
+    - Excessive whitespace
+    Using only Python regex (no external libraries except html)
+    """
+    if not body:
+        return ""
+    
+    # Decode HTML entities first (e.g., &nbsp; &lt; &gt; &amp;)
+    body = html.unescape(body)
+    
+    # Remove HTML comments
+    body = re.sub(r'<!--.*?-->', '', body, flags=re.DOTALL)
+    
+    # Remove script and style tags with their content
+    body = re.sub(r'<script[^>]*>.*?</script>', '', body, flags=re.DOTALL | re.IGNORECASE)
+    body = re.sub(r'<style[^>]*>.*?</style>', '', body, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Remove all HTML tags
+    body = re.sub(r'<[^>]+>', '', body)
+    
+    # Remove all URLs (multiple patterns for comprehensive coverage)
+    # http:// and https:// URLs
+    body = re.sub(r'https?://[^\s<>"{}|\\^`\[\]]+', '', body)
+    # www. URLs without protocol
+    body = re.sub(r'www\.[^\s<>"{}|\\^`\[\]]+', '', body)
+    # Remove email-style links with <> brackets
+    body = re.sub(r'<[^\s]+@[^\s]+>', '', body)
+    # Remove mailto: links
+    body = re.sub(r'mailto:[^\s]+', '', body)
+    
+    # Remove common email disclaimers (case insensitive, multiline)
+    disclaimer_patterns = [
+        r'this\s+email.*?confidential.*?intended.*?recipient.*?(?:\n|$)',
+        r'confidentiality\s+notice:.*?(?:\n\n|\Z)',
+        r'disclaimer:.*?(?:\n\n|\Z)',
+        r'this\s+message.*?confidential.*?(?:\n\n|\Z)',
+        r'if\s+you.*?not.*?intended\s+recipient.*?(?:\n\n|\Z)',
+        r'please\s+consider\s+the\s+environment\s+before\s+printing.*?(?:\n|$)',
+        r'virus.*?free.*?checked.*?(?:\n\n|\Z)',
+        r'unsubscribe.*?(?:\n\n|\Z)',
+        r'to\s+unsubscribe.*?(?:\n|$)',
+        r'click\s+here\s+to.*?(?:\n|$)',
+        r'you\s+received\s+this\s+email\s+because.*?(?:\n\n|\Z)',
+    ]
+    
+    for pattern in disclaimer_patterns:
+        body = re.sub(pattern, '', body, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Remove email signatures (common patterns)
+    # Standard -- separator
+    body = re.sub(r'\n--\s*\n.*', '', body, flags=re.DOTALL)
+    # Long separator lines
+    body = re.sub(r'\n_{5,}.*', '', body, flags=re.DOTALL)
+    body = re.sub(r'\n={5,}.*', '', body, flags=re.DOTALL)
+    body = re.sub(r'\n-{5,}.*', '', body, flags=re.DOTALL)
+    
+    # Remove common signature patterns
+    body = re.sub(r'\n(best\s+regards?|sincerely|thanks?|cheers|regards),?\s*\n.*', '', body, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Remove excessive whitespace
+    body = re.sub(r'\n{3,}', '\n\n', body)  # Multiple newlines to max 2
+    body = re.sub(r'[ \t]+', ' ', body)  # Multiple spaces/tabs to single space
+    body = re.sub(r' +\n', '\n', body)  # Trailing spaces before newline
+    body = re.sub(r'\n ', '\n', body)  # Leading spaces after newline
+    
+    return body.strip()
+
+
+def extract_new_content(body):
+    """
+    Remove quoted/nested email content from body
+    Returns only the new content written in this specific message
+    """
+    if not body:
+        return ""
+    
+    lines = body.split('\n')
+    new_content = []
+    
+    for line in lines:
+        # Stop at common quote indicators
+        # "On Thu, Jan 22, 2026 at 10:34 AM ... wrote:"
+        if re.match(r'^On .+wrote:\s*$', line.strip()):
+            break
+        # Lines starting with ">"
+        if re.match(r'^>\s*', line):
+            break
+        # Email headers in forwarded messages
+        if re.match(r'^From:\s*', line.strip()):
+            break
+        # Separator lines
+        if re.match(r'^-{3,}', line.strip()):
+            break
+        # Alternative quote pattern with email
+        if 'wrote:' in line and '@' in line and '<' in line:
+            break
+            
+        new_content.append(line)
+    
+    # Join and clean up
+    result = '\n'.join(new_content).strip()
+    
+    # Remove excessive blank lines
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    
+    return result
+
+
+def deduplicate_messages(messages):
+    """
+    Process messages to extract only new content from each message
+    Removes nested/quoted email content, HTML, links, and disclaimers
+    """
+    processed = []
+    
+    for msg in messages:
+        raw_body = msg.get('body', '')
+        
+        # Step 1: Extract new content (remove quoted/nested emails)
+        new_content = extract_new_content(raw_body)
+        
+        # Step 2: Clean the content (remove HTML, links, disclaimers)
+        clean_body = clean_email_body(new_content)
+        
+        # Create new message object with cleaned body
+        processed_msg = {
+            'message_id': msg.get('message_id'),
+            'from': msg.get('from'),
+            'to': msg.get('to'),
+            'subject': msg.get('subject'),
+            'timestamp': msg.get('timestamp'),
+            'body': clean_body
+        }
+        
+        processed.append(processed_msg)
+    
+    return processed
 
 
 # Request/Response Models
@@ -97,6 +336,36 @@ class IngestEmailsRequest(BaseModel):
     provider: str  # "google" or "microsoft"
     accessToken: str
     syncFrom: Optional[datetime] = None
+
+
+# ==================== Data Storage Request Models ====================
+
+class EmailMessage(BaseModel):
+    message_id: str
+    from_address: str
+    to: List[str]
+    subject: str
+    timestamp: str
+    body: str
+
+
+class LogEmailRequest(BaseModel):
+    user_id: str
+    thread_id: str
+    messages: List[EmailMessage]
+
+
+class AttachmentData(BaseModel):
+    filename: str
+    content: str  # base64 encoded
+    mime_type: str = "application/octet-stream"
+
+
+class StoreAttachmentsRequest(BaseModel):
+    user_id: str
+    thread_id: str
+    message_id: str
+    attachments: List[AttachmentData]
 
 
 # Health check
@@ -181,21 +450,21 @@ async def detailed_health_check(user_id: Optional[str] = None, tenant_id: Option
     return health_status
 
 
-# Email Ingestion
-@app.post("/api/ingest")
-async def ingest_emails(request: IngestEmailsRequest):
-    """Ingest emails from Gmail or Outlook"""
-    try:
-        result = await ingestion_service.ingest_emails(
-            user_id=request.userId,
-            tenant_id=request.tenantId,
-            provider=request.provider,
-            access_token=request.accessToken,
-            sync_from=request.syncFrom
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# # Email Ingestion
+# @app.post("/api/ingest")
+# async def ingest_emails(request: IngestEmailsRequest):
+#     """Ingest emails from Gmail or Outlook"""
+#     try:
+#         result = await ingestion_service.ingest_emails(
+#             user_id=request.userId,
+#             tenant_id=request.tenantId,
+#             provider=request.provider,
+#             access_token=request.accessToken,
+#             sync_from=request.syncFrom
+#         )
+#         return result
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 # Generate Embeddings
@@ -300,42 +569,42 @@ async def rag_query(request: RAGQueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Related Threads
-@app.post("/api/related-threads")
-async def get_related_threads(request: RelatedThreadsRequest):
-    """Find related email threads using vector similarity"""
-    try:
-        # Get the thread content
-        thread_emails = await db_client.get_emails_by_thread(
-            thread_id=request.threadId,
-            user_id=request.userId,
-            tenant_id=request.tenantId
-        )
+# # Related Threads
+# @app.post("/api/related-threads")
+# async def get_related_threads(request: RelatedThreadsRequest):
+#     """Find related email threads using vector similarity"""
+#     try:
+#         # Get the thread content
+#         thread_emails = await db_client.get_emails_by_thread(
+#             thread_id=request.threadId,
+#             user_id=request.userId,
+#             tenant_id=request.tenantId
+#         )
         
-        if not thread_emails:
-            return {"relatedThreadIds": []}
+#         if not thread_emails:
+#             return {"relatedThreadIds": []}
         
-        # Generate embedding for the thread
-        thread_text = " ".join([email.get("content", "") for email in thread_emails])
-        thread_embedding = await embedding_service.generate_embedding(thread_text)
+#         # Generate embedding for the thread
+#         thread_text = " ".join([email.get("content", "") for email in thread_emails])
+#         thread_embedding = await embedding_service.generate_embedding(thread_text)
         
-        # Find similar threads
-        similar_results = await embedding_service.find_similar(
-            embedding=thread_embedding,
-            namespace=f"{request.tenantId}_{request.userId}",
-            limit=request.limit + 1  # +1 to exclude the query thread itself
-        )
+#         # Find similar threads
+#         similar_results = await embedding_service.find_similar(
+#             embedding=thread_embedding,
+#             namespace=f"{request.tenantId}_{request.userId}",
+#             limit=request.limit + 1  # +1 to exclude the query thread itself
+#         )
         
-        # Extract thread IDs (excluding the query thread)
-        related_thread_ids = [
-            result["metadata"].get("threadId")
-            for result in similar_results
-            if result["metadata"].get("threadId") != request.threadId
-        ][:request.limit]
+#         # Extract thread IDs (excluding the query thread)
+#         related_thread_ids = [
+#             result["metadata"].get("threadId")
+#             for result in similar_results
+#             if result["metadata"].get("threadId") != request.threadId
+#         ][:request.limit]
         
-        return {"relatedThreadIds": related_thread_ids}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#         return {"relatedThreadIds": related_thread_ids}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 # Analytics endpoint for sentiment analysis
@@ -370,26 +639,26 @@ class SlackIngestRequest(BaseModel):
     fileConfig: Optional[Dict[str, Any]] = None
 
 
-@app.post("/api/slack/ingest")
-async def ingest_slack(request: SlackIngestRequest):
-    """Ingest Slack workspace messages"""
-    try:
-        result = await slack_service.ingest_workspace(
-            user_id=request.userId,
-            workspace_id=request.workspaceId,
-            access_token=request.accessToken,
-            bot_token=request.botToken,
-            sync_days=request.syncDays,
-            selected_channels=request.selectedChannels,
-            selected_dms=request.selectedDMs,
-            include_public=request.includePublic,
-            include_private=request.includePrivate,
-            include_dms=request.includeDMs,
-            file_config=request.fileConfig
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.post("/api/slack/ingest")
+# async def ingest_slack(request: SlackIngestRequest):
+#     """Ingest Slack workspace messages"""
+#     try:
+#         result = await slack_service.ingest_workspace(
+#             user_id=request.userId,
+#             workspace_id=request.workspaceId,
+#             access_token=request.accessToken,
+#             bot_token=request.botToken,
+#             sync_days=request.syncDays,
+#             selected_channels=request.selectedChannels,
+#             selected_dms=request.selectedDMs,
+#             include_public=request.includePublic,
+#             include_private=request.includePrivate,
+#             include_dms=request.includeDMs,
+#             file_config=request.fileConfig
+#         )
+#         return result
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 class ChatWithThreadRequest(BaseModel):
@@ -404,7 +673,82 @@ class DraftWithAttachmentsRequest(BaseModel):
     user_preferences: Optional[Dict[str, Any]] = None
 
 
-@app.post("/chat-with-thread")
+class SyncSettingsRequest(BaseModel):
+    user_id: str
+    settings: Dict[str, Any]
+
+
+@app.post("/api/settings")
+async def sync_settings(request: SyncSettingsRequest):
+    """
+    Sync user settings from Gmail Add-on to backend.
+    
+    This endpoint receives settings configured in the Gmail Add-on
+    and saves them to encrypted SQLite database.
+    
+    Request:
+    {
+        "user_id": "user@example.com",
+        "settings": {
+            "mode": "custom",
+            "llm_provider": "openai",
+            "llm_api_key": "sk-...",
+            "embedding_provider": "openai",
+            "user_tone": "professional"
+        }
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "message": "Settings synced successfully",
+        "user_id": "user@example.com",
+        "settings_saved": 15,
+        "encrypted": true
+    }
+    """
+    print("🔧 /api/settings endpoint called")
+    print(f"   User: {request.user_id}")
+    print(f"   Settings received: {list(request.settings.keys())}")
+    
+    try:
+        # Initialize settings manager for the user
+        settings_manager = SettingsManager(request.user_id)
+        
+        # Save encrypted settings to database
+        success = settings_manager.save_settings(
+            request.settings,
+            request.user_id,
+            "general"
+        )
+        
+        if not success:
+            raise Exception("Failed to save settings to database")
+        
+        print(f"✅ Settings saved to encrypted database")
+        print(f"   User: {request.user_id}")
+        print(f"   Settings count: {len(request.settings)}")
+        print(f"   Storage: data/{request.user_id}/sql_data/chat_thread_processing.db")
+        
+        return {
+            "success": True,
+            "message": "Settings synced successfully",
+            "user_id": request.user_id,
+            "settings_saved": len(request.settings),
+            "encrypted": True,
+            "storage": f"data/{request.user_id}/sql_data/chat_thread_processing.db"
+        }
+    except Exception as e:
+        print(f"❌ Error syncing settings: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to sync settings: {str(e)}"
+        )
+
+
+@app.post("/api/chat-with-thread")
 async def chat_with_thread(request: ChatWithThreadRequest):
     """
     Chat with an email thread using RAG pipeline
@@ -413,18 +757,64 @@ async def chat_with_thread(request: ChatWithThreadRequest):
     then uses OpenAI for tool selection and Ollama for final answer generation.
     """
     try:
-        result = await chat_pipeline.process_and_chat(
-            user_id=request.user_id,
-            thread_id=request.thread_id,
-            user_question=request.question
+        # Initialize pipeline with user_id for user-isolated data access
+        chat_pipeline = ChatWithThreadPipeline(user_id=request.user_id)
+        # `process_and_chat` is synchronous and returns a dict
+        result = chat_pipeline.process_and_chat(
+            request.user_id,
+            request.thread_id,
+            request.question
         )
         
         return result
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Log and return the error message for debugging purposes
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/draft-with-attachments")
+@app.post("/api/reset-and-reprocess-thread")
+async def reset_and_reprocess_thread(request: ChatWithThreadRequest):
+    """
+    Clear all embeddings for a thread and re-process from scratch.
+    
+    Use this when:
+    - Embeddings were created before the "document" field was added
+    - Search results are showing empty/None content
+    - You need to regenerate embeddings with fixed metadata
+    
+    This will delete old embeddings and re-embed all emails and attachments
+    with the correct metadata structure.
+    """
+    import logger
+    try:
+        chat_pipeline = ChatWithThreadPipeline(user_id=request.user_id)
+        
+        # Step 1: Clear old embeddings
+        logger.info(f"🧹 Clearing embeddings for thread {request.thread_id}")
+        clear_info = chat_pipeline.clear_thread_embeddings(request.user_id, request.thread_id)
+        
+        # Step 2: Re-process emails and attachments
+        logger.info(f"🔄 Re-processing thread with new metadata structure")
+        result = chat_pipeline.process_and_chat(
+            request.user_id,
+            request.thread_id,
+            request.question
+        )
+        
+        return {
+            "success": True,
+            "cleared_embeddings": clear_info,
+            "reprocessed_result": result
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/draft-with-attachments")
 async def draft_with_attachments(request: DraftWithAttachmentsRequest):
     """
     Generate email draft with attachment context using hybrid approach
@@ -447,7 +837,7 @@ async def draft_with_attachments(request: DraftWithAttachmentsRequest):
     Returns:
     {
         "success": true,
-        "response": "Generated draft email...",
+        "draft_content": "Generated draft email...",
         "processing_info": {
             "attachments_found": 2,
             "attachments_processed": 1,
@@ -457,14 +847,18 @@ async def draft_with_attachments(request: DraftWithAttachmentsRequest):
     }
     """
     try:
+        # Initialize pipeline with user_id for user-isolated data access
+        draft_pipeline = DraftPipeline(user_id=request.user_id)
         result = await draft_pipeline.process_email_request(
-            user_id=request.user_id,
-            thread_id=request.thread_id,
-            user_preferences=request.user_preferences
+            request.user_id,
+            request.thread_id,
+            request.user_preferences
         )
         
         return result
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -503,6 +897,310 @@ async def get_slack_channels(request: SlackChannelsRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 """
+
+# ==================== Data Storage Endpoints ====================
+
+@app.post("/api/log-email")
+async def log_email_data(request: LogEmailRequest):
+    """
+    Store all messages from a thread in a single JSON file
+    User-isolated storage: data/{user_id}/log_emails/{thread_id}/{thread_id}.json
+    
+    Automatically deduplicates nested email content, removes HTML, links, and disclaimers
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"✅ /api/log-email endpoint called")
+    logger.info(f"   User: {request.user_id}")
+    logger.info(f"   Thread: {request.thread_id}")
+    logger.info(f"   Messages count: {len(request.messages) if request.messages else 0}")
+    print(f"✅ log-email endpoint called for user: {request.user_id}, thread: {request.thread_id}, messages: {len(request.messages) if request.messages else 0}")
+    try:
+        if not request.messages:
+            raise HTTPException(status_code=400, detail="No messages provided")
+        
+        # Get user's data directories
+        user_dirs = get_user_data_dir(request.user_id)
+        log_dir = user_dirs["log_emails"]
+        
+        # Create thread folder: data/{user_id}/log_emails/thread_xxx/
+        thread_folder = os.path.join(log_dir, request.thread_id)
+        os.makedirs(thread_folder, exist_ok=True)
+        
+        # Convert messages to dict format for deduplication
+        messages_dict = [
+            {
+                'message_id': msg.message_id,
+                'from': msg.from_address,
+                'to': msg.to,
+                'subject': msg.subject,
+                'timestamp': msg.timestamp,
+                'body': msg.body
+            }
+            for msg in request.messages
+        ]
+        
+        # Deduplicate messages (remove nested content)
+        clean_messages = deduplicate_messages(messages_dict)
+        
+        # Save as single JSON file: thread_id.json
+        filename = f"{request.thread_id}.json"
+        filepath = os.path.join(thread_folder, filename)
+        
+        # Prepare output data with cleaned messages
+        output_data = {
+            'thread_id': request.thread_id,
+            'user_id': request.user_id,
+            'messages': clean_messages,
+            'metadata': {
+                'original_message_count': len(request.messages),
+                'processed_message_count': len(clean_messages),
+                'stored_at': datetime.utcnow().isoformat()
+            }
+        }
+        
+        # Write entire thread data as JSON
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
+        
+        print(f"Saved {len(clean_messages)} cleaned messages to: {filepath}")
+        
+        return {
+            "success": True,
+            "message": f"Saved {len(clean_messages)} messages (cleaned from {len(request.messages)} original)",
+            "user_id": request.user_id,
+            "thread_id": request.thread_id,
+            "filepath": filepath,
+            "original_count": len(request.messages),
+            "clean_count": len(clean_messages)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/label-email")
+async def label_email_data(request: LogEmailRequest):
+    """
+    Label email thread using preprocessing + labeling pipeline
+    
+    This endpoint:
+    1. Processes emails through preprocessing pipeline (cleaning, deduplication)
+    2. Sends processed data to label pipeline
+    3. Returns a single label for the thread
+    
+    For threads with multiple messages, the LAST message is analyzed as it has
+    the most importance in determining thread category.
+    
+    Expected payload (same as /api/log-email):
+    {
+        "user_id": "user@example.com",
+        "thread_id": "thread_xxx",
+        "messages": [
+            {
+                "message_id": "msg_xxx",
+                "from_address": "sender@example.com",
+                "to": ["recipient@example.com"],
+                "subject": "Meeting tomorrow",
+                "timestamp": "2026-02-06T10:00:00Z",
+                "body": "<html>...</html>"
+            }
+        ]
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "label": "meeting",
+        "user_id": "user@example.com",
+        "thread_id": "thread_xxx",
+        "messages_processed": 3,
+        "classification_method": "rule-based" or "llm"
+    }
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"✅ /api/label-email endpoint called")
+    logger.info(f"   User: {request.user_id}")
+    logger.info(f"   Thread: {request.thread_id}")
+    logger.info(f"   Messages count: {len(request.messages) if request.messages else 0}")
+    
+    try:
+        if not request.messages:
+            raise HTTPException(status_code=400, detail="No messages provided")
+        
+        # Convert messages to dict format for preprocessing
+        messages_dict = [
+            {
+                'message_id': msg.message_id,
+                'from': msg.from_address,
+                'to': msg.to,
+                'subject': msg.subject,
+                'timestamp': msg.timestamp,
+                'body': msg.body
+            }
+            for msg in request.messages
+        ]
+        
+        # Step 1: Preprocess messages (clean HTML, remove quotes, etc.)
+        preprocessing_pipeline = EmailPreprocessingPipeline()
+        processed_messages = preprocessing_pipeline.process(messages_dict)
+        
+        logger.info(f"   Preprocessed {len(processed_messages)} messages")
+        
+        # Step 2: Label the thread using the processed messages
+        # Get OpenAI API key from environment or settings
+        
+        with open("/home/ubuntu/openmailbot/openmailbot/agent/config.json", "r") as f:
+            config = json.load(f)
+            
+        openai_api_key = config.get("OPENAI_KEY")
+        
+        if not openai_api_key:
+            logger.warning("   No OpenAI API key found, using rule-based only")
+        
+        label_pipeline = EmailLabelPipeline(openai_api_key=openai_api_key)
+        
+        # Label the thread (focuses on last message)
+        # Label and store thread in graph database
+        label_and_store_result = label_pipeline.label_and_store_thread(
+            thread_id=request.thread_id,
+            messages=processed_messages
+        )
+        
+        label = label_and_store_result["label_result"]
+        graph_status = label_and_store_result["graph_store_result"]
+        
+        logger.info(f"✅ Email labeled and stored: {label}")
+        logger.info(f"   Graph storage status: {graph_status.get('status')}")
+        
+        return {
+            "success": True,
+            "label": label["label"],
+            "category": label["category"],
+            "topic": label["topic"],
+            "subtopic": label["subtopic"],
+            "user_id": request.user_id,
+            "thread_id": request.thread_id,
+            "messages_processed": len(processed_messages),
+            "graph_store_status": graph_status.get("status"),
+            "graph_store_steps": len(graph_status.get("steps", []))
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error labeling email: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/store-attachments")
+async def store_attachments(request: StoreAttachmentsRequest):
+    """
+    Store email attachments
+    User-isolated storage: data/{user_id}/store_attachments/{thread_id}/
+    
+    Expected payload:
+    {
+        "user_id": "user@example.com",
+        "thread_id": "thread_xxx",
+        "message_id": "msg_xxx",
+        "attachments": [
+            {
+                "filename": "document.pdf",
+                "content": "base64_encoded_content",
+                "mime_type": "application/pdf"
+            }
+        ]
+    }
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"✅ /api/store-attachments endpoint called")
+    logger.info(f"   User: {request.user_id}")
+    logger.info(f"   Thread: {request.thread_id}")
+    logger.info(f"   Attachments count: {len(request.attachments) if request.attachments else 0}")
+    print(f"✅ store-attachments endpoint called for user: {request.user_id}, thread: {request.thread_id}, attachments: {len(request.attachments) if request.attachments else 0}")
+    
+    try:
+        if not request.attachments:
+            raise HTTPException(status_code=400, detail="No attachments provided")
+        
+        # Get user's data directories
+        user_dirs = get_user_data_dir(request.user_id)
+        attachment_dir = user_dirs["attachments"]
+        
+        # Create directory for this thread: data/{user_id}/store_attachments/thread_xxx/
+        thread_dir = os.path.join(attachment_dir, request.thread_id)
+        os.makedirs(thread_dir, exist_ok=True)
+        
+        saved_files = []
+        
+        for idx, attachment in enumerate(request.attachments):
+            filename = attachment.filename
+            content = attachment.content
+            mime_type = attachment.mime_type
+            
+            # Sanitize filename
+            filename = "".join(c for c in filename if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
+            
+            # Add message_id prefix to avoid conflicts
+            safe_filename = f"{request.message_id}_{filename}"
+            filepath = os.path.join(thread_dir, safe_filename)
+            
+            # Decode base64 content and save
+            try:
+                file_content = base64.b64decode(content)
+                with open(filepath, 'wb') as f:
+                    f.write(file_content)
+                
+                saved_files.append({
+                    "filename": safe_filename,
+                    "filepath": filepath,
+                    "size": len(file_content),
+                    "mime_type": mime_type
+                })
+            except Exception as e:
+                saved_files.append({
+                    "filename": safe_filename,
+                    "error": f"Failed to save: {str(e)}"
+                })
+        
+        # Create metadata file
+        metadata = {
+            "user_id": request.user_id,
+            "thread_id": request.thread_id,
+            "message_id": request.message_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "attachments": saved_files
+        }
+        
+        metadata_file = os.path.join(thread_dir, f"{request.message_id}_metadata.json")
+        with open(metadata_file, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2)
+        
+        return {
+            "success": True,
+            "message": f"Stored {len(saved_files)} attachments",
+            "user_id": request.user_id,
+            "thread_id": request.thread_id,
+            "saved_files": saved_files,
+            "metadata_file": metadata_file
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
@@ -510,3 +1208,4 @@ if __name__ == "__main__":
         port=settings.PORT,
         reload=settings.ENVIRONMENT == "development"
     )
+

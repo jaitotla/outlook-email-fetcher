@@ -1,350 +1,705 @@
 /**
- * OpenMailBot - Thunderbird Add-on Background Script
- * Handles message processing and API communication
+ * Background script for Email Thread Assistant
+ * Handles API communication and message processing
  */
 
-// Configuration
-const CONFIG = {
-  BACKEND_URL: 'http://localhost:5000',
-  AGENT_URL: 'http://localhost:8000'
-};
+// Default backend URL - can be changed in settings
+const DEFAULT_FLASK_SERVER_URL = "http://43.204.98.38:8000";
+
+/**
+ * Get the configured backend URL from settings
+ * Falls back to default if not set
+ */
+async function getBackendUrl() {
+  try {
+    const result = await browser.storage.local.get("backend_url");
+    return result.backend_url || DEFAULT_FLASK_SERVER_URL;
+  } catch (error) {
+    console.error("Error getting backend URL:", error);
+    return DEFAULT_FLASK_SERVER_URL;
+  }
+}
 
 // Initialize extension
-browser.runtime.onInstalled.addListener(async (details) => {
-  if (details.reason === 'install') {
-    console.log('OpenMailBot installed');
-    await initializeSettings();
+browser.runtime.onInstalled.addListener(() => {
+  console.log("Email Thread Assistant installed");
+});
+
+/**
+ * Message listener for communication from popup
+ */
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log("Background received message:", message.action);
+  
+  switch (message.action) {
+    case "summarizeThread":
+      handleSummarizeThread(message.data)
+        .then(sendResponse)
+        .catch(error => sendResponse({ error: error.message }));
+      return true; // Keep channel open for async response
+      
+    case "draftWithAttachments":
+      handleDraftWithAttachments(message.data)
+        .then(sendResponse)
+        .catch(error => sendResponse({ error: error.message }));
+      return true;
+      
+    case "chatWithThread":
+      handleChatWithThread(message.data)
+        .then(sendResponse)
+        .catch(error => sendResponse({ error: error.message }));
+      return true;
+      
+    default:
+      console.warn("Unknown message action:", message.action);
+      sendResponse({ error: "Unknown action: " + message.action });
+      return false;
   }
 });
 
-// Initialize default settings
-async function initializeSettings() {
-  const defaults = {
-    llmProvider: 'openai',
-    llmModel: 'gpt-4',
-    vectorDb: 'faiss',
-    embeddingProvider: 'openai',
-    tone: 'professional',
-    backendUrl: CONFIG.BACKEND_URL,
-    agentUrl: CONFIG.AGENT_URL,
-    isConfigured: false
-  };
-  
-  await browser.storage.local.set(defaults);
-}
-
-// Get settings
-async function getSettings() {
-  return await browser.storage.local.get([
-    'llmProvider',
-    'llmModel',
-    'vectorDb',
-    'embeddingProvider',
-    'tone',
-    'backendUrl',
-    'agentUrl',
-    'isConfigured',
-    'userId',
-    'apiKey'
-  ]);
-}
-
-// Get current message
-async function getCurrentMessage(tabId) {
+/**
+ * Get all messages in a thread
+ */
+async function getThreadMessages(messageId) {
   try {
-    const messageHeader = await browser.messageDisplay.getDisplayedMessage(tabId);
-    if (!messageHeader) {
-      throw new Error('No message displayed');
-    }
+    const message = await browser.messages.get(messageId);
+    const conversationId = message.headerMessageId;
     
-    const full = await browser.messages.getFull(messageHeader.id);
-    return { header: messageHeader, full };
+    // Get all messages in the folder
+    const folder = await browser.messages.get(messageId).then(msg => 
+      browser.folders.get(msg.folder)
+    );
+    
+    // Query for messages in the same conversation
+    const messageList = await browser.messages.query({
+      folder: folder,
+      headerMessageId: conversationId
+    });
+    
+    // Get full message details for each
+    const messages = await Promise.all(
+      messageList.messages.map(msg => browser.messages.getFull(msg.id))
+    );
+    
+    return messages;
   } catch (error) {
-    console.error('Error getting message:', error);
+    console.error("Error getting thread messages:", error);
     throw error;
   }
 }
 
-// Extract email content
-function extractContent(messageFull) {
-  let content = '';
+/**
+ * Extract plain text from message parts
+ */
+function extractPlainText(messagePart) {
+  let text = "";
   
-  if (messageFull.parts) {
-    for (const part of messageFull.parts) {
-      if (part.contentType === 'text/plain') {
-        content = part.body || '';
-        break;
-      } else if (part.contentType === 'text/html' && !content) {
-        // Fallback to HTML if no plain text
-        content = part.body || '';
+  if (messagePart.body) {
+    text += messagePart.body;
+  }
+  
+  if (messagePart.parts) {
+    for (const part of messagePart.parts) {
+      if (part.contentType === "text/plain") {
+        text += part.body || "";
+      } else if (part.parts) {
+        text += extractPlainText(part);
       }
     }
   }
   
-  return content || messageFull.body || '';
+  return text;
 }
 
-// Summarize email thread
-async function summarizeEmail(messageData) {
-  const settings = await getSettings();
-  
-  const payload = {
-    subject: messageData.header.subject,
-    from: messageData.header.author,
-    to: messageData.header.recipients,
-    content: extractContent(messageData.full),
-    timestamp: new Date(messageData.header.date).toISOString(),
-    provider: settings.llmProvider,
-    model: settings.llmModel
-  };
-  
+/**
+ * Handle summarize thread request
+ */
+async function handleSummarizeThread(data) {
   try {
-    const response = await fetch(`${settings.agentUrl}/api/summarize`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
+    const { messageId } = data;
     
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+    // Get all messages in thread
+    const fullMessage = await browser.messages.getFull(messageId);
+    const message = await browser.messages.get(messageId);
+    
+    // Extract thread text
+    const plainBody = extractPlainText(fullMessage);
+    const threadText = `From: ${message.author}\nDate: ${new Date(message.date).toISOString()}\n\n${plainBody}`;
+    
+    // Get conversation ID for thread grouping
+    const conversationId = message.headerMessageId || message.id.toString();
+    
+    // Log email data to server (best effort)
+    try {
+      await logEmailData(conversationId, threadText, "summarize");
+    } catch (logErr) {
+      console.log("logEmailData failed:", logErr.message);
     }
     
-    const result = await response.json();
-    return result.summary || 'Unable to generate summary';
+    // Get summary from AI
+    const summary = await callFlaskAPI(threadText, "summarize");
+    
+    return { 
+      success: true, 
+      summary: summary,
+      threadId: conversationId
+    };
+    
   } catch (error) {
-    console.error('Summarize error:', error);
-    throw new Error('Failed to connect to OpenMailBot agent. Make sure it\'s running on ' + settings.agentUrl);
-  }
-}
-
-// Generate reply
-async function generateReply(messageData, userContext = '') {
-  const settings = await getSettings();
-  
-  const payload = {
-    subject: messageData.header.subject,
-    from: messageData.header.author,
-    to: messageData.header.recipients,
-    content: extractContent(messageData.full),
-    timestamp: new Date(messageData.header.date).toISOString(),
-    context: userContext,
-    tone: settings.tone,
-    provider: settings.llmProvider,
-    model: settings.llmModel
-  };
-  
-  try {
-    const response = await fetch(`${settings.agentUrl}/api/generate-reply`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-    
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-    
-    const result = await response.json();
-    return result.reply || 'Unable to generate reply';
-  } catch (error) {
-    console.error('Generate reply error:', error);
-    throw new Error('Failed to connect to OpenMailBot agent. Make sure it\'s running on ' + settings.agentUrl);
-  }
-}
-
-// Insert reply into compose window
-async function insertReplyIntoCompose(messageHeader, replyText, replyType = 'replyToSender') {
-  try {
-    // Open compose window with reply
-    const composeTab = await browser.compose.beginReply(
-      messageHeader.id,
-      replyType  // 'replyToSender' or 'replyToAll'
-    );
-    
-    // Convert plain text to HTML with line breaks
-    const htmlBody = `<p>${replyText.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>')}</p>`;
-    
-    // Insert AI-generated text into compose window
-    await browser.compose.setComposeDetails(composeTab.id, {
-      body: htmlBody,
-      isPlainText: false
-    });
-    
-    return { success: true, composeTabId: composeTab.id };
-  } catch (error) {
-    console.error('Error inserting reply into compose:', error);
+    console.error("Error in handleSummarizeThread:", error);
     throw error;
   }
 }
 
-// Insert forward into compose window
-async function insertForwardIntoCompose(messageHeader, forwardText) {
+/**
+ * Handle draft with attachments request
+ */
+async function handleDraftWithAttachments(data) {
   try {
-    const composeTab = await browser.compose.beginForward(
-      messageHeader.id,
-      'forwardAsAttachment'
-    );
+    const { messageId } = data;
+    const message = await browser.messages.get(messageId);
+    const fullMessage = await browser.messages.getFull(messageId);
     
-    const htmlBody = `<p>${forwardText.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>')}</p>`;
+    const conversationId = message.headerMessageId || message.id.toString();
+    const userId = await getUserId();
     
-    await browser.compose.setComposeDetails(composeTab.id, {
-      body: htmlBody,
-      isPlainText: false
+    // Log email messages
+    try {
+      console.log("Attempting to log email messages...");
+      console.log("userId:", userId);
+      console.log("conversationId:", conversationId);
+      const messages = [await formatMessageForLogging(message, fullMessage)];
+      console.log("Formatted message count:", messages.length);
+      console.log("First message:", JSON.stringify(messages[0], null, 2));
+      
+      const logResult = await logEmailMessages({
+        threadId: conversationId,
+        messages: messages,
+        userId: userId
+      });
+      console.log("✅ Email logging successful:", logResult);
+    } catch (logErr) {
+      console.error("❌ Email logging failed:", logErr.message);
+      console.error("Full error:", logErr);
+      // Don't block draft creation if logging fails
+    }
+    
+    // Upload attachments
+    let attachmentCount = 0;
+    try {
+      const attachments = await getMessageAttachments(messageId);
+      if (attachments.length > 0) {
+        attachmentCount = attachments.length;
+        await storeMessageAttachments({
+          threadId: conversationId,
+          messageId: messageId,
+          userId: userId,
+          attachments: attachments
+        });
+        console.log(`Uploaded ${attachmentCount} attachments`);
+      }
+    } catch (attErr) {
+      console.log("Attachment upload failed:", attErr.message);
+    }
+    
+    // Get user preferences
+    const userPreferences = await getUserPreferences();
+    
+    // Call pipeline API
+    const draftResult = await callPipelineAPI({
+      user_id: userId,
+      thread_id: conversationId,
+      message_id: messageId.toString(),
+      user_preferences: userPreferences
     });
     
-    return { success: true, composeTabId: composeTab.id };
+    // Create draft in Thunderbird
+    const draftContent = draftResult.draft_content || draftResult.response || "No draft content received";
+    const processingInfo = draftResult.processing_info || {};
+    
+    // Create compose window with draft
+    const composeDetails = {
+      to: [message.author],
+      subject: message.subject.startsWith("Re:") ? message.subject : `Re: ${message.subject}`,
+      plainTextBody: draftContent,
+      isPlainText: true
+    };
+    
+    await browser.compose.beginNew(composeDetails);
+    
+    return {
+      success: true,
+      draftContent: draftContent,
+      processingInfo: processingInfo,
+      attachmentCount: attachmentCount
+    };
+    
   } catch (error) {
-    console.error('Error inserting forward into compose:', error);
+    console.error("Error in handleDraftWithAttachments:", error);
     throw error;
   }
 }
 
-// Find related emails
-async function findRelatedEmails(messageData) {
-  const settings = await getSettings();
-  
-  const payload = {
-    subject: messageData.header.subject,
-    content: extractContent(messageData.full),
-    from: messageData.header.author,
-    userId: settings.userId || 'default'
-  };
-  
+/**
+ * Handle chat with thread request
+ */
+async function handleChatWithThread(data) {
   try {
-    const response = await fetch(`${settings.agentUrl}/api/related-threads`, {
-      method: 'POST',
+    const { messageId, question } = data;
+    const message = await browser.messages.get(messageId);
+    const conversationId = message.headerMessageId || message.id.toString();
+    const userId = await getUserId();
+    
+    // Log email messages (same as draft flow)
+    try {
+      console.log("Attempting to log email messages for chat...");
+      console.log("userId:", userId);
+      console.log("conversationId:", conversationId);
+      const messages = [await formatMessageForLogging(message, await browser.messages.getFull(messageId))];
+      console.log("Formatted message count:", messages.length);
+      
+      const logResult = await logEmailMessages({
+        threadId: conversationId,
+        messages: messages,
+        userId: userId
+      });
+      console.log("✅ Email logging successful for chat:", logResult);
+    } catch (logErr) {
+      console.error("❌ Email logging failed for chat:", logErr.message);
+      // Don't block chat if logging fails
+    }
+    
+    // Upload attachments (same as draft flow)
+    try {
+      const fullMessage = await browser.messages.getFull(messageId);
+      const attachments = await getMessageAttachments(messageId);
+      if (attachments.length > 0) {
+        await storeMessageAttachments({
+          threadId: conversationId,
+          messageId: messageId,
+          userId: userId,
+          attachments: attachments
+        });
+        console.log(`✅ Uploaded ${attachments.length} attachments for chat`);
+      } else {
+        console.log("No attachments found for this message");
+      }
+    } catch (attErr) {
+      console.error("❌ Attachment upload failed for chat:", attErr.message);
+      // Don't block chat if attachment upload fails
+    }
+    
+    // Call chat API
+    const backendUrl = await getBackendUrl();
+    const apiEndpoint = `${backendUrl}/api/chat-with-thread`;
+    
+    const payload = {
+      user_id: userId,
+      thread_id: conversationId,
+      question: question
+    };
+    
+    const response = await fetch(apiEndpoint, {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json"
       },
       body: JSON.stringify(payload)
     });
     
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`Server error (${response.status}): ${errorText}`);
     }
     
     const result = await response.json();
-    return result.related_threads || [];
+    
+    if (!result.success) {
+      throw new Error(result.error || "Unknown error from server");
+    }
+    
+    return {
+      success: true,
+      answer: result.answer,
+      processingInfo: result.processing_info
+    };
+    
   } catch (error) {
-    console.error('Find related error:', error);
-    throw new Error('Failed to connect to OpenMailBot agent');
+    console.error("Error in handleChatWithThread:", error);
+    throw error;
   }
 }
 
-// Analyze sentiment
-async function analyzeSentiment(messageData) {
-  const settings = await getSettings();
-  
-  const payload = {
-    content: extractContent(messageData.full),
-    provider: settings.llmProvider
-  };
-  
+/**
+ * Log email messages to server
+ */
+async function logEmailMessages(data) {
   try {
-    const response = await fetch(`${settings.agentUrl}/api/analyze-sentiment`, {
-      method: 'POST',
+    const { threadId, messages, userId } = data;
+    
+    // Validate required fields
+    if (!userId) {
+      throw new Error("userId is missing or empty");
+    }
+    if (!threadId) {
+      throw new Error("threadId is missing or empty");
+    }
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      throw new Error("messages must be a non-empty array");
+    }
+    
+    const backendUrl = await getBackendUrl();
+    const endpoint = `${backendUrl}/api/log-email`;
+    
+    const payload = {
+      user_id: userId,
+      thread_id: threadId,
+      messages: messages
+    };
+    
+    console.log("Sending email log payload:", JSON.stringify(payload, null, 2));
+    
+    const response = await fetch(endpoint, {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json"
       },
       body: JSON.stringify(payload)
     });
     
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`Server returned ${response.status}: ${errorText}`);
+      throw new Error(`Server returned ${response.status}: ${errorText}`);
     }
     
-    const result = await response.json();
-    return result.sentiment || { label: 'neutral', score: 0.5 };
+    console.log("Email messages logged successfully");
+    return await response.text();
   } catch (error) {
-    console.error('Sentiment analysis error:', error);
-    throw new Error('Failed to analyze sentiment');
+    console.error("Error in logEmailMessages:", error.message);
+    throw error;
   }
 }
 
-// Handle messages from popup/options
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'summarize') {
-    getCurrentMessage(message.tabId)
-      .then(summarizeEmail)
-      .then(sendResponse)
-      .catch(error => sendResponse({ error: error.message }));
-    return true; // Async response
+/**
+ * Store message attachments to server
+ */
+async function storeMessageAttachments(data) {
+  try {
+    const { threadId, messageId, userId, attachments } = data;
+    
+    // Validate required fields
+    if (!userId) {
+      throw new Error("userId is missing");
+    }
+    if (!threadId) {
+      throw new Error("threadId is missing");
+    }
+    if (!messageId) {
+      throw new Error("messageId is missing");
+    }
+    
+    if (!attachments || attachments.length === 0) {
+      console.log("No attachments to store");
+      return null;
+    }
+    
+    const backendUrl = await getBackendUrl();
+    const endpoint = `${backendUrl}/api/store-attachments`;
+    
+    const payload = {
+      user_id: userId,
+      thread_id: threadId,
+      message_id: messageId.toString(),
+      attachments: attachments
+    };
+    
+    console.log(`Uploading ${attachments.length} attachments...`);
+    console.log("Attachment payload summary:", {
+      user_id: userId,
+      thread_id: threadId,
+      message_id: messageId.toString(),
+      attachment_count: attachments.length
+    });
+    
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Upload error (${response.status}): ${errorText}`);
+    }
+    
+    console.log("Attachments stored successfully");
+    return await response.text();
+  } catch (error) {
+    console.error("Error in storeMessageAttachments:", error.message);
+    throw error;
   }
-  
-  if (message.action === 'generateReply') {
-    getCurrentMessage(message.tabId)
-      .then(data => generateReply(data, message.context))
-      .then(sendResponse)
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
-  }
-  
-  if (message.action === 'insertReply') {
-    getCurrentMessage(message.tabId)
-      .then(async (data) => {
-        const replyText = await generateReply(data, message.context);
-        return insertReplyIntoCompose(data.header, replyText, message.replyType || 'replyToSender');
-      })
-      .then(sendResponse)
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
-  }
-  
-  if (message.action === 'findRelated') {
-    getCurrentMessage(message.tabId)
-      .then(findRelatedEmails)
-      .then(sendResponse)
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
-  }
-  
-  if (message.action === 'analyzeSentiment') {
-    getCurrentMessage(message.tabId)
-      .then(analyzeSentiment)
-      .then(sendResponse)
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
-  }
-  
-  if (message.action === 'getSettings') {
-    getSettings()
-      .then(sendResponse)
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
-  }
-  
-  if (message.action === 'saveSettings') {
-    browser.storage.local.set(message.settings)
-      .then(() => sendResponse({ success: true }))
-      .catch(error => sendResponse({ error: error.message }));
-    return true;
-  }
-});
+}
 
-// Context menu items
-browser.menus.create({
-  id: "summarize-email",
-  title: "Summarize with OpenMailBot",
-  contexts: ["message_list"]
-});
-
-browser.menus.create({
-  id: "generate-reply",
-  title: "Generate Reply with OpenMailBot",
-  contexts: ["message_list"]
-});
-
-browser.menus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId === "summarize-email") {
-    // Open popup or notification with summary
-    console.log('Summarize clicked');
-  } else if (info.menuItemId === "generate-reply") {
-    console.log('Generate reply clicked');
+/**
+ * Get message attachments
+ */
+async function getMessageAttachments(messageId) {
+  try {
+    const attachments = await browser.messages.listAttachments(messageId);
+    const attachmentData = [];
+    
+    for (const att of attachments) {
+      try {
+        const file = await browser.messages.getAttachmentFile(messageId, att.partName);
+        const arrayBuffer = await file.arrayBuffer();
+        const base64 = arrayBufferToBase64(arrayBuffer);
+        
+        attachmentData.push({
+          filename: att.name,
+          content: base64,
+          mime_type: att.contentType
+        });
+      } catch (err) {
+        console.error(`Failed to process attachment ${att.name}:`, err);
+      }
+    }
+    
+    return attachmentData;
+  } catch (error) {
+    console.error("Error getting attachments:", error);
+    return [];
   }
-});
+}
 
-console.log('OpenMailBot background script loaded');
+/**
+ * Convert ArrayBuffer to Base64
+ */
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Format message for logging
+ */
+async function formatMessageForLogging(message, fullMessage) {
+  return {
+    message_id: message.id.toString(),
+    from_address: message.author,
+    to: message.recipients || [],
+    subject: message.subject,
+    timestamp: new Date(message.date).toISOString(),
+    body: extractPlainText(fullMessage)
+  };
+}
+
+/**
+ * Call Flask API
+ */
+async function callFlaskAPI(content, action) {
+  const backendUrl = await getBackendUrl();
+  const apiEndpoint = `${backendUrl}/chat`;
+  
+  let prompt;
+  if (action === "summarize") {
+    prompt = `You are an expert enterprise communication analyst.
+You will be given a batch of related email threads (20–30 emails) that belong to the same conversation.
+Your task is to analyze ALL emails carefully and produce a **chronological, structured summary**.
+
+### Instructions
+1. Read every email in full.
+2. Identify the **true chronological order** based on timestamps and context.
+3. Merge replies and forwards logically (do not repeat content).
+4. Ignore greetings, signatures, and disclaimers unless they add meaning.
+5. Focus on decisions, requests, approvals, blockers, and commitments.
+
+---
+
+### Output Format (STRICT)
+
+#### 1️⃣ Conversation Overview
+- **Topic:** <one-line summary of what this email thread is about>
+- **Participants:** <key people and their roles>
+- **Time Range:** <first email date → last email date>
+
+---
+
+#### 2️⃣ Chronological Timeline of Events
+(List in exact order — earliest to latest)
+
+**Step 1 – <Short Title>**
+- What happened: <one concise line>
+- Outcome / Decision: <if any>
+- Expectation / Ask at this stage: <what was requested or expected next>
+
+**Step 2 – <Short Title>**
+- What happened: <one concise line>
+- Outcome / Decision: <if any>
+- Expectation / Ask at this stage: <what was requested or expected next>
+
+(Repeat for all major events. Use **2 lines only** if the event is large or critical.)
+
+---
+
+#### 3️⃣ Current Status (As of Last Email)
+- **Current State:** <e.g., Awaiting approval / In progress / Blocked / Completed>
+- **Owner:** <person responsible now>
+- **Pending Actions:** <bullet list if multiple>
+
+---
+
+#### 4️⃣ Open Questions / Pending Requests
+(List anything that is still unanswered or waiting)
+- <Question or request>
+- <Who needs to respond>
+
+---
+
+#### 5️⃣ Final Ask / Next Expected Action
+(Clearly state what the sender expects next)
+- **Action Required:** <clear action>
+- **From Whom:** <person/team>
+- **Deadline (if mentioned):** <date or "Not specified">
+
+---
+
+### Rules
+- Be factual and neutral.
+- Do NOT invent information.
+- Do NOT summarize per email — summarize per **event**.
+- Keep language professional and concise.
+- Prefer clarity over verbosity.
+
+Email Thread:
+${content}`;
+  } else {
+    prompt = content;
+  }
+  
+  const payload = {
+    prompt: prompt
+  };
+  
+  const response = await fetch(apiEndpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Flask API error: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  
+  if (data.error) {
+    throw new Error(`Flask API error: ${data.error}`);
+  }
+  
+  if (data.response) {
+    return data.response;
+  }
+  
+  throw new Error("Unexpected API response format");
+}
+
+/**
+ * Call Pipeline API for draft generation
+ */
+async function callPipelineAPI(requestData) {
+  const backendUrl = await getBackendUrl();
+  const apiEndpoint = `${backendUrl}/api/draft-with-attachments`;
+  
+  const response = await fetch(apiEndpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(requestData)
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Server error (${response.status}): ${errorText}`);
+  }
+  
+  const contentType = response.headers.get("content-type");
+  if (contentType && contentType.includes("text/html")) {
+    throw new Error("Server returned HTML instead of JSON. Check if the server is running.");
+  }
+  
+  const data = await response.json();
+  
+  if (data.error) {
+    throw new Error(`Pipeline API error: ${data.error}`);
+  }
+  
+  return data;
+}
+
+/**
+ * Log email data to server
+ */
+async function logEmailData(threadId, threadText, action) {
+  const backendUrl = await getBackendUrl();
+  const endpoint = `${backendUrl}/api/log-email-data`;
+  
+  const payload = {
+    thread_id: threadId,
+    content: threadText,
+    action: action
+  };
+  
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Failed to log email data: ${response.status}`);
+  }
+}
+
+/**
+ * Get user ID (email address)
+ */
+async function getUserId() {
+  try {
+    const accounts = await browser.accounts.list();
+    if (accounts.length > 0 && accounts[0].identities.length > 0) {
+      return accounts[0].identities[0].email;
+    }
+    return "unknown@user.com";
+  } catch (error) {
+    console.error("Error getting user ID:", error);
+    return "unknown@user.com";
+  }
+}
+
+/**
+ * Get user preferences
+ */
+async function getUserPreferences() {
+  const result = await browser.storage.local.get("user_settings");
+  const settings = result.user_settings || {};
+  
+  return {
+    name: settings.user_name || "User",
+    position: settings.user_position || "Professional",
+    tone: settings.user_tone || "professional",
+    custom_instructions: settings.system_prompt || ""
+  };
+}

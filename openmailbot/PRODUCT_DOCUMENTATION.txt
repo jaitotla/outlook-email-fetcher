@@ -1,0 +1,72 @@
+================================================================================
+                    OPENMAILBOT - PRODUCT DOCUMENTATION
+================================================================================
+
+WHAT IS OPENMAILBOT?
+OpenMailBot is an intelligent email assistant that reads your emails and 
+attachments, then answers your questions about them using AI.
+
+WHAT CAN IT DO?
+• Search email threads and attachments intelligently
+• Answer questions about your email conversations
+• Read PDFs, spreadsheets, and presentations
+• Find information without manual scrolling
+
+HOW TO USE IT
+1. Prepare your emails and group them into threads
+2. Start processing - the system analyzes content automatically
+3. Ask questions like: "What was decided?" or "Where's the budget?"
+4. Get answers backed by actual email content
+
+SUPPORTED FILES
+• PDF documents
+• Excel/CSV spreadsheets
+• PowerPoint presentations
+• Email messages
+
+COMMON QUESTIONS
+
+Q: How is my data stored?
+A: Locally and securely. Each user has isolated data storage with their own 
+   copies of emails and attachments.
+
+Q: How fast is processing?
+A: Initial processing takes time based on email volume. Searching is fast 
+   afterward. Large threads may take several minutes.
+
+Q: What files can it read?
+A: PDFs, spreadsheets, presentations, and email text content.
+
+Q: Is it accurate?
+A: Yes, but verify important decisions in the original emails.
+
+BEST PRACTICES
+• Ask clear, specific questions
+• Include context in your queries
+• Process emails regularly, not in large batches
+• Keep related emails in the same thread
+
+TROUBLESHOOTING
+• "Thread not found" → Check thread data is saved
+• "No information found" → Rephrase your question
+• "Processing slow" → This is normal for large files
+• "Embedding error" → Check your internet connection
+
+SYSTEM REQUIREMENTS
+• 2GB storage space
+• Stable internet connection
+• Modern web browser
+• Email account with accessible data
+
+KEY BENEFITS
+✓ Save time finding information
+✓ Understand long conversations easily
+✓ Search multiple documents at once
+✓ Private, organized data storage
+✓ Accurate AI-powered answers
+
+For technical details, see DOCUMENTATION_INDEX.md
+
+================================================================================
+Document Version: 1.0 | Last Updated: February 2026
+================================================================================

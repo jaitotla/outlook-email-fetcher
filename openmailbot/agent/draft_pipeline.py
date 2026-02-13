@@ -24,18 +24,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-CONFIG_PATH = "openmailbot/agent/config.json"
-print("confing s loded")
-with open(CONFIG_PATH, 'r') as f:
-    CONFIG = json.load(f)
-    
+from config import settings
+
 # Constants
 BASE_PATH = "./data_pipeline"
 EMAIL_ATTACHMENTS_PATH = os.getenv("EMAIL_ATTACHMENTS_PATH", "./email_attachments")
 EMAIL_LOGS_PATH = os.getenv("EMAIL_LOGS_PATH", "/home/manotr/swapnil/email_logs")
 DB_PATH = os.path.join(BASE_PATH, "draft_processing.db")
-FLASK_EMBED_URL =CONFIG.get('FLASK_EMBED_URL', 'http://localhost:5050/embed')
-OPENAI_KEY = CONFIG.get('OPENAI_KEY')
+
+def _load_local_config():
+    path = os.path.join(os.path.dirname(__file__), "config.json")
+    path = os.path.abspath(path)
+    if os.path.exists(path):
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
 # Ollama settings
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
@@ -70,10 +76,12 @@ class DraftWithAttachmentsPipeline:
         self.db_path = DB_PATH
         self.setup_database()
         # OpenAI only for tool calling decisions
+        local_cfg = _load_local_config()
+        openai_key = local_cfg.get('OPENAI_KEY') or getattr(settings, 'OPENAI_API_KEY', None)
         self.tool_caller_llm = ChatOpenAI(
             model="gpt-4o-mini",
             temperature=0,
-            api_key=OPENAI_KEY
+            api_key=openai_key
         )
     
     def setup_database(self):
