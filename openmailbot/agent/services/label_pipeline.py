@@ -66,7 +66,8 @@ class EmailLabelPipeline:
             
         if openai_api_key is None:
             try:
-                with open("/home/ubuntu/openmailbot/openmailbot/agent/config.json", "r") as f:
+                config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+                with open(config_path, "r") as f:
                     config = json.load(f)
                 openai_api_key = config.get("OPENAI_KEY")
             except (FileNotFoundError, json.JSONDecodeError):

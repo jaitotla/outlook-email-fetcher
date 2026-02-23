@@ -24,9 +24,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load configuration
-CONFIG_PATH = "/home/ubuntu/openmailbot/openmailbot/agent/config.json"
-with open(CONFIG_PATH, 'r') as f:
-    CONFIG = json.load(f)
+def _load_config() -> dict:
+    """Load config from relative path, fall back to empty dict gracefully."""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "config.json"),
+        os.path.join(os.path.dirname(__file__), "config.json"),
+        os.getenv("OPENMAILBOT_CONFIG_PATH", ""),
+    ]
+    for path in candidates:
+        path = os.path.abspath(path)
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return {}
+
+CONFIG = _load_config()
 
 # Import settings manager for encrypted DB-based settings
 from services.settings_manager import SettingsManager
@@ -289,30 +304,25 @@ class ChatWithThreadPipeline:
         )
     
     def _run_async_task(self, coro):
-        """Helper to run async code safely, handling running event loops"""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're in a running event loop, use thread pool executor
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(self._run_in_new_loop, coro)
-                    return future.result()
-            else:
-                # No running loop, can use asyncio.run directly
-                return asyncio.run(coro)
-        except RuntimeError:
-            # No event loop exists, create one
-            return asyncio.run(coro)
-    
+        """
+        Run an async coroutine from sync context safely.
+        Always runs in a fresh event loop in a new thread to avoid
+        conflicts with FastAPI's running event loop.
+        """
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self._run_in_new_loop, coro)
+            return future.result()  # blocks calling thread, not event loop
+
     def _run_in_new_loop(self, coro):
-        """Run coroutine in a new event loop (for thread pool)"""
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
+        """Run coroutine in a brand-new event loop (called from worker thread)."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            return new_loop.run_until_complete(coro)
+            return loop.run_until_complete(coro)
         finally:
-            new_loop.close()
+            loop.close()
+            asyncio.set_event_loop(None)
     
     def _get_embedding_sync(self, text: str) -> List[float]:
         """Synchronous wrapper for async embedding generation"""

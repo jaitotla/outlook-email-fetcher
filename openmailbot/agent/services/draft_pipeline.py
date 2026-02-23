@@ -25,9 +25,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load configuration
-CONFIG_PATH = "/home/ubuntu/openmailbot/openmailbot/agent/config.json"
-with open(CONFIG_PATH, 'r') as f:
-    CONFIG = json.load(f)
+def _load_config() -> dict:
+    """Load config from relative path, fall back to empty dict gracefully."""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "config.json"),
+        os.path.join(os.path.dirname(__file__), "config.json"),
+        os.getenv("OPENMAILBOT_CONFIG_PATH", ""),
+    ]
+    for path in candidates:
+        path = os.path.abspath(path)
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return {}
+
+CONFIG = _load_config()
 
 # Import settings manager for encrypted DB-based settings
 from services.settings_manager import SettingsManager
@@ -230,28 +245,25 @@ class DraftPipeline:
         )
     
     def _run_async_task(self, coro):
-        """Helper to run async code safely, handling running event loops"""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If loop is already running, schedule in thread pool
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    return loop.run_in_executor(pool, lambda: self._run_in_new_loop(coro))
-            else:
-                return loop.run_until_complete(coro)
-        except RuntimeError:
-            # No event loop exists, create one
-            return asyncio.run(coro)
-    
+        """
+        Run an async coroutine from sync context safely.
+        Always runs in a fresh event loop in a new thread to avoid
+        conflicts with FastAPI's running event loop.
+        """
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self._run_in_new_loop, coro)
+            return future.result()  # blocks calling thread, not event loop
+
     def _run_in_new_loop(self, coro):
-        """Run coroutine in a new event loop (for thread pool)"""
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
+        """Run coroutine in a brand-new event loop (called from worker thread)."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            return new_loop.run_until_complete(coro)
+            return loop.run_until_complete(coro)
         finally:
-            new_loop.close()
+            loop.close()
+            asyncio.set_event_loop(None)
     
     def _get_embedding_sync(self, text: str) -> List[float]:
         """Synchronous wrapper for async embedding generation"""
@@ -414,21 +426,31 @@ class DraftPipeline:
     async def mark_attachment_processed(self, user_id: str, thread_id: str,
                                        message_id: str, attachment_id: str):
         """Mark attachment as processed in database (async)"""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            self._mark_attachment_processed_sync,
+            user_id, thread_id, message_id, attachment_id
+        )
+
+    def _mark_attachment_processed_sync(self, user_id: str, thread_id: str,
+                                        message_id: str, attachment_id: str):
+        """Synchronous implementation of mark_attachment_processed"""
         # Ensure per-user DB has required tables
         self.ensure_user_db(user_id)
         user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "draft_processing.db")
         os.makedirs(os.path.dirname(user_db), exist_ok=True)
         conn = sqlite3.connect(user_db)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO attachment_processing
-            (user_id, thread_id, message_id, attachment_id, processed_status, processed_timestamp)
-            VALUES (?, ?, ?, ?, 'completed', CURRENT_TIMESTAMP)
-        ''', (user_id, thread_id, message_id, attachment_id))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO attachment_processing
+                (user_id, thread_id, message_id, attachment_id, processed_status, processed_timestamp)
+                VALUES (?, ?, ?, ?, 'completed', CURRENT_TIMESTAMP)
+            ''', (user_id, thread_id, message_id, attachment_id))
+            conn.commit()
+        finally:
+            conn.close()
     
     async def process_thread_attachments(self, user_id: str, thread_id: str, message_id: str = None) -> Dict:
         """Process all unprocessed attachments in a thread (async)"""

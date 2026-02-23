@@ -247,6 +247,33 @@ function draftWithAttachments(e) {
 }
 
 /**
+ * Poll job status endpoint until done or error, then return result.
+ * @param {string} jobId - The job ID returned by the pipeline endpoint
+ * @param {number} maxWaitMs - Maximum time to wait in milliseconds (default 120000)
+ * @returns {Object} The result from the completed job
+ */
+function pollJobStatus(jobId, maxWaitMs) {
+  maxWaitMs = maxWaitMs || 120000;
+  var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
+  var baseUrl = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
+  var statusUrl = baseUrl + '/api/job-status/' + jobId;
+  var waited = 0;
+  var interval = 3000;
+
+  while (waited < maxWaitMs) {
+    var resp = UrlFetchApp.fetch(statusUrl, { method: "get", muteHttpExceptions: true });
+    if (resp.getResponseCode() === 200) {
+      var data = JSON.parse(resp.getContentText());
+      if (data.status === "done") return data.result;
+      if (data.status === "error") throw new Error("Server error: " + data.error);
+    }
+    Utilities.sleep(interval);
+    waited += interval;
+  }
+  throw new Error("Timeout waiting for job " + jobId + " after " + (maxWaitMs / 1000) + "s");
+}
+
+/**
  * NEW: Call Pipeline API for draft generation with attachments
  * No longer sends email_data - server will fetch from stored messages
  */
@@ -296,6 +323,11 @@ function callPipelineAPI(requestData) {
     
     if (data.error) {
       throw new Error("Pipeline API error: " + data.error);
+    }
+
+    // If server returned a job_id, poll until done
+    if (data.job_id) {
+      return pollJobStatus(data.job_id, 120000);
     }
     
     return data;
@@ -901,7 +933,15 @@ function chatWithThread(e) {
       throw new Error("Server error (" + responseCode + "): " + responseText.substring(0, 200));
     }
     
-    var result = JSON.parse(responseText);
+    var initialData = JSON.parse(responseText);
+
+    // If server returned a job_id, poll until done
+    var result;
+    if (initialData.job_id) {
+      result = pollJobStatus(initialData.job_id, 120000);
+    } else {
+      result = initialData;
+    }
     
     if (!result.success) {
       throw new Error(result.error || "Unknown error from server");
@@ -1880,33 +1920,6 @@ function getEffectiveSettings() {
 
 
 
-/**
- * Get current domain filters from Script Properties
- * NOTE: These filters are ONLY applied in the background monitor script
- */
-function getDomainFilters() {
-  var scriptProps = PropertiesService.getScriptProperties();
-  var filtersJson = scriptProps.getProperty("domain_filters");
-  
-  if (!filtersJson) {
-    return [];
-  }
-  
-  try {
-    return JSON.parse(filtersJson);
-  } catch (e) {
-    Logger.log("Failed to parse domain filters: " + e.message);
-    return [];
-  }
-}
-
-/**
- * Save domain filters to Script Properties
- */
-function saveDomainFilters(filters) {
-  var scriptProps = PropertiesService.getScriptProperties();
-  scriptProps.setProperty("domain_filters", JSON.stringify(filters));
-}
 /**
  * Get current domain and email filters from Script Properties
  * NOTE: These filters are ONLY applied in the background monitor script
