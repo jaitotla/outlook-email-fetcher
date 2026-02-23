@@ -2,7 +2,7 @@
 OpenMailBot Agent - FastAPI Application
 Handles email ingestion, embeddings, RAG, and LLM interface
 """
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -15,6 +15,9 @@ import re
 import html
 import sqlite3
 import asyncio
+import uuid
+import threading
+from functools import partial
 
 from config import settings
 #from services.ingestion import EmailIngestionService
@@ -38,6 +41,40 @@ try:
 except:
     def log_request(*args, **kwargs):
         pass  # Fallback if logger not available
+
+
+def _load_config() -> dict:
+    """Load config from relative path, fall back to empty dict gracefully."""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "config.json"),
+        os.getenv("OPENMAILBOT_CONFIG_PATH", ""),
+    ]
+    for path in candidates:
+        path = os.path.abspath(path)
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return {}
+
+CONFIG = _load_config()
+
+# In-memory job store for background task tracking
+_job_store: Dict[str, Dict[str, Any]] = {}
+_job_store_lock = threading.Lock()
+
+
+def _set_job(job_id: str, status: str, result: Any = None, error: str = None):
+    with _job_store_lock:
+        _job_store[job_id] = {
+            "status": status,       # "pending" | "processing" | "done" | "error"
+            "result": result,
+            "error": error,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
 
 app = FastAPI(
     title="OpenMailBot Agent",
@@ -749,29 +786,33 @@ async def sync_settings(request: SyncSettingsRequest):
 
 
 @app.post("/api/chat-with-thread")
-async def chat_with_thread(request: ChatWithThreadRequest):
+async def chat_with_thread(request: ChatWithThreadRequest, background_tasks: BackgroundTasks):
     """
     Chat with an email thread using RAG pipeline
-    
-    This endpoint processes unprocessed emails and attachments,
-    then uses OpenAI for tool selection and Ollama for final answer generation.
+
+    Returns a job_id immediately; heavy processing runs in background.
+    Poll /api/job-status/{job_id} until status is "done" or "error".
     """
+    job_id = str(uuid.uuid4())
+    _set_job(job_id, "pending")
+    background_tasks.add_task(_run_chat_pipeline, job_id, request)
+    return {"job_id": job_id, "status": "pending"}
+
+
+def _run_chat_pipeline(job_id: str, request: ChatWithThreadRequest):
+    _set_job(job_id, "processing")
     try:
-        # Initialize pipeline with user_id for user-isolated data access
         chat_pipeline = ChatWithThreadPipeline(user_id=request.user_id)
-        # `process_and_chat` is synchronous and returns a dict
         result = chat_pipeline.process_and_chat(
             request.user_id,
             request.thread_id,
-            request.question
+            request.question,
         )
-        
-        return result
+        _set_job(job_id, "done", result=result)
     except Exception as e:
         import traceback
         traceback.print_exc()
-        # Log and return the error message for debugging purposes
-        raise HTTPException(status_code=500, detail=str(e))
+        _set_job(job_id, "error", error=str(e))
 
 
 @app.post("/api/reset-and-reprocess-thread")
@@ -815,51 +856,43 @@ async def reset_and_reprocess_thread(request: ChatWithThreadRequest):
 
 
 @app.post("/api/draft-with-attachments")
-async def draft_with_attachments(request: DraftWithAttachmentsRequest):
+async def draft_with_attachments(request: DraftWithAttachmentsRequest, background_tasks: BackgroundTasks):
     """
     Generate email draft with attachment context using hybrid approach
-    
-    This endpoint processes attachments and generates a professional email draft
-    using OpenAI for tool selection and Ollama for final draft generation.
-    
-    Request:
-    {
-        "user_id": "user@example.com",
-        "thread_id": "gmail_thread_id",
-        "user_preferences": {
-            "name": "John Doe",
-            "position": "Manager",
-            "tone": "professional",
-            "custom_instructions": "Always include bullet points"
-        }
-    }
-    
-    Returns:
-    {
-        "success": true,
-        "draft_content": "Generated draft email...",
-        "processing_info": {
-            "attachments_found": 2,
-            "attachments_processed": 1,
-            "attachments_skipped": 1,
-            "errors": []
-        }
-    }
+
+    Returns a job_id immediately; heavy processing runs in background.
+    Poll /api/job-status/{job_id} until status is "done" or "error".
     """
+    job_id = str(uuid.uuid4())
+    _set_job(job_id, "pending")
+    background_tasks.add_task(_run_draft_pipeline, job_id, request)
+    return {"job_id": job_id, "status": "pending"}
+
+
+def _run_draft_pipeline(job_id: str, request: DraftWithAttachmentsRequest):
+    _set_job(job_id, "processing")
     try:
-        # Initialize pipeline with user_id for user-isolated data access
         draft_pipeline = DraftPipeline(user_id=request.user_id)
-        result = await draft_pipeline.process_email_request(
+        result = asyncio.run(draft_pipeline.process_email_request(
             request.user_id,
             request.thread_id,
-            request.user_preferences
-        )
-        
-        return result
+            request.user_preferences,
+        ))
+        _set_job(job_id, "done", result=result)
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        _set_job(job_id, "error", error=str(e))
+
+
+@app.get("/api/job-status/{job_id}")
+async def get_job_status(job_id: str):
+    """Poll the status of a background job submitted by chat-with-thread or draft-with-attachments."""
+    with _job_store_lock:
+        job = _job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job_id": job_id, **job}
 
 
 class SlackChannelsRequest(BaseModel):
@@ -1054,12 +1087,8 @@ async def label_email_data(request: LogEmailRequest):
         logger.info(f"   Preprocessed {len(processed_messages)} messages")
         
         # Step 2: Label the thread using the processed messages
-        # Get OpenAI API key from environment or settings
-        
-        with open("/home/ubuntu/openmailbot/openmailbot/agent/config.json", "r") as f:
-            config = json.load(f)
-            
-        openai_api_key = config.get("OPENAI_KEY")
+        # Get OpenAI API key from environment or config
+        openai_api_key = os.getenv("OPENAI_API_KEY") or CONFIG.get("OPENAI_KEY")
         
         if not openai_api_key:
             logger.warning("   No OpenAI API key found, using rule-based only")
@@ -1067,10 +1096,15 @@ async def label_email_data(request: LogEmailRequest):
         label_pipeline = EmailLabelPipeline(openai_api_key=openai_api_key)
         
         # Label the thread (focuses on last message)
-        # Label and store thread in graph database
-        label_and_store_result = label_pipeline.label_and_store_thread(
-            thread_id=request.thread_id,
-            messages=processed_messages
+        # Label and store thread in graph database — offload to thread pool to avoid blocking the event loop
+        loop = asyncio.get_running_loop()
+        label_and_store_result = await loop.run_in_executor(
+            None,
+            partial(
+                label_pipeline.label_and_store_thread,
+                thread_id=request.thread_id,
+                messages=processed_messages,
+            )
         )
         
         label = label_and_store_result["label_result"]
