@@ -1,51 +1,77 @@
 /**
- * Entry point for Gmail Add-on
+ * Entry point for Gmail Add-on — Premium home card
  */
 function buildAddOn(e) {
-  // Create all labels with colors when add-on loads
-  createAllLabelsWithColors();
-  
   return CardService.newCardBuilder()
-    .addSection(
-      CardService.newCardSection()
-        .setHeader("✨ Email Thread Assistant")
-        .addWidget(
-          CardService.newTextParagraph()
-            .setText("Analyze and interact with your email threads using AI")
-        )
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("OpenMailBot")
+        .setSubtitle("Your AI-Powered Email Assistant")
     )
     .addSection(
       CardService.newCardSection()
         .addWidget(
+          CardService.newDecoratedText()
+            .setTopLabel("✦  POWERED BY AI  ✦")
+            .setText("<b>Welcome to OpenMailBot</b>")
+            .setBottomLabel("Summarize threads · Chat with emails · Draft smart replies")
+            .setWrapText(true)
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .setHeader("Core Features")
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText("<b>📝  Summarize Thread</b>")
+            .setBottomLabel("AI-powered structured summary of your entire thread")
+            .setWrapText(true)
+            .setButton(
+              CardService.newTextButton()
+                .setText("Run")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#4285F4")
+                .setOnClickAction(CardService.newAction().setFunctionName("summarizeThread"))
+            )
+        )
+        .addWidget(CardService.newDivider())
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText("<b>💬  Chat with Thread</b>")
+            .setBottomLabel("Ask anything about emails & attachments using RAG")
+            .setWrapText(true)
+            .setButton(
+              CardService.newTextButton()
+                .setText("Open")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#7C4DFF")
+                .setOnClickAction(CardService.newAction().setFunctionName("showChatInterface"))
+            )
+        )
+        .addWidget(CardService.newDivider())
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText("<b>📎  Draft with Attachments</b>")
+            .setBottomLabel("Generate a context-aware reply using attachment data")
+            .setWrapText(true)
+            .setButton(
+              CardService.newTextButton()
+                .setText("Draft")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#0F9D58")
+                .setOnClickAction(CardService.newAction().setFunctionName("draftWithAttachments"))
+            )
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(CardService.newDivider())
+        .addWidget(
           CardService.newTextButton()
-            .setText("📝 Summarize Thread")
+            .setText("⚙️  Settings & Configuration")
             .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("summarizeThread")
-            )
-        )
-        .addWidget(
-          CardService.newTextButton()
-            .setText("💬 Chat with Thread")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("showChatInterface")
-            )
-        )
-        .addWidget(
-          CardService.newTextButton()
-            .setText("📎 Draft with Attachments")
-            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-            .setBackgroundColor("#34A853")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("draftWithAttachments")
-            )
-        )
-        .addWidget(
-          CardService.newTextButton()
-            .setText("⚙️ Settings")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("showSettingsCard")
-            )
+            .setBackgroundColor("#5F6368")
+            .setOnClickAction(CardService.newAction().setFunctionName("showSettingsCard"))
         )
     )
     .build();
@@ -158,12 +184,17 @@ function draftWithAttachments(e) {
     }
     
     var card = CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader()
+          .setTitle("Draft Ready")
+          .setSubtitle("Created with attachment context")
+      )
       .addSection(
         CardService.newCardSection()
-          .setHeader("✅ Draft Created with Attachments")
           .addWidget(
-            CardService.newTextParagraph()
-              .setText(successMsg)
+            CardService.newDecoratedText()
+              .setText("<b>" + successMsg + "</b>")
+              .setWrapText(true)
           )
       )
       .addSection(
@@ -178,6 +209,7 @@ function draftWithAttachments(e) {
         CardService.newCardSection()
           .setHeader("📧 Draft Preview")
           .setCollapsible(true)
+          .setNumUncollapsibleWidgets(0)
           .addWidget(
             CardService.newTextParagraph()
               .setText(draftPreview)
@@ -189,14 +221,16 @@ function draftWithAttachments(e) {
             CardService.newButtonSet()
               .addButton(
                 CardService.newTextButton()
-                  .setText("📝 View in Gmail")
+                  .setText("📬 View Drafts")
+                  .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                  .setBackgroundColor("#4285F4")
                   .setOpenLink(CardService.newOpenLink()
                     .setUrl("https://mail.google.com/mail/u/0/#drafts")
                     .setOpenAs(CardService.OpenAs.FULL_SIZE))
               )
               .addButton(
                 CardService.newTextButton()
-                  .setText("🔙 Back")
+                  .setText("🏠 Home")
                   .setOnClickAction(
                     CardService.newAction().setFunctionName("buildAddOn")
                   )
@@ -316,12 +350,18 @@ function summarizeThread(e) {
     
     // Show loading state
     var loadingCard = CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader()
+          .setTitle("Analyzing Thread")
+          .setSubtitle("This may take a moment…")
+      )
       .addSection(
         CardService.newCardSection()
-          .setHeader("⏳ Analyzing Thread...")
           .addWidget(
-            CardService.newTextParagraph()
-              .setText("Please wait while we analyze your email thread. This may take a moment...")
+            CardService.newDecoratedText()
+              .setText("<b>⏳ Processing your email thread…</b>")
+              .setBottomLabel("AI is reading all messages and building a structured summary.")
+              .setWrapText(true)
           )
       )
       .build();
@@ -362,7 +402,7 @@ function summarizeThread(e) {
     
     // Build card with formatted summary and draft button
     var summarySection = CardService.newCardSection()
-      .setHeader("📊 Thread Summary");
+      .setHeader("📊 AI Summary");
     
     // Split summary into smaller paragraphs for better display
     var paragraphs = formattedSummary.split('<br><br>');
@@ -376,6 +416,11 @@ function summarizeThread(e) {
     });
     
     var card = CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader()
+          .setTitle("Thread Summary")
+          .setSubtitle("AI-generated · Structured overview")
+      )
       .addSection(summarySection);
     
     // Add action buttons
@@ -385,8 +430,9 @@ function summarizeThread(e) {
           CardService.newButtonSet()
             .addButton(
               CardService.newTextButton()
-                .setText("✉️ Draft Response")
+                .setText("✍️ Draft Response")
                 .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#0F9D58")
                 .setOnClickAction(
                   CardService.newAction()
                     .setFunctionName("createDraftResponse")
@@ -395,7 +441,7 @@ function summarizeThread(e) {
             )
             .addButton(
               CardService.newTextButton()
-                .setText("🔙 Back")
+                .setText("🏠 Home")
                 .setOnClickAction(
                   CardService.newAction().setFunctionName("buildAddOn")
                 )
@@ -477,12 +523,18 @@ function createDraftResponse(e) {
     
     // Show loading
     var loadingCard = CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader()
+          .setTitle("Drafting Response")
+          .setSubtitle("Composing your AI-powered reply…")
+      )
       .addSection(
         CardService.newCardSection()
-          .setHeader("✍️ Drafting Response...")
           .addWidget(
-            CardService.newTextParagraph()
-              .setText("Creating your draft email...")
+            CardService.newDecoratedText()
+              .setText("<b>✍️ Generating your draft…</b>")
+              .setBottomLabel("AI is crafting a professional reply based on this thread.")
+              .setWrapText(true)
           )
       )
       .build();
@@ -557,18 +609,24 @@ function createDraftResponse(e) {
     
     // Show success message
     var card = CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader()
+          .setTitle("Draft Created")
+          .setSubtitle("Ready to review and send")
+      )
       .addSection(
         CardService.newCardSection()
-          .setHeader("✅ Draft Created Successfully")
           .addWidget(
-            CardService.newTextParagraph()
-              .setText(successMsg)
+            CardService.newDecoratedText()
+              .setText("<b>" + successMsg + "</b>")
+              .setWrapText(true)
           )
       )
       .addSection(
         CardService.newCardSection()
           .setHeader("📧 Draft Preview")
           .setCollapsible(true)
+          .setNumUncollapsibleWidgets(0)
           .addWidget(
             CardService.newTextParagraph()
               .setText(draftPreview)
@@ -580,14 +638,16 @@ function createDraftResponse(e) {
             CardService.newButtonSet()
               .addButton(
                 CardService.newTextButton()
-                  .setText("📝 View in Gmail")
+                  .setText("📬 View Drafts")
+                  .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                  .setBackgroundColor("#4285F4")
                   .setOpenLink(CardService.newOpenLink()
                     .setUrl("https://mail.google.com/mail/u/0/#drafts")
                     .setOpenAs(CardService.OpenAs.FULL_SIZE))
               )
               .addButton(
                 CardService.newTextButton()
-                  .setText("🔙 Back")
+                  .setText("🏠 Home")
                   .setOnClickAction(
                     CardService.newAction().setFunctionName("buildAddOn")
                   )
@@ -654,17 +714,25 @@ function showChatInterface(e) {
  * NEW: Enhanced chat card builder with optional processing info
  */
 function buildChatCardWithInfo(threadId, chatHistory, processingInfo) {
-  var card = CardService.newCardBuilder();
+  var card = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("Thread Chat")
+        .setSubtitle("RAG-powered Q&A on emails & attachments")
+    );
   
-  // Header
-  card.addSection(
-    CardService.newCardSection()
-      .setHeader("💬 Chat with Thread (RAG)")
-      .addWidget(
-        CardService.newTextParagraph()
-          .setText("Ask questions about emails and attachments")
-      )
-  );
+  // Intro hint when no history
+  if (!chatHistory || chatHistory.length === 0) {
+    card.addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText("<b>💬 Ask anything about this thread</b>")
+            .setBottomLabel("Emails and attachments are fully indexed — just type your question below.")
+            .setWrapText(true)
+        )
+    );
+  }
   
   // Show processing info if provided
   if (processingInfo) {
@@ -672,6 +740,7 @@ function buildChatCardWithInfo(threadId, chatHistory, processingInfo) {
       CardService.newCardSection()
         .setHeader("📊 Context Loaded")
         .setCollapsible(true)
+        .setNumUncollapsibleWidgets(0)
         .addWidget(
           CardService.newTextParagraph()
             .setText(processingInfo)
@@ -706,14 +775,26 @@ function buildChatCardWithInfo(threadId, chatHistory, processingInfo) {
   } else {
     card.addSection(
       CardService.newCardSection()
-        .setHeader("💡 Example Questions")
+        .setHeader("💡 Suggested Questions")
         .addWidget(
-          CardService.newTextParagraph()
-            .setText("• What are the key points in the attachments?<br>" +
-              "• Summarize the decisions made<br>" +
-              "• What data is in the Excel file?<br>" +
-              "• What does the PDF say about...?<br>" +
-              "• Who approved what and when?")
+          CardService.newDecoratedText()
+            .setText("Key points in attachments?")
+            .setWrapText(true)
+        )
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText("What decisions were made?")
+            .setWrapText(true)
+        )
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText("What does the PDF say about...?")
+            .setWrapText(true)
+        )
+        .addWidget(
+          CardService.newDecoratedText()
+            .setText("Who approved what and when?")
+            .setWrapText(true)
         )
     );
   }
@@ -725,15 +806,16 @@ function buildChatCardWithInfo(threadId, chatHistory, processingInfo) {
       CardService.newTextInput()
         .setFieldName("userQuestion")
         .setTitle("Your Question")
-        .setHint("Ask about emails or attachments...")
+        .setHint("e.g. What decisions were made in this thread?")
         .setMultiline(true)
     )
     .addWidget(
       CardService.newButtonSet()
         .addButton(
           CardService.newTextButton()
-            .setText("Send 📤")
+            .setText("📤 Send")
             .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+            .setBackgroundColor("#7C4DFF")
             .setOnClickAction(
               CardService.newAction()
                 .setFunctionName("chatWithThread")
@@ -742,7 +824,7 @@ function buildChatCardWithInfo(threadId, chatHistory, processingInfo) {
         )
         .addButton(
           CardService.newTextButton()
-            .setText("Clear Chat")
+            .setText("🗑️ Clear")
             .setOnClickAction(
               CardService.newAction()
                 .setFunctionName("clearChatHistory")
@@ -751,7 +833,7 @@ function buildChatCardWithInfo(threadId, chatHistory, processingInfo) {
         )
         .addButton(
           CardService.newTextButton()
-            .setText("🔙 Back")
+            .setText("🏠 Home")
             .setOnClickAction(
               CardService.newAction().setFunctionName("buildAddOn")
             )
@@ -1007,22 +1089,36 @@ function callFlaskAPI(content, action) {
 }
 
 /**
- * Shows error message
+ * Shows a premium error card
  */
 function showError(message) {
   return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("Something went wrong")
+        .setSubtitle("Please review the details below")
+    )
     .addSection(
       CardService.newCardSection()
-        .setHeader("❌ Error")
         .addWidget(
-          CardService.newTextParagraph()
-            .setText(message)
+          CardService.newDecoratedText()
+            .setText("<b>❌ Error</b>")
+            .setBottomLabel(message)
+            .setWrapText(true)
         )
+    )
+    .addSection(
+      CardService.newCardSection()
         .addWidget(
-          CardService.newTextButton()
-            .setText("🔙 Back")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("buildAddOn")
+          CardService.newButtonSet()
+            .addButton(
+              CardService.newTextButton()
+                .setText("🏠 Back to Home")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#4285F4")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("buildAddOn")
+                )
             )
         )
     )
@@ -1222,207 +1318,282 @@ function storeMessageAttachments(threadId, message) {
  * Supports "Inbuilt" mode (zero-config) or "Custom" mode (user-supplied keys)
  */
 function showSettingsCard(e) {
-  var userProps = PropertiesService.getUserProperties();
   var currentSettings = loadUserSettings();
-  
+
+  var isInbuilt    = currentSettings.mode !== "custom";
+  var llmProv      = (currentSettings.llm_provider       || "inbuilt").toUpperCase();
+  var embedProv    = (currentSettings.embedding_provider || "inbuilt").toUpperCase();
+  var vectorProv   = (currentSettings.vector_provider    || "inbuilt").toUpperCase();
+  var llmModel     = currentSettings.llm_model           || "gpt-4o-mini";
+  var embedModel   = currentSettings.embedding_model     || "text-embedding-3-small";
+  var userName     = currentSettings.user_name           || "Not set";
+  var userPos      = currentSettings.user_position       || "Not set";
+
+  var modeLabel    = isInbuilt ? "✨ Inbuilt Mode" : "⚡ Custom Mode";
+
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle("⚙️ Settings")
-        .setSubtitle("Configure your AI providers")
+        .setTitle("⚙️  OpenMailBot Settings")
+        .setSubtitle(modeLabel + " — Tap sections to expand")
     );
-  
-  // Mode Selection Section
-  var modeSection = CardService.newCardSection()
-    .setHeader("🔧 Mode")
-    .addWidget(
-      CardService.newSelectionInput()
-        .setType(CardService.SelectionInputType.DROPDOWN)
-        .setFieldName("mode")
-        .setTitle("Configuration Mode")
-        .addItem("Inbuilt (Zero Configuration)", "inbuilt", currentSettings.mode === "inbuilt")
-        .addItem("Custom (Your API Keys)", "custom", currentSettings.mode === "custom")
-    )
-    .addWidget(
-      CardService.newTextParagraph()
-        .setText("<i>Inbuilt: Uses central servers, no API keys needed.\nCustom: Use your own API keys for each provider.</i>")
-    );
-  card.addSection(modeSection);
-  
-  // LLM Provider Section
-  var llmSection = CardService.newCardSection()
-    .setHeader("🤖 LLM Provider")
-    .addWidget(
-      CardService.newSelectionInput()
-        .setType(CardService.SelectionInputType.DROPDOWN)
-        .setFieldName("llm_provider")
-        .setTitle("Provider")
-        .addItem("OpenAI", "openai", currentSettings.llm_provider === "openai")
-        .addItem("Anthropic (Claude)", "anthropic", currentSettings.llm_provider === "anthropic")
-        .addItem("Google Gemini", "gemini", currentSettings.llm_provider === "gemini")
-        .addItem("Ollama (Self-hosted)", "ollama", currentSettings.llm_provider === "ollama")
-        .addItem("Inbuilt", "inbuilt", currentSettings.llm_provider === "inbuilt" || !currentSettings.llm_provider)
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("llm_api_key")
-        .setTitle("API Key (for OpenAI/Anthropic/Gemini)")
-        .setValue(currentSettings.llm_api_key || "")
-        .setHint("Leave empty for Inbuilt/Ollama mode")
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("llm_model")
-        .setTitle("Model Name")
-        .setValue(currentSettings.llm_model || "gpt-4o-mini")
-        .setHint("e.g., gpt-4o-mini, claude-3-sonnet, gemini-pro")
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("llm_base_url")
-        .setTitle("Base URL (for Ollama/Custom)")
-        .setValue(currentSettings.llm_base_url || "")
-        .setHint("e.g., http://localhost:11434 for Ollama")
-    );
-  card.addSection(llmSection);
-  
-  // Embedding Provider Section
-  var embeddingSection = CardService.newCardSection()
-    .setHeader("📊 Embedding Provider")
-    .addWidget(
-      CardService.newSelectionInput()
-        .setType(CardService.SelectionInputType.DROPDOWN)
-        .setFieldName("embedding_provider")
-        .setTitle("Provider")
-        .addItem("OpenAI", "openai", currentSettings.embedding_provider === "openai")
-        .addItem("Nomic", "nomic", currentSettings.embedding_provider === "nomic")
-        .addItem("Google Gemini", "gemini", currentSettings.embedding_provider === "gemini")
-        .addItem("Sentence Transformers", "sentence-transformers", currentSettings.embedding_provider === "sentence-transformers")
-        .addItem("Inbuilt", "inbuilt", currentSettings.embedding_provider === "inbuilt" || !currentSettings.embedding_provider)
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("embedding_api_key")
-        .setTitle("API Key")
-        .setValue(currentSettings.embedding_api_key || "")
-        .setHint("Leave empty for Inbuilt mode")
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("embedding_model")
-        .setTitle("Model Name")
-        .setValue(currentSettings.embedding_model || "text-embedding-3-small")
-        .setHint("e.g., text-embedding-3-small, nomic-embed-text-v1.5")
-    );
-  card.addSection(embeddingSection);
-  
-  // Vector Database Section
-  var vectorSection = CardService.newCardSection()
-    .setHeader("🗄️ Vector Database")
-    .addWidget(
-      CardService.newSelectionInput()
-        .setType(CardService.SelectionInputType.DROPDOWN)
-        .setFieldName("vector_provider")
-        .setTitle("Provider")
-        .addItem("Pinecone", "pinecone", currentSettings.vector_provider === "pinecone")
-        .addItem("ChromaDB", "chroma", currentSettings.vector_provider === "chroma")
-        .addItem("Weaviate", "weaviate", currentSettings.vector_provider === "weaviate")
-        .addItem("Inbuilt", "inbuilt", currentSettings.vector_provider === "inbuilt" || !currentSettings.vector_provider)
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("vector_url")
-        .setTitle("Server URL")
-        .setValue(currentSettings.vector_url || "")
-        .setHint("e.g., https://your-index.pinecone.io")
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("vector_api_key")
-        .setTitle("API Key")
-        .setValue(currentSettings.vector_api_key || "")
-        .setHint("Leave empty for Inbuilt mode")
-    );
-  card.addSection(vectorSection);
-  
-  // User Info Section (for draft personalization)
-  var userInfoSection = CardService.newCardSection()
-    .setHeader("👤 User Profile (for drafts)")
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("user_name")
-        .setTitle("Your Name")
-        .setValue(currentSettings.user_name || "")
-        .setHint("Used in email signatures")
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("user_position")
-        .setTitle("Your Position/Title")
-        .setValue(currentSettings.user_position || "")
-        .setHint("e.g., Product Manager, Developer")
-    )
-    .addWidget(
-      CardService.newSelectionInput()
-        .setType(CardService.SelectionInputType.DROPDOWN)
-        .setFieldName("user_tone")
-        .setTitle("Preferred Tone")
-        .addItem("Professional", "professional", currentSettings.user_tone === "professional" || !currentSettings.user_tone)
-        .addItem("Friendly", "friendly", currentSettings.user_tone === "friendly")
-        .addItem("Formal", "formal", currentSettings.user_tone === "formal")
-        .addItem("Casual", "casual", currentSettings.user_tone === "casual")
-    )
-    .addWidget(
-      CardService.newTextInput()
-        .setFieldName("system_prompt")
-        .setTitle("Custom System Prompt")
-        .setValue(currentSettings.system_prompt || "")
-        .setHint("Optional: Override default AI behavior")
-        .setMultiline(true)
-    );
-  card.addSection(userInfoSection);
-  var advancedSection = CardService.newCardSection()
-    .setHeader("🔧 Advanced")
-    .addWidget(
-      CardService.newTextButton()
-        .setText("🔒 Background Monitor Filters")
-        .setOnClickAction(
-          CardService.newAction().setFunctionName("showAdvancedSettingsCard")
-        )
-    )
-    .addWidget(
-      CardService.newTextParagraph()
-        .setText("<i>Configure which emails the background monitor should exclude</i>")
-    );
-  card.addSection(advancedSection);
-  
-  // Save Button Section
-  var actionSection = CardService.newCardSection()
-    .addWidget(
-      CardService.newTextButton()
-        .setText("💾 Save Settings")
-        .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-        .setBackgroundColor("#1a73e8")
-        .setOnClickAction(
-          CardService.newAction().setFunctionName("saveSettings")
-        )
-    )
-    .addWidget(
-      CardService.newTextButton()
-        .setText("🔄 Reset to Defaults")
-        .setOnClickAction(
-          CardService.newAction().setFunctionName("resetSettings")
-        )
-    )
-    .addWidget(
-      CardService.newTextButton()
-        .setText("🔙 Back")
-        .setOnClickAction(
-          CardService.newAction().setFunctionName("buildAddOn")
-        )
-    );
-  card.addSection(actionSection);
-  
+
+  // ── Active Config Status Banner ────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("● ACTIVE CONFIGURATION")
+          .setText("<b>" + (isInbuilt
+              ? "✨  Inbuilt Mode — Zero Configuration"
+              : "⚡  Custom Mode — Your API Keys Active") + "</b>")
+          .setBottomLabel(
+            "🤖 LLM: " + llmProv + "  ·  📊 Embed: " + embedProv +
+            "  ·  🗄️ Vector: " + vectorProv + "  ·  👤 " + userName
+          )
+          .setWrapText(true)
+      )
+  );
+
+  // ── Configuration Mode ─────────────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader("🔧  CONFIGURATION MODE")
+      .addWidget(
+        CardService.newTextParagraph()
+          .setText(
+            "✨ <b>Inbuilt</b> — No setup needed. Uses OpenMailBot hosted services.\n" +
+            "⚡ <b>Custom</b> — Supply your own API keys for full control & privacy."
+          )
+      )
+      .addWidget(
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.RADIO_BUTTON)
+          .setFieldName("mode")
+          .setTitle("Select Mode")
+          .addItem("✨  Inbuilt  (Zero Configuration — Recommended)", "inbuilt", isInbuilt)
+          .addItem("⚡  Custom  (Your Own API Keys)", "custom", !isInbuilt)
+      )
+  );
+
+  // ── AI Language Model (collapsible) ───────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader("🤖  AI LANGUAGE MODEL")
+      .setCollapsible(true)
+      .setNumUncollapsibleWidgets(1)
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("CURRENT PROVIDER")
+          .setText("<b>" + llmProv + "</b>  ·  " + llmModel)
+          .setBottomLabel("Generates summaries, drafts & chat responses")
+          .setWrapText(true)
+      )
+      .addWidget(
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName("llm_provider")
+          .setTitle("Provider")
+          .addItem("🌐  OpenAI  (GPT-4o, GPT-3.5)", "openai", currentSettings.llm_provider === "openai")
+          .addItem("🤖  Anthropic  (Claude 3)", "anthropic", currentSettings.llm_provider === "anthropic")
+          .addItem("✦  Google Gemini", "gemini", currentSettings.llm_provider === "gemini")
+          .addItem("🖥️  Ollama  (Self-hosted)", "ollama", currentSettings.llm_provider === "ollama")
+          .addItem("✨  Inbuilt  (Default)", "inbuilt", currentSettings.llm_provider === "inbuilt" || !currentSettings.llm_provider)
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("llm_api_key")
+          .setTitle("🔑  API Key")
+          .setValue(currentSettings.llm_api_key || "")
+          .setHint("Required for OpenAI · Anthropic · Gemini  |  Leave empty for Inbuilt")
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("llm_model")
+          .setTitle("📦  Model Name")
+          .setValue(llmModel)
+          .setHint("gpt-4o-mini · claude-3-sonnet · gemini-pro · llama3.2")
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("llm_base_url")
+          .setTitle("🔗  Base URL  (Ollama / Custom only)")
+          .setValue(currentSettings.llm_base_url || "")
+          .setHint("e.g., http://localhost:11434")
+      )
+  );
+
+  // ── Embedding Engine (collapsible) ────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader("📊  EMBEDDING ENGINE")
+      .setCollapsible(true)
+      .setNumUncollapsibleWidgets(1)
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("CURRENT PROVIDER")
+          .setText("<b>" + embedProv + "</b>  ·  " + embedModel)
+          .setBottomLabel("Powers semantic search across emails & attachments")
+          .setWrapText(true)
+      )
+      .addWidget(
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName("embedding_provider")
+          .setTitle("Provider")
+          .addItem("🌐  OpenAI Embeddings", "openai", currentSettings.embedding_provider === "openai")
+          .addItem("🧠  Nomic Embed", "nomic", currentSettings.embedding_provider === "nomic")
+          .addItem("✦  Google Gemini", "gemini", currentSettings.embedding_provider === "gemini")
+          .addItem("🤗  Sentence Transformers  (Local)", "sentence-transformers", currentSettings.embedding_provider === "sentence-transformers")
+          .addItem("✨  Inbuilt  (Default)", "inbuilt", currentSettings.embedding_provider === "inbuilt" || !currentSettings.embedding_provider)
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("embedding_api_key")
+          .setTitle("🔑  API Key")
+          .setValue(currentSettings.embedding_api_key || "")
+          .setHint("Leave empty for Inbuilt or Sentence-Transformers")
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("embedding_model")
+          .setTitle("📦  Model Name")
+          .setValue(embedModel)
+          .setHint("text-embedding-3-small · nomic-embed-text-v1.5")
+      )
+  );
+
+  // ── Vector Database (collapsible) ─────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader("🗄️  VECTOR DATABASE")
+      .setCollapsible(true)
+      .setNumUncollapsibleWidgets(1)
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("CURRENT PROVIDER")
+          .setText("<b>" + vectorProv + "</b>")
+          .setBottomLabel("Stores and retrieves your AI knowledge vectors")
+          .setWrapText(true)
+      )
+      .addWidget(
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName("vector_provider")
+          .setTitle("Provider")
+          .addItem("🌲  Pinecone  (Cloud)", "pinecone", currentSettings.vector_provider === "pinecone")
+          .addItem("🎨  ChromaDB", "chroma", currentSettings.vector_provider === "chroma")
+          .addItem("🕸️  Weaviate", "weaviate", currentSettings.vector_provider === "weaviate")
+          .addItem("✨  Inbuilt  (Default)", "inbuilt", currentSettings.vector_provider === "inbuilt" || !currentSettings.vector_provider)
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("vector_url")
+          .setTitle("🔗  Server URL")
+          .setValue(currentSettings.vector_url || "")
+          .setHint("https://your-index.pinecone.io  ·  http://localhost:8000")
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("vector_api_key")
+          .setTitle("🔑  API Key")
+          .setValue(currentSettings.vector_api_key || "")
+          .setHint("Leave empty for Inbuilt / ChromaDB local mode")
+      )
+  );
+
+  // ── Your Profile (collapsible) ────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader("👤  YOUR PROFILE")
+      .setCollapsible(true)
+      .setNumUncollapsibleWidgets(1)
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("DRAFT PERSONALIZATION")
+          .setText("<b>" + userName + "</b>  ·  " + userPos)
+          .setBottomLabel("Used to personalize AI-generated email drafts")
+          .setWrapText(true)
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("user_name")
+          .setTitle("👤  Full Name")
+          .setValue(currentSettings.user_name || "")
+          .setHint("e.g., Alex Johnson")
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("user_position")
+          .setTitle("💼  Job Title / Role")
+          .setValue(currentSettings.user_position || "")
+          .setHint("e.g., Product Manager · Senior Developer · CEO")
+      )
+      .addWidget(
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName("user_tone")
+          .setTitle("✍️  Writing Tone")
+          .addItem("🎯  Professional  (Default)", "professional", currentSettings.user_tone === "professional" || !currentSettings.user_tone)
+          .addItem("😊  Friendly & Warm", "friendly", currentSettings.user_tone === "friendly")
+          .addItem("📋  Formal & Structured", "formal", currentSettings.user_tone === "formal")
+          .addItem("💬  Casual & Relaxed", "casual", currentSettings.user_tone === "casual")
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("system_prompt")
+          .setTitle("🧠  Custom AI Instruction")
+          .setValue(currentSettings.system_prompt || "")
+          .setHint("Optional: Override default AI behaviour for drafts & summaries")
+          .setMultiline(true)
+      )
+  );
+
+  // ── Advanced Settings Entry ────────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(CardService.newDivider())
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("BACKGROUND MONITOR  ·  PRIVACY FILTERS  ·  HISTORICAL SYNC")
+          .setText("<b>🔒  Advanced Settings</b>")
+          .setBottomLabel("Configure automation, email privacy filters & historical data processing")
+          .setWrapText(true)
+          .setButton(
+            CardService.newTextButton()
+              .setText("Open →")
+              .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+              .setBackgroundColor("#5F6368")
+              .setOnClickAction(CardService.newAction().setFunctionName("showAdvancedSettingsCard"))
+          )
+      )
+  );
+
+  // ── Action Bar ────────────────────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newTextButton()
+          .setText("💾  Save All Settings")
+          .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+          .setBackgroundColor("#0F9D58")
+          .setOnClickAction(CardService.newAction().setFunctionName("saveSettings"))
+      )
+      .addWidget(
+        CardService.newButtonSet()
+          .addButton(
+            CardService.newTextButton()
+              .setText("🔄 Reset Defaults")
+              .setOnClickAction(CardService.newAction().setFunctionName("resetSettings"))
+          )
+          .addButton(
+            CardService.newTextButton()
+              .setText("🏠 Home")
+              .setOnClickAction(CardService.newAction().setFunctionName("buildAddOn"))
+          )
+      )
+  );
+
   return card.build();
 }
 
@@ -1498,19 +1669,52 @@ function saveSettings(e) {
     // Continue - local save was successful
   }
   
-  // Return notification card
+  // Return confirmation card
+  var savedLLM    = (settings.llm_provider       || "inbuilt").toUpperCase();
+  var savedEmbed  = (settings.embedding_provider || "inbuilt").toUpperCase();
+  var savedVector = (settings.vector_provider    || "inbuilt").toUpperCase();
+  var savedMode   = (settings.mode               || "inbuilt").toUpperCase();
+
   return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("✅  Settings Saved")
+        .setSubtitle("Configuration is now active")
+    )
     .addSection(
       CardService.newCardSection()
         .addWidget(
-          CardService.newTextParagraph()
-            .setText("✅ <b>Settings saved successfully!</b>\n\nYour preferences have been stored.")
+          CardService.newDecoratedText()
+            .setTopLabel("● SAVE COMPLETE")
+            .setText("<b>All settings stored & synced successfully</b>")
+            .setBottomLabel(
+              "Mode: " + savedMode +
+              "  ·  🤖 " + savedLLM +
+              "  ·  📊 " + savedEmbed +
+              "  ·  🗄️ " + savedVector
+            )
+            .setWrapText(true)
         )
+    )
+    .addSection(
+      CardService.newCardSection()
         .addWidget(
-          CardService.newTextButton()
-            .setText("🔙 Back to Home")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("buildAddOn")
+          CardService.newButtonSet()
+            .addButton(
+              CardService.newTextButton()
+                .setText("⚙️  Back to Settings")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#0F9D58")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("showSettingsCard")
+                )
+            )
+            .addButton(
+              CardService.newTextButton()
+                .setText("🏠 Home")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("buildAddOn")
+                )
             )
         )
     )
@@ -1604,26 +1808,42 @@ function fetchSettingsFromBackend() {
 function resetSettings(e) {
   var userProps = PropertiesService.getUserProperties();
   userProps.deleteProperty("user_settings");
-  
+
   return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("🔄  Settings Reset")
+        .setSubtitle("Defaults have been restored")
+    )
     .addSection(
       CardService.newCardSection()
         .addWidget(
-          CardService.newTextParagraph()
-            .setText("🔄 <b>Settings reset to defaults!</b>\n\nAll custom settings have been cleared.")
+          CardService.newDecoratedText()
+            .setTopLabel("● RESET COMPLETE")
+            .setText("<b>All settings cleared — Inbuilt Mode restored</b>")
+            .setBottomLabel("OpenMailBot will now use its built-in hosted services with no API keys required.")
+            .setWrapText(true)
         )
+    )
+    .addSection(
+      CardService.newCardSection()
         .addWidget(
-          CardService.newTextButton()
-            .setText("⚙️ Open Settings")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("showSettingsCard")
+          CardService.newButtonSet()
+            .addButton(
+              CardService.newTextButton()
+                .setText("⚙️  Open Settings")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#0F9D58")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("showSettingsCard")
+                )
             )
-        )
-        .addWidget(
-          CardService.newTextButton()
-            .setText("🔙 Back to Home")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("buildAddOn")
+            .addButton(
+              CardService.newTextButton()
+                .setText("🏠 Home")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("buildAddOn")
+                )
             )
         )
     )
@@ -1792,96 +2012,443 @@ function shouldFilterMessage(message) {
   
   return false;
 }
-
+/**
+ * Show Advanced Settings Card
+ * - Process Past Emails: Save Selection and Run Now are SEPARATE actions
+ * - Save Selection → saves to UserProperties only (does NOT run)
+ * - Run Now → directly calls processLastNMonthsEmails
+ * - Email & Domain Filters section
+ */
 function showAdvancedSettingsCard(e) {
   var filters = JSON.parse(
-    PropertiesService.getScriptProperties()
-      .getProperty("domain_filters") || "[]"
+    PropertiesService.getScriptProperties().getProperty("domain_filters") || "[]"
   );
-
-  var filtersText = filters.join('\n');
+  var filtersText  = filters.join('\n');
+  var savedMonths  = PropertiesService.getScriptProperties().getProperty("process_last_n_months") || "3";
+  var filterStatus = filters.length > 0
+    ? filters.length + " active filter" + (filters.length !== 1 ? "s" : "")
+    : "No filters configured";
 
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle("🔧 Advanced Settings")
-        .setSubtitle("Background Monitor Configuration")
-    )
-    .addSection(
+        .setTitle("🔒  Advanced Settings")
+        .setSubtitle("Automation · Privacy Filters · Historical Data")
+    );
+
+  // ── Status Banner ──────────────────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("● SYSTEM STATUS")
+          .setText("<b>Background Monitor Configuration</b>")
+          .setBottomLabel(
+            "📅 Process window: " + savedMonths + " month(s)" +
+            "  ·  🛡️ Privacy filters: " + filterStatus
+          )
+          .setWrapText(true)
+      )
+  );
+
+  // ── Historical Email Processing ────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader("📅  HISTORICAL EMAIL PROCESSING")
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("SAVED TIME WINDOW")
+          .setText("<b>" + savedMonths + " month" + (savedMonths !== "1" ? "s" : "") + " back</b>")
+          .setBottomLabel("Bulk-index past emails so the AI has full historical context")
+          .setWrapText(true)
+      )
+      .addWidget(
+        CardService.newTextParagraph()
+          .setText(
+            "① Select a time window\n" +
+            "② Tap <b>Save Selection</b> to store your choice\n" +
+            "③ Tap <b>▶ Run Now</b> to start background indexing immediately"
+          )
+      )
+      .addWidget(
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName("process_last_n_months")
+          .setTitle("📆  Time Window")
+          .addItem("⚡  1 month   (Fast — recent only)",          "1",  savedMonths === "1")
+          .addItem("📅  2 months",                                "2",  savedMonths === "2")
+          .addItem("📅  3 months  (Recommended)",                 "3",  savedMonths === "3")
+          .addItem("📁  6 months  (Deep context)",                "6",  savedMonths === "6")
+          .addItem("🗂️  12 months  (Full year)",                 "12", savedMonths === "12")
+          .addItem("📦  24 months  (Maximum — slow)",            "24", savedMonths === "24")
+      )
+      .addWidget(
+        CardService.newButtonSet()
+          .addButton(
+            CardService.newTextButton()
+              .setText("💾  Save Selection")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("saveProcessMonthsSetting")
+              )
+          )
+          .addButton(
+            CardService.newTextButton()
+              .setText("▶  Run Now")
+              .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+              .setBackgroundColor("#1a73e8")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("runProcessLastNMonths")
+              )
+          )
+      )
+  );
+
+  // ── Privacy Filters ────────────────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader("🛡️  EMAIL PRIVACY FILTERS")
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("BACKGROUND MONITOR ONLY")
+          .setText("<b>" + filterStatus + "</b>")
+          .setBottomLabel("Matched emails are never sent to the server automatically")
+          .setWrapText(true)
+      )
+      .addWidget(
+        CardService.newTextParagraph()
+          .setText(
+            "<b>Supported formats:</b>\n" +
+            "• Full address:  <b>user@example.com</b>\n" +
+            "• Domain only:  <b>example.com</b>\n\n" +
+            "⚠️ Saving <b>replaces</b> the entire filter list.\n" +
+            "✅ Manual Summarize / Chat / Draft always bypass filters."
+          )
+      )
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName("domain_filters")
+          .setTitle("🚫  Emails & Domains to Block")
+          .setValue(filtersText)
+          .setMultiline(true)
+          .setHint("One entry per line  ·  e.g.  no-reply@amazon.com  or  newsletter.com")
+      )
+  );
+
+  // ── Active Filters List (collapsible) ─────────────────────────────────
+  if (filters.length > 0) {
+    card.addSection(
       CardService.newCardSection()
-        .setHeader("📧 Email & Domain Filters (Background Monitor Only)")
+        .setHeader("📋  ACTIVE FILTERS  (" + filters.length + ")")
+        .setCollapsible(true)
+        .setNumUncollapsibleWidgets(0)
         .addWidget(
           CardService.newTextParagraph()
-            .setText(
-              "<b>⚠️ Important: These filters apply ONLY to the background email monitor</b>\n\n" +
-
-              "📌 <b>Editing rule:</b> Saving will REPLACE the entire list.\n" +
-              "Remove a line = deleted filter.\n\n" +
-
-              "Emails matching these filters will NOT be sent to the server.\n\n" +
-              "✅ Manual actions always send data.\n\n" +
-
-              "<b>Supported formats:</b>\n" +
-              "• user@example.com\n" +
-              "• example.com"
-            )
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("domain_filters")
-            .setTitle("Emails/Domains to Exclude")
-            .setValue(filtersText)
-            .setMultiline(true)
-            .setHint("One per line")
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .setHeader("ℹ️ Current Filters")
-        .addWidget(
-          CardService.newTextParagraph()
-            .setText(
-              filters.length > 0
-                ? "<b>Active filters: " + filters.length + "</b>\n\n" +
-                  filters.map(function(d) {
-                    return "• " + d;
-                  }).join('\n')
-                : "No filters active"
-            )
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newTextButton()
-            .setText("💾 Save Filters")
-            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-            .setOnClickAction(
-              CardService.newAction()
-                .setFunctionName("saveDomainFiltersFromUI")
-            )
-        )
-        .addWidget(
-          CardService.newTextButton()
-            .setText("🧪 Test Filters")
-            .setOnClickAction(
-              CardService.newAction()
-                .setFunctionName("testDomainFilters")
-            )
-        )
-        .addWidget(
-          CardService.newTextButton()
-            .setText("🔙 Back")
-            .setOnClickAction(
-              CardService.newAction()
-                .setFunctionName("showSettingsCard")
-            )
+            .setText(filters.map(function(f) { return "🚫  " + f; }).join('\n'))
         )
     );
+  } else {
+    card.addSection(
+      CardService.newCardSection()
+        .setHeader("📋  ACTIVE FILTERS")
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText("<i>No filters configured. Add entries above and tap Save Filters.</i>")
+        )
+    );
+  }
+
+  // ── Action Bar ────────────────────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newTextButton()
+          .setText("💾  Save Filters")
+          .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+          .setBackgroundColor("#0F9D58")
+          .setOnClickAction(
+            CardService.newAction().setFunctionName("saveDomainFiltersFromUI")
+          )
+      )
+      .addWidget(
+        CardService.newButtonSet()
+          .addButton(
+            CardService.newTextButton()
+              .setText("🧪 Test Filters")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("testDomainFilters")
+              )
+          )
+          .addButton(
+            CardService.newTextButton()
+              .setText("◀  Settings")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("showSettingsCard")
+              )
+          )
+          .addButton(
+            CardService.newTextButton()
+              .setText("🏠 Home")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("buildAddOn")
+              )
+          )
+      )
+  );
 
   return card.build();
 }
 
+
+/**
+ * Save the "process last N months" selection to ScriptProperties ONLY.
+ * Does NOT trigger processing — user must tap Run Now separately.
+ */
+function saveProcessMonthsSetting(e) {
+  var months = (e.formInput && e.formInput.process_last_n_months) || "3";
+
+  // Save to ScriptProperties
+  PropertiesService.getScriptProperties()
+    .setProperty("process_last_n_months", months);
+
+  return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("💾  Selection Saved")
+        .setSubtitle("Time window updated")
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newDecoratedText()
+            .setTopLabel("● SAVED")
+            .setText("<b>Process window set to " + months + " month" + (months !== "1" ? "s" : "") + " back</b>")
+            .setBottomLabel("Tap ▶ Run Now in Advanced Settings to start indexing immediately")
+            .setWrapText(true)
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newButtonSet()
+            .addButton(
+              CardService.newTextButton()
+                .setText("▶  Run Now")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#1a73e8")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("runProcessLastNMonths")
+                )
+            )
+            .addButton(
+              CardService.newTextButton()
+                .setText("◀  Advanced")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+                )
+            )
+        )
+    )
+    .build();
+}
+
+
+/**
+ * Run Now handler — launches processing ASYNCHRONOUSLY via a background trigger.
+ * Returns a confirmation card immediately so the user can keep using the add-on.
+ */
+function runProcessLastNMonths(e) {
+  // Prefer live dropdown value, fall back to last saved, then default to "3"
+  var months = (e && e.formInput && e.formInput.process_last_n_months)
+    || PropertiesService.getScriptProperties().getProperty("process_last_n_months")
+    || "3";
+
+  // Launch entirely in the background — does NOT block the UI
+  var state = _launchBulkJobAsync(months);
+
+  // Return a confirmation card immediately
+  return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("🚀  Processing Started")
+        .setSubtitle("Running in background — you can keep using the add-on")
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newDecoratedText()
+            .setTopLabel("● JOB LAUNCHED")
+            .setText("<b>Last " + months + " month" + (months !== "1" ? "s" : "") + " of emails</b>")
+            .setBottomLabel("Period: " + state.afterStr + "  →  " + state.beforeStr)
+            .setWrapText(true)
+        )
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              "⏱️  First batch starts in <b>~1 minute</b>.\n" +
+              "📦  Large inboxes continue automatically batch-by-batch.\n" +
+              "✅  You can chat, summarise or draft emails right now — processing runs independently.\n\n" +
+              "🛑  To stop early, tap <b>Cancel Job</b> below."
+            )
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newButtonSet()
+            .addButton(
+              CardService.newTextButton()
+                .setText("📊  Check Progress")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("showBulkJobStatusCard")
+                )
+            )
+            .addButton(
+              CardService.newTextButton()
+                .setText("🛑  Cancel Job")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("cancelBulkJobFromUI")
+                )
+            )
+            .addButton(
+              CardService.newTextButton()
+                .setText("◀  Advanced")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+                )
+            )
+        )
+    )
+    .build();
+}
+
+/**
+ * Card showing live bulk-job progress — user can refresh or cancel.
+ */
+function showBulkJobStatusCard(e) {
+  var scriptProps = PropertiesService.getScriptProperties();
+  var stateJson   = scriptProps.getProperty("bulk_job_state");
+  var aborted     = scriptProps.getProperty("bulk_job_abort") === "true";
+
+  var card = CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("📊  Processing Status")
+        .setSubtitle("Historical email indexing")
+    );
+
+  if (!stateJson) {
+    card.addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(aborted
+              ? "🛑  Job was cancelled."
+              : "✅  No job running. Processing is complete or has not been started.")
+        )
+    );
+  } else {
+    var state = JSON.parse(stateJson);
+    var pct = state.stats.threadsScanned > 0
+      ? Math.round((state.stats.labeled + state.stats.skipped + state.stats.filtered) / Math.max(state.stats.messagesFound, 1) * 100)
+      : 0;
+
+    card.addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newDecoratedText()
+            .setTopLabel("● " + (state.status || "running").toUpperCase())
+            .setText("<b>Last " + state.n + " months</b>  ·  " + state.afterStr + " → " + state.beforeStr)
+            .setBottomLabel("Threads scanned: " + state.stats.threadsScanned + "  ·  Offset: " + state.offset)
+            .setWrapText(true)
+        )
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              "✅  Labeled   : " + state.stats.labeled + "\n" +
+              "⊘  Skipped   : " + state.stats.skipped + "\n" +
+              "🚫  Filtered  : " + state.stats.filtered + "\n" +
+              "❌  Errors    : " + state.stats.errors
+            )
+        )
+    );
+  }
+
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newButtonSet()
+          .addButton(
+            CardService.newTextButton()
+              .setText("🔄  Refresh")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("showBulkJobStatusCard")
+              )
+          )
+          .addButton(
+            CardService.newTextButton()
+              .setText("🛑  Cancel Job")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("cancelBulkJobFromUI")
+              )
+          )
+          .addButton(
+            CardService.newTextButton()
+              .setText("◀  Advanced")
+              .setOnClickAction(
+                CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+              )
+          )
+      )
+  );
+
+  return card.build();
+}
+
+/**
+ * Cancel the running bulk job from the UI and show confirmation.
+ */
+function cancelBulkJobFromUI(e) {
+  cancelBulkJob(); // defined in BackgroundEmailMonitor.gs
+
+  return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("🛑  Job Cancelled")
+        .setSubtitle("Background processing stopped")
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextParagraph()
+            .setText(
+              "The indexing job has been cancelled.\n" +
+              "Any emails already processed remain indexed.\n\n" +
+              "You can start a new job anytime from Advanced Settings."
+            )
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newButtonSet()
+            .addButton(
+              CardService.newTextButton()
+                .setText("◀  Advanced Settings")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+                )
+            )
+            .addButton(
+              CardService.newTextButton()
+                .setText("🏠  Home")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("buildAddOn")
+                )
+            )
+        )
+    )
+    .build();
+}
 
 function saveDomainFiltersFromUI(e) {
   var input = e.formInput.domain_filters || "";
@@ -1916,212 +2483,51 @@ function saveDomainFiltersFromUI(e) {
   saveDomainFilters(uniqueFilters);
 
   return CardService.newCardBuilder()
+    .setHeader(
+      CardService.newCardHeader()
+        .setTitle("🛡️  Filters Saved")
+        .setSubtitle("Privacy rules updated")
+    )
     .addSection(
       CardService.newCardSection()
         .addWidget(
-          CardService.newTextParagraph()
-            .setText(
-              "✅ <b>Filters saved!</b>\n\n" +
-              "Total active filters: " + uniqueFilters.length
-            )
+          CardService.newDecoratedText()
+            .setTopLabel("● SAVED")
+            .setText("<b>" + uniqueFilters.length + " filter" + (uniqueFilters.length !== 1 ? "s" : "") + " active</b>")
+            .setBottomLabel("Background monitor will now skip matching emails automatically")
+            .setWrapText(true)
         )
         .addWidget(
-          CardService.newTextButton()
-            .setText("🔙 Back")
-            .setOnClickAction(
-              CardService.newAction()
-                .setFunctionName("showAdvancedSettingsCard")
+          uniqueFilters.length > 0
+            ? CardService.newTextParagraph().setText(
+                uniqueFilters.map(function(f) { return "🚫  " + f; }).join('\n')
+              )
+            : CardService.newTextParagraph().setText("<i>No active filters — all emails will be processed</i>")
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newButtonSet()
+            .addButton(
+              CardService.newTextButton()
+                .setText("🧪 Test Filters")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#1a73e8")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("testDomainFilters")
+                )
+            )
+            .addButton(
+              CardService.newTextButton()
+                .setText("◀  Advanced")
+                .setOnClickAction(
+                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+                )
             )
         )
     )
     .build();
-}
-
-/**
- * CREATE ALL LABELS WITH COLORS
- * This runs when the Gmail add-on loads to ensure all labels exist with proper colors
- * The background monitor will then just apply these existing labels
- */
-function createAllLabelsWithColors() {
-  console.log("🎨 Creating all email labels with colors...");
-  
-  // Define all possible labels from Python backend with their Gmail color constants
-  // Gmail supports: BLUE, GREEN, PURPLE, RED, YELLOW, ORANGE, CYAN, GRAY, PINK
-  var labelConfigs = {
-    "response": "BLUE",
-    "FYI": "CYAN", 
-    "Notification": "GRAY",
-    "meeting": "PURPLE",
-    "Escalation": "RED",
-    "hotels": "ORANGE",
-    "airlines": "ORANGE", 
-    "travel": "ORANGE",
-    "restaurant": "YELLOW",  // Changed from cocoa since Gmail doesn't have cocoa
-    "booking": "GREEN",
-    "bank": "BLUE",
-    "Insurance": "YELLOW",
-    "Other": "GRAY",
-    "Awaiting Reply": "PINK"  // Changed to PINK for distinction
-  };
-  
-  // Get existing labels
-  var existingLabels = GmailApp.getUserLabels();
-  var existingLabelNames = {};
-  
-  for (var i = 0; i < existingLabels.length; i++) {
-    existingLabelNames[existingLabels[i].getName().toLowerCase()] = existingLabels[i];
-  }
-  
-  // Create or update each label
-  for (var labelName in labelConfigs) {
-    var colorName = labelConfigs[labelName];
-    var formattedName = labelName.charAt(0).toUpperCase() + labelName.slice(1).toLowerCase();
-    var lowerFormattedName = formattedName.toLowerCase();
-    
-    try {
-      var label;
-      
-      if (existingLabelNames[lowerFormattedName]) {
-        // Label exists, just apply color
-        label = existingLabelNames[lowerFormattedName];
-        console.log("✓ Found existing label: " + formattedName);
-      } else {
-        // Create new label
-        label = GmailApp.createLabel(formattedName);
-        console.log("+ Created new label: " + formattedName);
-      }
-      
-      // Apply color using Gmail color constants
-      if (label && colorName) {
-        try {
-          console.log("→ Attempting to set color '" + colorName + "' for " + formattedName);
-          
-          // Method 1: Use Gmail's UserLabelColor constants
-          if (typeof GmailApp.UserLabelColor !== 'undefined' && GmailApp.UserLabelColor[colorName]) {
-            label.setColor(GmailApp.UserLabelColor[colorName]);
-            console.log("🎨 SUCCESS: Applied Gmail constant '" + colorName + "' to " + formattedName);
-          } 
-          // Method 2: Try direct string
-          else {
-            label.setColor(colorName);
-            console.log("🎨 SUCCESS: Applied color string '" + colorName + "' to " + formattedName);
-          }
-        } catch (colorError) {
-          console.log("⚠️ Primary color methods failed for " + formattedName + ": " + colorError.message);
-          console.log("   Trying hex color fallback...");
-          
-          // Method 3: Try hex color fallback
-          try {
-            var hexColor = getHexColorForLabel(labelName);
-            if (hexColor) {
-              label.setColor(hexColor);
-              console.log("🎨 SUCCESS: Applied hex color '" + hexColor + "' to " + formattedName);
-            } else {
-              console.log("⚠️ No hex color defined for: " + labelName);
-            }
-          } catch (hexError) {
-            console.log("❌ All color methods failed for " + formattedName + ": " + hexError.message);
-          }
-        }
-      }
-      
-    } catch (error) {
-      console.log("❌ Error creating label '" + labelName + "': " + error.message);
-    }
-  }
-  
-  console.log("✅ Label creation complete!");
-}
-
-/**
- * Get hex color code for a label (fallback method)
- */
-function getHexColorForLabel(labelName) {
-  var hexColors = {
-    "response": "#1a73e8",       // Blue
-    "FYI": "#00bcd4",            // Cyan
-    "Notification": "#9e9e9e",   // Gray
-    "meeting": "#9c27b0",        // Purple
-    "Escalation": "#f44336",     // Red
-    "hotels": "#ff9800",         // Orange
-    "airlines": "#ff9800",       // Orange
-    "travel": "#ff9800",         // Orange
-    "restaurant": "#ffeb3b",     // Yellow
-    "booking": "#4caf50",        // Green
-    "bank": "#2196f3",           // Blue
-    "Insurance": "#ffc107",      // Amber/Yellow
-    "Other": "#757575",          // Dark Gray
-    "Awaiting Reply": "#e91e63"  // Pink
-  };
-  
-  return hexColors[labelName] || null;
-}
-
-/**
- * TEST FUNCTION: Manually create all labels with colors
- * Run this to test the label creation system
- */
-function testCreateLabelsWithColors() {
-  Logger.log("=== TESTING LABEL CREATION WITH COLORS ===");
-  createAllLabelsWithColors();
-  Logger.log("=== TEST COMPLETE ===");
-  Logger.log("Check your Gmail to see the labels with colors!");
-}
-
-/**
- * TEST FUNCTION: Try different color methods
- * Run this to debug what color method works
- */
-function testLabelColorMethods() {
-  Logger.log("=== TESTING DIFFERENT COLOR METHODS ===");
-  
-  var testLabelName = "TestColor_" + Date.now();
-  
-  try {
-    // Create a test label
-    var testLabel = GmailApp.createLabel(testLabelName);
-    Logger.log("✓ Created test label: " + testLabelName);
-    
-    // Method 1: Try Gmail color constants
-    try {
-      Logger.log("Testing Method 1: Gmail constants...");
-      testLabel.setColor(GmailApp.UserLabelColor.RED);
-      Logger.log("✓ Method 1 (Constants) SUCCESS - RED applied");
-    } catch (e1) {
-      Logger.log("✗ Method 1 (Constants) FAILED: " + e1.message);
-    }
-    
-    // Method 2: Try string constants
-    try {
-      Logger.log("Testing Method 2: String constants...");
-      testLabel.setColor("BLUE");
-      Logger.log("✓ Method 2 (Strings) SUCCESS - BLUE applied");
-    } catch (e2) {
-      Logger.log("✗ Method 2 (Strings) FAILED: " + e2.message);
-    }
-    
-    // Method 3: Try hex colors
-    try {
-      Logger.log("Testing Method 3: Hex colors...");
-      testLabel.setColor("#4caf50");
-      Logger.log("✓ Method 3 (Hex) SUCCESS - Green applied");
-    } catch (e3) {
-      Logger.log("✗ Method 3 (Hex) FAILED: " + e3.message);
-    }
-    
-    // Clean up - delete test label
-    try {
-      GmailApp.deleteLabel(testLabel);
-      Logger.log("✓ Cleaned up test label");
-    } catch (cleanupError) {
-      Logger.log("⚠️ Could not delete test label: " + cleanupError.message);
-    }
-    
-  } catch (error) {
-    Logger.log("❌ Test setup failed: " + error.message);
-  }
-  
-  Logger.log("=== COLOR TESTING COMPLETE ===");
 }
 
 
@@ -2135,15 +2541,25 @@ function testDomainFilters(e) {
     
     if (!filters || filters.length === 0) {
       return CardService.newCardBuilder()
+        .setHeader(
+          CardService.newCardHeader()
+            .setTitle("🧪  Filter Test")
+            .setSubtitle("No filters to test")
+        )
         .addSection(
           CardService.newCardSection()
             .addWidget(
-              CardService.newTextParagraph()
-                .setText("⚠️ No filters configured. Please add filters first.")
+              CardService.newDecoratedText()
+                .setTopLabel("⚠️ NOTICE")
+                .setText("<b>No filters configured yet</b>")
+                .setBottomLabel("Add email addresses or domains in Advanced Settings first")
+                .setWrapText(true)
             )
             .addWidget(
               CardService.newTextButton()
-                .setText("🔙 Back")
+                .setText("◀  Back to Advanced")
+                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                .setBackgroundColor("#5F6368")
                 .setOnClickAction(
                   CardService.newAction().setFunctionName("showAdvancedSettingsCard")
                 )
@@ -2180,45 +2596,82 @@ function testDomainFilters(e) {
       }
     }
     
-    var resultText = "<b>🧪 Filter Test Results</b>\n\n" +
-      "Tested " + threads.length + " recent inbox threads:\n\n" +
-      "✅ <b>Allowed:</b> " + allowedCount + " threads\n" +
-      "🚫 <b>Filtered:</b> " + filteredCount + " threads\n\n";
-    
+    var resultText;
     if (examples.length > 0) {
-      resultText += "<b>Example filtered emails:</b>\n" + examples.join('\n');
+      resultText = "<b>Example blocked emails:</b>\n" + examples.join('\n');
     } else {
-      resultText += "No emails matched your filters.";
+      resultText = "No emails in the last 20 inbox threads matched your filters.";
     }
     
     return CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader()
+          .setTitle("🧪  Filter Test Results")
+          .setSubtitle("Checked " + threads.length + " recent inbox threads")
+      )
       .addSection(
         CardService.newCardSection()
           .addWidget(
-            CardService.newTextParagraph()
-              .setText(resultText)
+            CardService.newDecoratedText()
+              .setTopLabel("● TEST COMPLETE")
+              .setText(
+                "<b>✅ Allowed: " + allowedCount + "   🚫 Blocked: " + filteredCount + "</b>"
+              )
+              .setBottomLabel(
+                "Filters active: " + filters.length +
+                "  ·  Threads scanned: " + threads.length
+              )
+              .setWrapText(true)
           )
           .addWidget(
-            CardService.newTextButton()
-              .setText("🔙 Back")
-              .setOnClickAction(
-                CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+            CardService.newTextParagraph().setText(resultText)
+          )
+      )
+      .addSection(
+        CardService.newCardSection()
+          .addWidget(
+            CardService.newButtonSet()
+              .addButton(
+                CardService.newTextButton()
+                  .setText("🛡️  Edit Filters")
+                  .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+                  .setBackgroundColor("#0F9D58")
+                  .setOnClickAction(
+                    CardService.newAction().setFunctionName("showAdvancedSettingsCard")
+                  )
+              )
+              .addButton(
+                CardService.newTextButton()
+                  .setText("🏠 Home")
+                  .setOnClickAction(
+                    CardService.newAction().setFunctionName("buildAddOn")
+                  )
               )
           )
       )
       .build();
-      
+
   } catch (error) {
     return CardService.newCardBuilder()
+      .setHeader(
+        CardService.newCardHeader()
+          .setTitle("❌  Test Failed")
+          .setSubtitle("An error occurred")
+      )
       .addSection(
         CardService.newCardSection()
           .addWidget(
-            CardService.newTextParagraph()
-              .setText("❌ Error testing filters:\n\n" + error.message)
+            CardService.newDecoratedText()
+              .setTopLabel("ERROR")
+              .setText("<b>Could not complete filter test</b>")
+              .setBottomLabel(error.message)
+              .setWrapText(true)
           )
           .addWidget(
             CardService.newTextButton()
-              .setText("🔙 Back")
+              .setText("◀  Back to Advanced")
+              .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+              .setBackgroundColor("#5F6368")
               .setOnClickAction(
                 CardService.newAction().setFunctionName("showAdvancedSettingsCard")
               )

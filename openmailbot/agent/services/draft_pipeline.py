@@ -49,8 +49,7 @@ OLLAMA_TEMP = 0.4
 FILE_EXTRACTOR = {
     ".pdf": PDFReader(),
     ".csv": CSVReader(),
-    ".pptx": PptxReader(),
-    ".ppt": PptxReader(),
+    
 }
 
 

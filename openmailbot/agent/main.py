@@ -28,6 +28,7 @@ from services.draft_pipeline import DraftPipeline
 from services.settings_manager import SettingsManager
 from services.preprocessing_emails import EmailPreprocessingPipeline
 from services.label_pipeline import EmailLabelPipeline
+from services.label_email_lockbook import get_user_lockbook, get_global_lockbook
 #from database.mongodb import MongoDBClient
 
 # Import request logger
@@ -993,6 +994,7 @@ async def label_email_data(request: LogEmailRequest):
     1. Processes emails through preprocessing pipeline (cleaning, deduplication)
     2. Sends processed data to label pipeline
     3. Returns a single label for the thread
+    4. Logs metrics to lock book for tracking
     
     For threads with multiple messages, the LAST message is analyzed as it has
     the most importance in determining thread category.
@@ -1030,6 +1032,10 @@ async def label_email_data(request: LogEmailRequest):
     logger.info(f"   Thread: {request.thread_id}")
     logger.info(f"   Messages count: {len(request.messages) if request.messages else 0}")
     
+    # Initialize lock book for this user
+    lockbook = get_user_lockbook(request.user_id)
+    global_lockbook = get_global_lockbook()
+    
     try:
         if not request.messages:
             raise HTTPException(status_code=400, detail="No messages provided")
@@ -1052,6 +1058,37 @@ async def label_email_data(request: LogEmailRequest):
         processed_messages = preprocessing_pipeline.process(messages_dict)
         
         logger.info(f"   Preprocessed {len(processed_messages)} messages")
+        
+        # Step 1.5: Store preprocessed messages in same format as /api/log-email
+        user_dirs = get_user_data_dir(request.user_id)
+        log_dir = user_dirs["log_emails"]
+        
+        # Create thread folder: data/{user_id}/log_emails/thread_xxx/
+        thread_folder = os.path.join(log_dir, request.thread_id)
+        os.makedirs(thread_folder, exist_ok=True)
+        
+        # Save preprocessed messages with "preprocessed_" prefix
+        preprocessed_filename = f"preprocessed_{request.thread_id}.json"
+        preprocessed_filepath = os.path.join(thread_folder, preprocessed_filename)
+        
+        # Prepare output data with preprocessed messages
+        preprocessed_output_data = {
+            'thread_id': request.thread_id,
+            'user_id': request.user_id,
+            'messages': processed_messages,
+            'metadata': {
+                'original_message_count': len(request.messages),
+                'processed_message_count': len(processed_messages),
+                'processing_type': 'preprocessing_pipeline',
+                'stored_at': datetime.utcnow().isoformat()
+            }
+        }
+        
+        # Write preprocessed thread data as JSON
+        with open(preprocessed_filepath, 'w', encoding='utf-8') as f:
+            json.dump(preprocessed_output_data, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"   Stored preprocessed messages to: {preprocessed_filepath}")
         
         # Step 2: Label the thread using the processed messages
         # Get OpenAI API key from environment or settings
@@ -1079,6 +1116,31 @@ async def label_email_data(request: LogEmailRequest):
         logger.info(f"✅ Email labeled and stored: {label}")
         logger.info(f"   Graph storage status: {graph_status.get('status')}")
         
+        # Determine if graph storage was successful
+        num_graph_stored = len(processed_messages) if graph_status.get("status") == "SUCCESS" else 0
+        
+        # Log to lock book
+        lockbook.log_request(
+            thread_id=request.thread_id,
+            label=label["label"],
+            num_labeled=len(processed_messages),
+            num_graph_stored=num_graph_stored,
+            status="SUCCESS"
+        )
+        
+        # Also log to global lock book
+        global_lockbook.log_request(
+            thread_id=request.thread_id,
+            label=label["label"],
+            num_labeled=len(processed_messages),
+            num_graph_stored=num_graph_stored,
+            status="SUCCESS"
+        )
+        
+        logger.info(f"📝 Lock book updated")
+        logger.info(f"   User metrics saved to: data/lockbook/label_email_metrics_{request.user_id}.json")
+        logger.info(f"   Global metrics saved to: data/lockbook/label_email_metrics_global.json")
+        
         return {
             "success": True,
             "label": label["label"],
@@ -1098,6 +1160,26 @@ async def label_email_data(request: LogEmailRequest):
         logger.error(f"❌ Error labeling email: {str(e)}")
         import traceback
         traceback.print_exc()
+        
+        # Log failure to lock book
+        try:
+            lockbook.log_request(
+                thread_id=request.thread_id,
+                label="error",
+                num_labeled=0,
+                num_graph_stored=0,
+                status="FAILED"
+            )
+            global_lockbook.log_request(
+                thread_id=request.thread_id,
+                label="error",
+                num_labeled=0,
+                num_graph_stored=0,
+                status="FAILED"
+            )
+        except:
+            pass  # Fallback if lock book logging fails
+        
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1197,6 +1279,164 @@ async def store_attachments(request: StoreAttachmentsRequest):
     
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Lock Book Endpoints ====================
+
+@app.get("/api/label-email/metrics")
+async def get_label_email_metrics(user_id: Optional[str] = None):
+    """
+    Get label-email metrics from lock book
+    
+    Returns:
+    {
+        "user_id": "user@example.com",
+        "created_at": "2026-02-20T10:00:00",
+        "last_updated": "2026-02-20T11:30:00",
+        "metrics": {
+            "total_requests": 150,
+            "total_labeled_emails": 450,
+            "total_graph_stored": 430,
+            "by_label": {
+                "meeting": {
+                    "count": 45,
+                    "emails_labeled": 135,
+                    "emails_graph_stored": 130
+                },
+                ...
+            }
+        }
+    }
+    """
+    try:
+        if user_id:
+            lockbook = get_user_lockbook(user_id)
+            metrics = lockbook.get_metrics()
+            return {
+                "success": True,
+                "data": metrics,
+                "lockbook_file": f"data/lockbook/label_email_metrics_{user_id}.json"
+            }
+        else:
+            # Return global metrics
+            global_lockbook = get_global_lockbook()
+            metrics = global_lockbook.get_metrics()
+            return {
+                "success": True,
+                "data": metrics,
+                "lockbook_file": "data/lockbook/label_email_metrics_global.json"
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/label-email/recent-requests")
+async def get_recent_requests(user_id: Optional[str] = None, limit: int = 20):
+    """
+    Get recent label-email requests from lock book
+    
+    Parameters:
+    - user_id: Optional user ID (if not provided, uses global metrics)
+    - limit: Number of recent requests to return (default: 20, max: 100)
+    
+    Returns:
+    {
+        "success": true,
+        "count": 20,
+        "recent_requests": [
+            {
+                "timestamp": "2026-02-20T11:30:45.123456",
+                "thread_id": "thread_xxx",
+                "label": "meeting",
+                "emails_labeled": 3,
+                "emails_graph_stored": 3,
+                "status": "SUCCESS"
+            },
+            ...
+        ]
+    }
+    """
+    try:
+        # Limit max to 100
+        limit = min(limit, 100)
+        
+        if user_id:
+            lockbook = get_user_lockbook(user_id)
+        else:
+            lockbook = get_global_lockbook()
+        
+        recent = lockbook.get_recent_requests(limit)
+        return {
+            "success": True,
+            "count": len(recent),
+            "recent_requests": recent
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/label-email/label-stats")
+async def get_label_stats(user_id: Optional[str] = None, label: Optional[str] = None):
+    """
+    Get statistics for specific label(s)
+    
+    Parameters:
+    - user_id: Optional user ID (if not provided, uses global metrics)
+    - label: Optional specific label name (if not provided, returns all labels)
+    
+    Returns:
+    {
+        "success": true,
+        "label": "meeting",
+        "stats": {
+            "count": 45,
+            "emails_labeled": 135,
+            "emails_graph_stored": 130
+        }
+    }
+    or
+    {
+        "success": true,
+        "label": null,
+        "stats": { ... all labels ... }
+    }
+    """
+    try:
+        if user_id:
+            lockbook = get_user_lockbook(user_id)
+        else:
+            lockbook = get_global_lockbook()
+        
+        stats = lockbook.get_label_stats(label)
+        return {
+            "success": True,
+            "label": label,
+            "stats": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/label-email/summary")
+async def get_lockbook_summary(user_id: Optional[str] = None):
+    """
+    Get human-readable summary of label-email metrics
+    
+    Returns formatted text summary showing all metrics
+    """
+    try:
+        if user_id:
+            lockbook = get_user_lockbook(user_id)
+        else:
+            lockbook = get_global_lockbook()
+        
+        summary = lockbook.get_summary()
+        return {
+            "success": True,
+            "summary": summary
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

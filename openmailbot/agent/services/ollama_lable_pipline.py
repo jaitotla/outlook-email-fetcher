@@ -28,8 +28,7 @@ EmailLabel = Literal[
     "restaurant",
     "booking",
     "bank",
-    "Other",
-    "Awaiting Reply"
+    "Other"
 
 ]
 
@@ -39,6 +38,7 @@ class EmailLabelOutput(BaseModel):
     category: str = Field(description="Category or context of the email")
     topic: str = Field(description="Primary topic being discussed")
     subtopic: Optional[str] = Field(default=None, description="Subtopic if applicable")
+    subject_matter: str = Field(description="One-line concise summary of the main subject/topic of the email")
 
 
 class EmailLabelPipeline:
@@ -85,6 +85,7 @@ Your task is to analyze an email and extract:
 2. CATEGORY - Select ONE CATEGORY:Finance ,Operations,Sales,Support,Logistics,HR,Legal,Technical,Technical problem,business comunication,General 
 3. TOPIC - Primary topic being discussed
 4. SUBTOPIC - Subtopic if applicable (optional)
+5. SUBJECT_MATTER - A simple, concise one-line summary (8-10 words max) describing the main subject of the email
 
 IMPORTANT:
 - Labels must be created ONLY from the perspective of this user (user_id)
@@ -123,13 +124,6 @@ Escalation
 - Contains phrases like "need immediate attention", "this is urgent", "not resolved yet"
 - Examples: "This has been pending for 3 weeks", "Escalating to your manager", "Critical issue needs executive approval"
 
-Awaiting Reply
-- THIS USER sent an email and is waiting for someone else to respond
-- THIS USER asked a question or made a request that needs a reply
-- THIS USER is in the "From" field of the original email
-- NOT applicable when THIS USER is only CC'd or BCC'd
-- NOT applicable when someone else is waiting for a reply and THIS USER is just informed
-- Examples: "I sent a request and need their answer", "I asked a question", "I'm waiting for their confirmation"
 
 Notification — Automated/system-generated update or alert  
 meeting — Scheduling or discussing a meeting  
@@ -308,7 +302,8 @@ Other - other types of emails that don't fit the above categories"""
                 label="response",
                 category="General",
                 topic="General Communication",
-                subtopic=None
+                subtopic=None,
+                subject_matter="General email communication"
             )
         
         try:
@@ -374,7 +369,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
             label="response",
             category="General",
             topic="General Communication",
-            subtopic=None
+            subtopic=None,
+            subject_matter="General email communication"
         )
     
     def label_email(self, email_data: Dict[str, Any]) -> EmailLabelOutput:
@@ -401,11 +397,13 @@ Provide the label, category, topic, and subtopic for this email based on the use
             else:
                 # Fallback without enrichment
                 category = ' '.join(email_data.get('subject', '').split()[:3]) if email_data.get('subject') else 'General'
+                subject_matter = email_data.get('subject', 'General email communication')[:50]
                 return EmailLabelOutput(
                     label=label,
                     category=category,
                     topic=label.capitalize(),
-                    subtopic=None
+                    subtopic=None,
+                    subject_matter=subject_matter
                 )
         
         # Fallback to Ollama classification for enriched output
@@ -430,7 +428,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
                 label="response",
                 category="Empty",
                 topic="No messages",
-                subtopic=None
+                subtopic=None,
+                subject_matter="No messages in thread"
             )
         
         # Get the last message (most recent) as it's most important

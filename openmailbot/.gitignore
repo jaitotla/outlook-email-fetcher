@@ -57,3 +57,14 @@ coverage/
 .cache/
 temp/
 tmp/
+
+openmailbot/__pycache__/
+openmailbot/agent/__pycache__/
+openmailbot/agent/*/__pycache__/
+openmailbot/agent/*/*/__pycache__/
+openmailbot/agent/graph/chroma_db/
+openmailbot/agent/graph/chroma_db
+*/__pycache__/
+*.log
+*/*/chroma_db/
+*/*/chroma_db

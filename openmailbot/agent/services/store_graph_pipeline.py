@@ -15,8 +15,10 @@ from agent import (
     create_thread_node,
     create_topic_node,
     create_category_node,
+    create_subject_matter_node,
     link_thread_to_topic,
     link_thread_to_category,
+    link_thread_to_subject_matter,
     link_topic_to_subtopic,
 )
 
@@ -29,7 +31,11 @@ class ThreadGraphData:
     participants: List[str]
     category: str
     topic: str
+    user_id: str
     subtopic: Optional[str] = None
+    subject_matter: Optional[str] = None
+    message_id: Optional[str] = None
+    timestamp: Optional[str] = None
 
 
 class StoreGraphPipeline:
@@ -101,7 +107,7 @@ class StoreGraphPipeline:
             # ============= STEP 1: Create Category Node =============
             self.log(f"Step 1: Creating category node: '{data.category}'", "INFO")
             try:
-                category_result = create_category_node(data.category)
+                category_result = create_category_node(data.category, user_id=data.user_id)
                 self.log(f"Category node created: {data.category}", "SUCCESS")
                 results["steps"].append({
                     "step": 1,
@@ -124,7 +130,7 @@ class StoreGraphPipeline:
             # ============= STEP 2: Create Topic Node =============
             self.log(f"Step 2: Creating topic node: '{data.topic}'", "INFO")
             try:
-                topic_result = create_topic_node(data.topic)
+                topic_result = create_topic_node(data.topic, user_id=data.user_id)
                 self.log(f"Topic node created: {data.topic}", "SUCCESS")
                 results["steps"].append({
                     "step": 2,
@@ -148,7 +154,7 @@ class StoreGraphPipeline:
             if data.subtopic:
                 self.log(f"Step 3: Creating subtopic node: '{data.subtopic}'", "INFO")
                 try:
-                    subtopic_result = create_topic_node(data.topic, data.subtopic)
+                    subtopic_result = create_topic_node(data.topic, data.subtopic, user_id=data.user_id)
                     self.log(f"Subtopic node created: {data.subtopic} under {data.topic}", "SUCCESS")
                     results["steps"].append({
                         "step": 3,
@@ -176,7 +182,8 @@ class StoreGraphPipeline:
                 thread_result = create_thread_node(
                     thread_id=data.thread_id,
                     participants=data.participants,
-                    subject=data.subject
+                    subject=data.subject,
+                    user_id=data.user_id
                 )
                 self.log(f"Thread node created: {data.thread_id}", "SUCCESS")
                 self.log(f"   Subject: {data.subject}", "INFO")
@@ -203,12 +210,42 @@ class StoreGraphPipeline:
                     "error": str(e)
                 })
             
+            # ============= STEP 4.5: Create Subject Matter Node =============
+            if data.subject_matter:
+                self.log(f"Step 4.5: Creating subject matter node: '{data.subject_matter}'", "INFO")
+                try:
+                    subject_matter_result = create_subject_matter_node(
+                        subject_matter=data.subject_matter,
+                        user_id=data.user_id
+                    )
+                    self.log(f"Subject matter node created: {data.subject_matter}", "SUCCESS")
+                    results["steps"].append({
+                        "step": 4.5,
+                        "action": "create_subject_matter_node",
+                        "input": {"subject_matter": data.subject_matter},
+                        "result": "SUCCESS",
+                        "data": subject_matter_result
+                    })
+                except Exception as e:
+                    error_msg = f"Failed to create subject matter node: {str(e)}"
+                    self.log(error_msg, "ERROR")
+                    results["errors"].append(error_msg)
+                    results["steps"].append({
+                        "step": 4.5,
+                        "action": "create_subject_matter_node",
+                        "result": "FAILED",
+                        "error": str(e)
+                    })
+            else:
+                self.log("Step 4.5: Skipped (no subject matter provided)", "INFO")
+            
             # ============= STEP 5: Link Thread to Category =============
             self.log(f"Step 5: Linking thread to category: '{data.category}'", "INFO")
             try:
                 link_category_result = link_thread_to_category(
                     thread_id=data.thread_id,
-                    category_name=data.category
+                    category_name=data.category,
+                    user_id=data.user_id
                 )
                 self.log(f"Thread linked to category: {data.category}", "SUCCESS")
                 results["steps"].append({
@@ -229,12 +266,45 @@ class StoreGraphPipeline:
                     "error": str(e)
                 })
             
+            # ============= STEP 5.5: Link Thread to Subject Matter =============
+            if data.subject_matter:
+                self.log(f"Step 5.5: Linking thread to subject matter: '{data.subject_matter}'", "INFO")
+                try:
+                    link_subject_matter_result = link_thread_to_subject_matter(
+                        thread_id=data.thread_id,
+                        subject_matter=data.subject_matter,
+                        user_id=data.user_id
+                    )
+                    self.log(f"Thread linked to subject matter: {data.subject_matter}", "SUCCESS")
+                    results["steps"].append({
+                        "step": 5.5,
+                        "action": "link_thread_to_subject_matter",
+                        "input": {"thread_id": data.thread_id, "subject_matter": data.subject_matter},
+                        "result": "SUCCESS",
+                        "data": link_subject_matter_result
+                    })
+                except Exception as e:
+                    error_msg = f"Failed to link thread to subject matter: {str(e)}"
+                    self.log(error_msg, "ERROR")
+                    results["errors"].append(error_msg)
+                    results["steps"].append({
+                        "step": 5.5,
+                        "action": "link_thread_to_subject_matter",
+                        "result": "FAILED",
+                        "error": str(e)
+                    })
+            else:
+                self.log("Step 5.5: Skipped (no subject matter provided)", "INFO")
+            
             # ============= STEP 6: Link Thread to Topic =============
             self.log(f"Step 6: Linking thread to topic: '{data.topic}'", "INFO")
             try:
                 link_topic_result = link_thread_to_topic(
                     thread_id=data.thread_id,
-                    topic_name=data.topic
+                    topic_name=data.topic,
+                    user_id=data.user_id,
+                    message_id=data.message_id,
+                    timestamp=data.timestamp
                 )
                 self.log(f"Thread linked to topic: {data.topic}", "SUCCESS")
                 results["steps"].append({
@@ -261,7 +331,10 @@ class StoreGraphPipeline:
                 try:
                     link_topic_subtopic_result = link_topic_to_subtopic(
                         topic_name=data.topic,
-                        subtopic_name=data.subtopic
+                        subtopic_name=data.subtopic,
+                        user_id=data.user_id,
+                        message_id=data.message_id,
+                        timestamp=data.timestamp
                     )
                     self.log(f"Topic linked to subtopic: {data.topic} -> {data.subtopic}", "SUCCESS")
                     results["steps"].append({
@@ -294,7 +367,10 @@ class StoreGraphPipeline:
                     link_subtopic_result = link_thread_to_topic(
                         thread_id=data.thread_id,
                         topic_name=data.topic,
-                        subtopic_name=data.subtopic
+                        subtopic_name=data.subtopic,
+                        user_id=data.user_id,
+                        message_id=data.message_id,
+                        timestamp=data.timestamp
                     )
                     self.log(f"Thread linked to subtopic: {data.subtopic}", "SUCCESS")
                     results["steps"].append({
@@ -341,6 +417,8 @@ class StoreGraphPipeline:
             print(f"📚 Topic: {data.topic}")
             if data.subtopic:
                 print(f"📖 Subtopic: {data.subtopic}")
+            if data.subject_matter:
+                print(f"💭 Subject Matter: {data.subject_matter}")
             print(f"👥 Participants: {len(data.participants)}")
             print(f"\n📊 Steps Completed: {successful_steps}/{total_steps}")
             

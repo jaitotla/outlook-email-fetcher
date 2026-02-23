@@ -14,7 +14,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 # Import from the same services directory
 from .store_graph_pipeline import StoreGraphPipeline, ThreadGraphData
-
+from .ollama_lable_pipline import EmailLabelPipeline as OllamaEmailLabelPipeline
 
 # Define allowed labels using Literal
 EmailLabel = Literal[
@@ -30,8 +30,7 @@ EmailLabel = Literal[
     "booking",
     "bank",
     "Insurance",
-    "Other",
-    "Awaiting Reply"
+    "Other"
 
 ]
 
@@ -42,6 +41,7 @@ class EmailLabelOutput(BaseModel):
     category: str = Field(description="Category or context of the email")
     topic: str = Field(description="Primary topic being discussed")
     subtopic: Optional[str] = Field(default=None, description="Subtopic if applicable")
+    subject_matter: str = Field(description="One-line concise summary of the main subject/topic of the email")
   
 
 
@@ -103,6 +103,7 @@ Your task is to analyze an email and extract:
 2. CATEGORY - Select ONE from: Issue, Update, Discussion, Request, Question, Confirmation, Complaint, Approval. If it doesn't fit any of these, choose "General"
 3. TOPIC - Primary topic being discussed
 4. SUBTOPIC - Subtopic if applicable (optional)
+5. SUBJECT_MATTER - A simple, concise one-line summary (10-15 words max) describing the main subject of the email
 
 Choose the label that BEST represents the MAIN intent of the email with respect to the user.
 Consider the user's context and priorities when selecting the label.
@@ -131,12 +132,6 @@ Escalation
 - Contains phrases like "need immediate attention", "this is urgent", "not resolved yet"
 - Examples: "This has been pending for 3 weeks", "Escalating to your manager", "Critical issue needs executive approval"
 
-Awaiting Reply
-- Questions posed that require a response from the recipient
-- Requests for information, decisions, or approvals
-- Seeks confirmation, feedback, or input
-- Contains action items or asks the recipient to do something
-- Examples: "Can you please confirm?", "What are your thoughts on this?", "Please let me know by Friday", "Could you provide the updated numbers?"
 
 Notification — Automated/system-generated update or alert  
 meeting — Scheduling or discussing a meeting  
@@ -340,7 +335,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
                 label="response",
                 category="General",
                 topic="General Communication",
-                subtopic=None
+                subtopic=None,
+                subject_matter="General email communication"
             )
         
         try:
@@ -380,7 +376,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
                 label="response",
                 category="General",
                 topic="General Communication",
-                subtopic=None
+                subtopic=None,
+                subject_matter="General email communication"
             )
     
     def label_email(self, email_data: Dict[str, Any]) -> EmailLabelOutput:
@@ -406,11 +403,13 @@ Provide the label, category, topic, and subtopic for this email based on the use
                 return enriched
             else:
                 # Fallback without enrichment
+                subject_matter = email_data.get('subject', 'General email communication')[:50]
                 return EmailLabelOutput(
                     label=label,
                     category=email_data.get('subject', '').split()[:3] if email_data.get('subject') else 'General',
                     topic=label.capitalize(),
-                    subtopic=None
+                    subtopic=None,
+                    subject_matter=subject_matter
                 )
         
         # Fallback to LLM classification for enriched output
@@ -435,7 +434,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
                 label="response",
                 category="Empty",
                 topic="No messages",
-                subtopic=None
+                subtopic=None,
+                subject_matter="No messages in thread"
             )
         
         # Get the last message (most recent) as it's most important
@@ -451,7 +451,7 @@ Provide the label, category, topic, and subtopic for this email based on the use
         
         return self.label_email(email_data)
     
-    def label_and_store_thread(self, thread_id: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def label_and_store_thread(self, thread_id: str, messages: List[Dict[str, Any]], user_id: str = None) -> Dict[str, Any]:
         """
         Label a thread and store it in the Neo4j graph database with category/topic hierarchy
         
@@ -460,6 +460,7 @@ Provide the label, category, topic, and subtopic for this email based on the use
         Args:
             thread_id: Unique identifier for the thread
             messages: List of email message dictionaries (chronologically ordered)
+            user_id: User ID for context and graph storage (extracted from messages if not provided)
             
         Returns:
             Dictionary with label_result and graph_store_result
@@ -469,18 +470,27 @@ Provide the label, category, topic, and subtopic for this email based on the use
         
         # Step 1: Label the thread
         print("Step 1: Labeling thread...")
-        label_result = self.label_thread(messages)
+        ollama_pipeline = OllamaEmailLabelPipeline()
+        label_result = ollama_pipeline.label_thread(messages)
         print(f"✓ Label: {label_result.label}")
         print(f"  Category: {label_result.category}")
         print(f"  Topic: {label_result.topic}")
         if label_result.subtopic:
             print(f"  Subtopic: {label_result.subtopic}")
+        print(f"  Subject Matter: {label_result.subject_matter}")
         
         # Step 2: Extract thread metadata
         print("\nStep 2: Extracting thread metadata...")
         last_message = messages[-1]
         subject = last_message.get('subject', 'No subject')
         participants = last_message.get('to', [])
+        message_id = last_message.get('message_id', None)
+        timestamp = last_message.get('timestamp', None)
+        
+        # Extract user_id if not provided
+        if user_id is None:
+            user_id = last_message.get('user_id', 'unknown_user')
+        
         if isinstance(participants, str):
             participants = [participants]
         
@@ -489,6 +499,9 @@ Provide the label, category, topic, and subtopic for this email based on the use
         
         print(f"  Subject: {subject}")
         print(f"  Participants: {len(participants)}")
+        print(f"  User ID: {user_id}")
+        print(f"  Message ID: {message_id}")
+        print(f"  Timestamp: {timestamp}")
         
         # Step 3: Store in graph database
         print("\nStep 3: Storing in graph database...")
@@ -500,21 +513,30 @@ Provide the label, category, topic, and subtopic for this email based on the use
             participants=participants,
             category=label_result.category,
             topic=label_result.topic,
-            subtopic=label_result.subtopic
+            user_id=user_id,
+            subtopic=label_result.subtopic,
+            subject_matter=label_result.subject_matter,
+            message_id=message_id,
+            timestamp=timestamp
         )
         
-        # Create and run graph pipeline
-        graph_pipeline = StoreGraphPipeline()
-        graph_store_result = graph_pipeline.store_thread_graph(graph_data)
+        # Create and run graph pipeline only for specific labels
+        if label_result.label in ["response", "FYI", "Awaiting Reply"]:
+            graph_pipeline = StoreGraphPipeline()
+            graph_store_result = graph_pipeline.store_thread_graph(graph_data)
+        else:
+            graph_store_result = {"status": "SKIPPED", "reason": "Label not eligible for graph storage"}
         
         # Combine results
         combined_result = {
             "thread_id": thread_id,
+            "user_id": user_id,
             "label_result": {
                 "label": label_result.label,
                 "category": label_result.category,
                 "topic": label_result.topic,
-                "subtopic": label_result.subtopic
+                "subtopic": label_result.subtopic,
+                "subject_matter": label_result.subject_matter
             },
             "graph_store_result": graph_store_result,
             "status": "SUCCESS" if graph_store_result.get("status") == "SUCCESS" else "COMPLETED_WITH_ERRORS"

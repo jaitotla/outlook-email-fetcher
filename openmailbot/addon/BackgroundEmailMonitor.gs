@@ -34,9 +34,27 @@ var CONFIG = {
   LAST_CHECK_TIME: "last_email_check_time",
   PROCESSED_MESSAGE_IDS: "processed_message_ids",
   
-  // NOTE: Label colors are now handled in the main Gmail add-on script
-  // Background monitor just applies existing labels without color logic
+  // Label color mapping - assign colors to specific labels
+  // Available colors: red, orange, yellow, green, cyan, blue, purple, gray, lightgray, cocoa, white, darkgray
+  LABEL_COLORS: {
+    "Response": "blue",
+    "Fyi": "cyan",
+    "Notification": "lightgray",
+    "Meeting": "purple",
+    "Awaiting reply": "yellow",
+    "Escalation": "red",
+    "Hotels": "orange",
+    "Airline": "orange",
+    "Airlines": "orange",
+    "Travel": "orange",
+    "Restaurant": "cocoa",
+    "Booking": "green",
+    "Bank": "blue",
+    "Recruitment": "purple"
+  }
 };
+var BULK_JOB_STATE_KEY = "bulk_job_state";
+var BULK_JOB_ABORT_KEY = "bulk_job_abort";  // ← poison pill
 
 // ============================================================================
 // MAIN MONITORING FUNCTION (Runs every 1 minute)
@@ -347,7 +365,7 @@ function processMessage(message) {
 
 /**
  * Apply a label to Gmail thread
- * SIMPLIFIED: Just finds existing label and applies it (no creation or color logic)
+ * UPDATED: Removes existing auto-generated labels before applying new one
  */
 function applyLabelToThread(threadId, labelName) {
   if (!labelName || labelName.trim().length === 0) {
@@ -360,43 +378,135 @@ function applyLabelToThread(threadId, labelName) {
     return;
   }
   
-  // Find existing label (formatted for Gmail display)
-  var formattedName = labelName.charAt(0).toUpperCase() + labelName.slice(1).toLowerCase();
-  var label = findExistingLabel(formattedName);
+  // Get list of labels that are managed by this system
+  var managedLabelNames = Object.keys(CONFIG.LABEL_COLORS);
+  
+  // Remove existing managed labels from this thread
+  var currentLabels = thread.getLabels();
+  for (var i = 0; i < currentLabels.length; i++) {
+    var currentLabelName = currentLabels[i].getName();
+    
+    // Check if this label is in our managed list (case-insensitive)
+    for (var j = 0; j < managedLabelNames.length; j++) {
+      if (currentLabelName.toLowerCase() === managedLabelNames[j].toLowerCase()) {
+        thread.removeLabel(currentLabels[i]);
+        Logger.log("🗑️  Removed old label: " + currentLabelName);
+        break;
+      }
+    }
+  }
+  
+  // Get or create the new label
+  var label = getOrCreateLabel(labelName);
   
   if (label) {
     thread.addLabel(label);
-    Logger.log("✅ Applied existing label '" + formattedName + "' to thread");
-  } else {
-    Logger.log("⚠️ Label '" + formattedName + "' not found - may need to open Gmail add-on to create labels");
+    Logger.log("✅ Applied label '" + labelName + "' to thread (replaced previous)");
   }
 }
 
 /**
- * Find existing label by name (no creation)
- * SIMPLIFIED: Background monitor only finds existing labels
+ * UPDATED LABEL_COLORS with more distinct, attractive colors
  */
-function findExistingLabel(labelName) {
+CONFIG.LABEL_COLORS = {
+  "Response": "blue",           // Bright blue
+  "Fyi": "cyan",                // Bright cyan/turquoise
+  "Notification": "lightgray",  // Light gray
+  "Meeting": "purple",          // Bright purple ← CHANGED
+  "Awaiting reply": "yellow",   // Bright yellow ← CHANGED
+  "Escalation": "red",          // Bright red
+  "Hotels": "orange",           // Bright orange
+  "Airline": "cocoa",           // Brown
+  "Airlines": "cocoa",          // Brown
+  "Travel": "green",            // Bright green
+  "Restaurant": "orange",       // Orange
+  "Booking": "blue",            // Blue
+  "Bank": "cyan",               // Cyan
+  "Recruitment": "green"        // Green
+};
+
+/**
+ * Get existing label or create it if it doesn't exist
+ * Returns GmailLabel object with color applied
+ */
+function getOrCreateLabel(labelName) {
   if (!labelName || labelName.trim().length === 0) {
     return null;
   }
   
+  // Capitalize first letter (Gmail convention)
+  var formattedName = labelName.charAt(0).toUpperCase() + labelName.slice(1).toLowerCase();
+  
   try {
+    // Try to get existing label
     var labels = GmailApp.getUserLabels();
     for (var i = 0; i < labels.length; i++) {
-      if (labels[i].getName().toLowerCase() === labelName.toLowerCase()) {
+      if (labels[i].getName().toLowerCase() === formattedName.toLowerCase()) {
+        // Apply color if configured for this label
+        applyLabelColor(labels[i], formattedName);
         return labels[i];
       }
     }
-    return null; // Not found
+    
+    // Label doesn't exist, create it
+    var newLabel = GmailApp.createLabel(formattedName);
+    Logger.log("📌 Created new label: " + formattedName);
+    
+    // Apply color if configured for this label
+    applyLabelColor(newLabel, formattedName);
+    
+    return newLabel;
   } catch (error) {
-    Logger.log("⚠️ Error finding label '" + labelName + "': " + error.message);
+    Logger.log("⚠️ Error managing label '" + labelName + "': " + error.message);
     return null;
   }
 }
 
-// REMOVED: Color logic moved to main script
-// Background monitor no longer handles colors - just applies existing labels
+/**
+ * Apply color to a label based on CONFIG.LABEL_COLORS mapping
+ * UPDATED: Forces color refresh and handles errors better
+ */
+function applyLabelColor(label, labelName) {
+  if (!label) return;
+
+  var colorMap = {
+    "red":       { textColor:"#ffffff", backgroundColor:"#d93025"},
+    "orange":    { textColor:"#000000", backgroundColor:"#f29900"},
+    "yellow":    { textColor:"#000000", backgroundColor:"#fbbc04"},
+    "green":     { textColor:"#ffffff", backgroundColor:"#34a853"},
+    "cyan":      { textColor:"#000000", backgroundColor:"#00acc1"},
+    "blue":      { textColor:"#ffffff", backgroundColor:"#1a73e8"},
+    "purple":    { textColor:"#ffffff", backgroundColor:"#9334e6"},
+    "gray":      { textColor:"#ffffff", backgroundColor:"#5f6368"},
+    "lightgray": { textColor:"#000000", backgroundColor:"#e8eaed"},
+    "darkgray":  { textColor:"#ffffff", backgroundColor:"#3c4043"},
+    "cocoa":     { textColor:"#ffffff", backgroundColor:"#795548"},
+    "white":     { textColor:"#000000", backgroundColor:"#ffffff"}
+  };
+
+  var colorName = CONFIG.LABEL_COLORS[labelName];
+  if (!colorName) return;
+
+  var colorObj = colorMap[colorName.toLowerCase()];
+  if (!colorObj) return;
+
+  try {
+    // ⭐ FORCE RESET FIRST
+    label.setColor({
+      textColor:"#000000",
+      backgroundColor:"#ffffff"
+    });
+
+    Utilities.sleep(100);
+
+    // ⭐ APPLY NEW COLOR
+    label.setColor(colorObj);
+
+    Logger.log("🎨 Color forced for " + labelName);
+  } catch (e) {
+    Logger.log(e.message);
+  }
+}
 
 /**
  * Filter attachments by allowed file extensions with logging
@@ -1096,6 +1206,505 @@ function showSetupInstructions() {
   Logger.log("");
 }
 
+/**
+ * Add or update label color configuration
+ * @param {string} labelName - The label name
+ * @param {string} color - The color (red, orange, yellow, green, cyan, blue, purple, gray, lightgray, cocoa, white, darkgray)
+ */
+function setLabelColor(labelName, color) {
+  // Validate color
+  var validColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "gray", "lightgray", "cocoa", "white", "darkgray"];
+  if (validColors.indexOf(color.toLowerCase()) === -1) {
+    Logger.log("❌ Invalid color: " + color);
+    Logger.log("   Valid colors: " + validColors.join(", "));
+    return;
+  }
+  
+  CONFIG.LABEL_COLORS[labelName] = color.toLowerCase();
+  Logger.log("✅ Label '" + labelName + "' will now use color: " + color);
+  
+  // Apply to existing label if it exists
+  var labels = GmailApp.getUserLabels();
+  for (var i = 0; i < labels.length; i++) {
+    if (labels[i].getName().toLowerCase() === labelName.toLowerCase()) {
+      try {
+        labels[i].setColor(color.toLowerCase());
+        Logger.log("✓ Applied color to existing label");
+      } catch (error) {
+        Logger.log("⚠️ Could not apply color to existing label: " + error.message);
+      }
+      return;
+    }
+  }
+  
+  Logger.log("ℹ️  Label doesn't exist yet - color will be applied when label is created");
+}
+// ============================================================================
+// PROCESS LAST N MONTHS - With timeout-safe continuation support
+// ============================================================================
+
+/**
+ * ASYNC LAUNCHER — called from the UI (Run Now button).
+ * Immediately initialises the job state and schedules a background trigger.
+ * Returns within milliseconds so the UI is never blocked.
+ * @param {string|number} months - Number of months to process
+ * @returns {Object} status - { n, afterStr, beforeStr } for the confirmation card
+ */
+function _launchBulkJobAsync(months) {
+  var scriptProps = PropertiesService.getScriptProperties();
+
+  months = parseInt(months, 10);
+  if (isNaN(months) || months < 1) months = 3;
+
+  // Persist months so background trigger knows what to process
+  scriptProps.setProperty("process_last_n_months", String(months));
+
+  // Clear any leftover abort flag and old job state
+  scriptProps.deleteProperty(BULK_JOB_ABORT_KEY);
+  scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
+  _deleteAllContinuationTriggers();
+
+  // Initialise fresh job state (writes afterStr / beforeStr etc.)
+  _initBulkJob();
+
+  // Read back the state we just wrote so we can show dates to the user
+  var state = JSON.parse(scriptProps.getProperty(BULK_JOB_STATE_KEY));
+
+  // Schedule the first real run via a background trigger (~1 minute)
+  ScriptApp.newTrigger('_continueBulkJob')
+    .timeBased()
+    .after(60 * 1000)
+    .create();
+
+  console.log("🚀 Async job launched: " + state.afterStr + " → " + state.beforeStr + " (starts in ~1 min)");
+  return state;
+}
+
+/**
+ * ENTRY POINT - called only by background triggers (never directly from UI).
+ * Safe to call multiple times - picks up where it left off.
+ * @param {Object} e - Optional event object with formInput.process_last_n_months value
+ */
+function processLastNMonthsEmails(e) {
+  var scriptProps = PropertiesService.getScriptProperties();
+
+  // If a months value was passed in, save it and force a completely fresh start
+  var forceNew = false;
+  if (e && e.formInput && e.formInput.process_last_n_months) {
+    scriptProps.setProperty("process_last_n_months", e.formInput.process_last_n_months);
+    console.log("📝 Time window set to: " + e.formInput.process_last_n_months + " months");
+    forceNew = true;
+  }
+
+  // Clear any leftover abort flag before starting
+  scriptProps.deleteProperty(BULK_JOB_ABORT_KEY);
+
+  var existingJob = scriptProps.getProperty(BULK_JOB_STATE_KEY);
+  if (existingJob && !forceNew) {
+    console.log("▶️ Resuming existing job...");
+  } else {
+    if (forceNew && existingJob) {
+      console.log("🔄 New time window selected — clearing old job state and starting fresh...");
+      scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
+      _deleteAllContinuationTriggers();
+    } else {
+      console.log("🆕 Starting new job...");
+    }
+    _initBulkJob();
+  }
+  _runBulkJob();
+}
+
+/**
+ * Initialize a new bulk job - saves state to Script Properties
+ */
+function _initBulkJob() {
+  var scriptProps = PropertiesService.getScriptProperties();
+
+  // Read N - with detailed logging
+  var savedValue = scriptProps.getProperty("process_last_n_months");
+  console.log("🔍 DEBUG: Saved 'process_last_n_months' value: " + savedValue);
+
+  var n = parseInt(savedValue || "24", 10);
+  if (isNaN(n) || n < 1) n = 3;
+
+  console.log("✅ DEBUG: Final N value being used: " + n + " months");
+
+  // Calculate date range
+  var today     = new Date();
+  var startDate = new Date(today);
+  startDate.setMonth(startDate.getMonth() - n);
+
+  function pad(num) { return num < 10 ? '0' + num : '' + num; }
+  var afterStr = startDate.getFullYear() + "/" + pad(startDate.getMonth() + 1) + "/" + pad(startDate.getDate());
+  var beforeStr = today.getFullYear() + "/" + pad(today.getMonth() + 1) + "/" + pad(today.getDate());
+
+  var jobState = {
+    n           : n,
+    afterStr    : afterStr,
+    beforeStr   : beforeStr,
+    startDate   : startDate.toISOString(),
+    endDate     : today.toISOString(),
+    offset      : 0,           // which thread batch we're on
+    status      : "running",
+    // cumulative stats
+    stats: {
+      threadsScanned : 0,
+      messagesFound  : 0,
+      labeled        : 0,
+      skipped        : 0,
+      filtered       : 0,
+      errors         : 0
+    }
+  };
+
+  scriptProps.setProperty("bulk_job_state", JSON.stringify(jobState));
+  console.log("✓ Job initialized: last " + n + " months (" + afterStr + " → " + beforeStr + ")");
+}
+
+function _runBulkJob() {
+  var SAFE_DURATION_MS = 4.5 * 60 * 1000;
+  var BATCH_SIZE       = 50;
+  var CALL_GAP_MS      = 2000; // 15 second gap between each API call
+
+  var runStart    = new Date();
+  var scriptProps = PropertiesService.getScriptProperties();
+
+  // ✅ ABORT CHECK #1 — before doing anything at all
+  if (scriptProps.getProperty(BULK_JOB_ABORT_KEY) === "true") {
+    console.log("🛑 Abort flag detected at entry. Cleaning up.");
+    _cleanupAfterAbort();
+    return;
+  }
+
+  var stateJson = scriptProps.getProperty(BULK_JOB_STATE_KEY);
+  if (!stateJson) {
+    console.log("ℹ️  No job state — job was cancelled.");
+    return;
+  }
+
+  var state = JSON.parse(stateJson);
+  console.log("=== BULK JOB RUN START === offset: " + state.offset);
+
+  var flaskUrl = scriptProps.getProperty("FLASK_SERVER_URL");
+  if (!flaskUrl) {
+    _markJobFailed("FLASK_SERVER_URL not configured");
+    return;
+  }
+
+  var baseUrl    = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
+  var endpoint   = baseUrl + '/api/label-email';
+  var userId     = Session.getEffectiveUser().getEmail();
+  var startDate  = new Date(state.startDate);
+  var endDate    = new Date(state.endDate);
+  var gmailQuery = "after:" + state.afterStr + " before:" + state.beforeStr;
+
+  var timedOut = false;
+  var aborted  = false;
+
+  outer:
+  while (true) {
+
+    // ✅ ABORT CHECK #2 — top of every outer loop iteration
+    if (scriptProps.getProperty(BULK_JOB_ABORT_KEY) === "true") {
+      console.log("🛑 Abort detected in outer loop. Stopping.");
+      aborted = true;
+      break outer;
+    }
+
+    // ⏱️ TIME CHECK
+    if ((new Date()) - runStart >= SAFE_DURATION_MS) {
+      console.log("⏱️ Time limit reached. Saving state.");
+      timedOut = true;
+      break outer;
+    }
+
+    var threads;
+    try {
+      threads = GmailApp.search(gmailQuery, state.offset, BATCH_SIZE);
+    } catch (searchErr) {
+      console.log("❌ Gmail search error: " + searchErr.message);
+      state.stats.errors++;
+      break outer;
+    }
+
+    if (!threads || threads.length === 0) {
+      console.log("✅ All threads processed.");
+      break outer;
+    }
+
+    state.stats.threadsScanned += threads.length;
+
+    for (var i = 0; i < threads.length; i++) {
+
+      // ✅ ABORT CHECK #3 — per thread
+      if (scriptProps.getProperty(BULK_JOB_ABORT_KEY) === "true") {
+        console.log("🛑 Abort detected in thread loop. Stopping.");
+        aborted = true;
+        break outer;
+      }
+
+      if ((new Date()) - runStart >= SAFE_DURATION_MS) {
+        timedOut = true;
+        break outer;
+      }
+
+      var thread   = threads[i];
+      var threadId = thread.getId();
+      var messages = thread.getMessages();
+
+      for (var j = 0; j < messages.length; j++) {
+
+        // ✅ ABORT CHECK #4 — per message
+        if (scriptProps.getProperty(BULK_JOB_ABORT_KEY) === "true") {
+          console.log("🛑 Abort detected in message loop. Stopping.");
+          aborted = true;
+          break outer;
+        }
+
+        // ⏱️ TIME CHECK — account for the upcoming 15s sleep
+        if ((new Date()) - runStart >= SAFE_DURATION_MS - CALL_GAP_MS) {
+          console.log("⏱️ Time limit approaching (gap buffer). Saving state.");
+          timedOut = true;
+          break outer;
+        }
+
+        var message   = messages[j];
+        var messageId = message.getId();
+        var msgDate   = message.getDate();
+
+        if (msgDate < startDate || msgDate > endDate) continue;
+
+        state.stats.messagesFound++;
+
+        if (isMessageProcessed(messageId)) {
+          state.stats.skipped++;
+          continue;
+        }
+
+        if (shouldFilterMessage(message)) {
+          state.stats.filtered++;
+          markMessageProcessed(messageId);
+          continue;
+        }
+
+        // Call /api/label-email
+        try {
+          var resp = UrlFetchApp.fetch(endpoint, {
+            method             : "post",
+            contentType        : "application/json",
+            payload            : JSON.stringify({
+              user_id   : userId,
+              thread_id : threadId,
+              messages  : [{
+                message_id   : messageId,
+                from_address : message.getFrom(),
+                to           : message.getTo().split(',').map(function(e){ return e.trim(); }),
+                subject      : message.getSubject(),
+                timestamp    : message.getDate().toISOString(),
+                body         : message.getPlainBody ? message.getPlainBody() : ""
+              }]
+            }),
+            muteHttpExceptions : true
+          });
+
+          if (resp.getResponseCode() !== 200) {
+            console.log("  ❌ Server " + resp.getResponseCode() + ": " + message.getSubject().substring(0, 40));
+            state.stats.errors++;
+          } else {
+            var label = JSON.parse(resp.getContentText()).label;
+            if (label) {
+              try { applyLabelToThread(threadId, label); } catch(le) {}
+              console.log("  ✓ [" + label + "] " + message.getSubject().substring(0, 45));
+            }
+            state.stats.labeled++;
+          }
+
+          markMessageProcessed(messageId);
+
+          // ✅ 15-second gap between each API call
+          console.log("  ⏳ Waiting 15s before next call...");
+          Utilities.sleep(CALL_GAP_MS);
+
+        } catch (msgErr) {
+          console.log("  ❌ " + msgErr.message);
+          state.stats.errors++;
+          // Still wait before next call even on error
+          Utilities.sleep(CALL_GAP_MS);
+        }
+
+      } // messages
+    } // threads
+
+    state.offset += threads.length;
+    if (threads.length < BATCH_SIZE) {
+      console.log("✅ Reached end of Gmail results.");
+      break outer;
+    }
+
+  } // outer while
+
+  // ── Post-run ────────────────────────────────────────────────────────────
+  var duration = ((new Date()) - runStart) / 1000;
+  console.log("Duration: " + duration.toFixed(1) + "s | Labeled: " + state.stats.labeled +
+              " | Errors: " + state.stats.errors);
+
+  if (aborted) {
+    _cleanupAfterAbort();
+    console.log("🛑 Job stopped cleanly after abort.");
+  } else if (timedOut) {
+    scriptProps.setProperty(BULK_JOB_STATE_KEY, JSON.stringify(state));
+    _scheduleContinuation();
+    console.log("⏭️  Saved. Continuing in ~1 minute.");
+  } else {
+    _markJobComplete(state);
+  }
+}
+
+/**
+ * Schedule a one-time trigger to continue the job in 1 minute
+ * Removes any existing continuation triggers first to avoid duplicates
+ */
+function _scheduleContinuation() {
+  // Delete existing continuation triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === '_continueBulkJob') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+
+  // Schedule new one-time trigger 1 minute from now
+  ScriptApp.newTrigger('_continueBulkJob')
+    .timeBased()
+    .after(1 * 60 * 1000) // 1 minute in milliseconds
+    .create();
+}
+
+function _continueBulkJob() {
+  _deleteAllContinuationTriggers(); // self-delete first
+
+  var scriptProps = PropertiesService.getScriptProperties();
+
+  // ✅ Check abort flag before doing ANYTHING
+  if (scriptProps.getProperty(BULK_JOB_ABORT_KEY) === "true") {
+    console.log("🛑 Abort flag found in continuation. Cleaning up, not continuing.");
+    _cleanupAfterAbort();
+    return;
+  }
+
+  // Also check state exists
+  if (!scriptProps.getProperty(BULK_JOB_STATE_KEY)) {
+    console.log("ℹ️  No job state found. Job was cancelled. Not continuing.");
+    return;
+  }
+
+  console.log("🔄 Auto-continuing bulk job...");
+  _runBulkJob();
+}
+// ============================================================================
+// NEW HELPER — cleanup on abort
+// ============================================================================
+function _cleanupAfterAbort() {
+  var scriptProps = PropertiesService.getScriptProperties();
+  scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
+  scriptProps.deleteProperty(BULK_JOB_ABORT_KEY);
+  _deleteAllContinuationTriggers();
+  console.log("✓ Abort cleanup complete.");
+}
+
+// ============================================================================
+// NEW HELPER — centralized trigger deletion
+// ============================================================================
+function _deleteAllContinuationTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  var count = 0;
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === '_continueBulkJob') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      count++;
+    }
+  }
+  if (count > 0) console.log("✓ Removed " + count + " continuation trigger(s).");
+}
+
+/**
+ * Mark job as complete, clear state, log final stats
+ */
+function _markJobComplete(state) {
+  var scriptProps = PropertiesService.getScriptProperties();
+  scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
+  scriptProps.deleteProperty(BULK_JOB_ABORT_KEY);
+  _deleteAllContinuationTriggers();
+  console.log("🎉 JOB COMPLETE!");
+  console.log("Total labeled  : " + state.stats.labeled);
+  console.log("Total skipped  : " + state.stats.skipped);
+  console.log("Total filtered : " + state.stats.filtered);
+  console.log("Total errors   : " + state.stats.errors);
+}
+
+/**
+ * Mark job as failed, preserve state for inspection
+ */
+function _markJobFailed(reason) {
+  var scriptProps = PropertiesService.getScriptProperties();
+  var stateJson   = scriptProps.getProperty("bulk_job_state");
+  if (stateJson) {
+    var state  = JSON.parse(stateJson);
+    state.status = "failed";
+    state.failReason = reason;
+    scriptProps.setProperty("bulk_job_state", JSON.stringify(state));
+  }
+  console.log("❌ Job failed: " + reason);
+}
+
+/**
+ * Check the current status of a running bulk job
+ * Call this anytime to see progress
+ */
+function checkBulkJobStatus() {
+  var scriptProps = PropertiesService.getScriptProperties();
+  var stateJson   = scriptProps.getProperty("bulk_job_state");
+
+  if (!stateJson) {
+    console.log("ℹ️  No bulk job is currently running.");
+    return;
+  }
+
+  var state = JSON.parse(stateJson);
+  console.log("=== BULK JOB STATUS ===");
+  console.log("Period  : last " + state.n + " months");
+  console.log("Range   : " + state.afterStr + " → " + state.beforeStr);
+  console.log("Offset  : " + state.offset + " threads processed so far");
+  console.log("Status  : " + state.status);
+  console.log("Labeled : " + state.stats.labeled);
+  console.log("Skipped : " + state.stats.skipped);
+  console.log("Errors  : " + state.stats.errors);
+}
+
+/**
+ * Cancel a running bulk job and clean up all triggers
+ */
+function cancelBulkJob() {
+  var scriptProps = PropertiesService.getScriptProperties();
+
+  // Step 1: Set poison pill FIRST — running loop sees this within milliseconds
+  scriptProps.setProperty(BULK_JOB_ABORT_KEY, "true");
+
+  // Step 2: Wipe job state so no new run can start
+  scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
+
+  // Step 3: Kill all continuation triggers
+  _deleteAllContinuationTriggers();
+
+  console.log("🛑 CANCELLED.");
+  console.log("   Abort flag SET   → running loop stops at next message");
+  console.log("   Job state WIPED  → no new runs possible");
+  console.log("   Triggers REMOVED → no scheduled continuations");
+  console.log("");
+  console.log("⚠️  If calls still arrive for ~1-2 seconds, that's the");
+  console.log("   current UrlFetchApp.fetch() finishing. It will stop after that.");
+}
 
 
 /**
@@ -1125,54 +1734,9 @@ function showAvailableColors() {
   Logger.log("  • cocoa        - Brown/cocoa");
   Logger.log("  • white        - White/default");
   Logger.log("");
-  Logger.log("Current labels created by main script:");
+  Logger.log("Current label colors:");
   Logger.log("─────────────────────────────────────────");
-  
-  // List all existing labels instead of color config
-  var existingLabels = GmailApp.getUserLabels();
-  for (var i = 0; i < existingLabels.length; i++) {
-    var label = existingLabels[i];
-    Logger.log("  ▪ " + label.getName() + " (color set by main script)");
-  }
-}
-
-/**
- * TEST FUNCTION: Verify labels exist (colors are handled by main script)
- * Run this to test if all required labels have been created
- */
-function testLabelColors() {
-  Logger.log("=== TESTING LABEL EXISTENCE ===");
-  Logger.log("(Colors are set by the main Gmail add-on script)");
-  Logger.log("");
-  
-  // Test labels that should be generated by Python backend
-  var testLabels = [
-    "response", "FYI", "Notification", "meeting", "Escalation", 
-    "hotels", "airlines", "travel", "restaurant", "booking", 
-    "bank", "Insurance", "Other", "Awaiting Reply"
-  ];
-  
-  var existingLabels = GmailApp.getUserLabels();
-  var existingLabelNames = {};
-  
-  for (var i = 0; i < existingLabels.length; i++) {
-    existingLabelNames[existingLabels[i].getName().toLowerCase()] = true;
-  }
-  
-  for (var i = 0; i < testLabels.length; i++) {
-    var labelName = testLabels[i];
-    var formattedName = labelName.charAt(0).toUpperCase() + labelName.slice(1).toLowerCase();
-    
-    if (existingLabelNames[formattedName.toLowerCase()]) {
-      Logger.log("✓ " + formattedName + " → EXISTS");
-    } else {
-      Logger.log("✗ " + formattedName + " → MISSING (run Gmail add-on to create)");
-    }
-  }
-  
-  Logger.log("");
-  Logger.log("=== ALL EXISTING LABELS ===");
-  for (var i = 0; i < existingLabels.length; i++) {
-    Logger.log("  " + existingLabels[i].getName());
+  for (var label in CONFIG.LABEL_COLORS) {
+    Logger.log("  ▪ " + label + " → " + CONFIG.LABEL_COLORS[label]);
   }
 }
