@@ -68,3 +68,5 @@ openmailbot/agent/graph/chroma_db
 *.log
 */*/chroma_db/
 */*/chroma_db
+openmailbot/agent/config.json
+

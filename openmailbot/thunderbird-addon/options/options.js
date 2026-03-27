@@ -4,24 +4,21 @@
  */
 
 // Default backend URL
-const DEFAULT_BACKEND_URL = "http://43.204.98.38:8000";
+const DEFAULT_BACKEND_URL = "http://43.204.98.38:5050";
 
 /**
  * Get the configured backend URL
  */
 async function getBackendUrl() {
   try {
-    const result = await browser.storage.local.get("backend_url");
-    return result.backend_url || DEFAULT_BACKEND_URL;
-  } catch (error) {
-    console.error("Error getting backend URL:", error);
-    return DEFAULT_BACKEND_URL;
-  }
+    const r = await browser.storage.local.get("user_settings");
+    return (r.user_settings && r.user_settings.backend_url) || DEFAULT_BACKEND_URL;
+  } catch (e) { return DEFAULT_BACKEND_URL; }
 }
 
 // Default settings
 const DEFAULT_SETTINGS = {
-  backend_url: "http://43.204.98.38:8000",
+  backend_url: "http://43.204.98.38:5050",
   mode: "inbuilt",
   llm_provider: "inbuilt",
   llm_api_key: "",
@@ -38,6 +35,16 @@ const DEFAULT_SETTINGS = {
   user_tone: "professional",
   system_prompt: ""
 };
+
+// Load the bundled addon_config.json (addon-side config, like .env / app secrets)
+async function getAddonConfig() {
+  try {
+    const url  = browser.runtime.getURL("addon_config.json");
+    const resp = await fetch(url);
+    if (resp.ok) return await resp.json();
+  } catch (e) { console.warn("addon_config.json not loaded:", e.message); }
+  return {};
+}
 
 // Initialize options page
 document.addEventListener("DOMContentLoaded", async () => {
@@ -58,17 +65,30 @@ function setupEventListeners() {
  */
 async function loadSettings() {
   try {
-    const result = await browser.storage.local.get("user_settings");
+    const result = await browser.storage.local.get(["user_settings", "domain_filters", "process_last_n_months"]);
     const settings = result.user_settings || DEFAULT_SETTINGS;
-    
-    // Populate form fields
+
+    // Populate user_settings fields
     Object.keys(settings).forEach(key => {
       const element = document.getElementById(key);
-      if (element) {
-        element.value = settings[key] || "";
-      }
+      if (element) element.value = settings[key] || "";
     });
-    
+
+    // Populate domain_filters — merge storage + addon_config.json defaults
+    const filtersEl = document.getElementById("domain_filters");
+    if (filtersEl) {
+      const stored   = result.domain_filters || [];
+      const cfg      = await getAddonConfig();
+      const cfgDoms  = (cfg.domain_filters && cfg.domain_filters.blocked_domains)  || [];
+      const cfgAddrs = (cfg.domain_filters && cfg.domain_filters.blocked_addresses) || [];
+      const merged   = [...new Set([...stored, ...cfgDoms, ...cfgAddrs])];
+      filtersEl.value = merged.join("\n");
+    }
+
+    // Populate process_months
+    const monthsEl = document.getElementById("process_months");
+    if (monthsEl) monthsEl.value = result.process_last_n_months || "3";
+
     console.log("Settings loaded successfully");
   } catch (error) {
     console.error("Error loading settings:", error);
@@ -91,13 +111,19 @@ async function handleSave(event) {
       settings[key] = value;
     }
     
-    // Save to local storage
+    // Parse + save domain_filters separately
+    const filtersRaw = settings.domain_filters || "";
+    delete settings.domain_filters;
+    const filters = filtersRaw.split(/\n|,/).map(f => f.trim().toLowerCase()).filter(Boolean);
+    await browser.storage.local.set({ domain_filters: filters });
+
+    // Parse + save process_months separately
+    const monthsVal = settings.process_months || "3";
+    delete settings.process_months;
+    await browser.storage.local.set({ process_last_n_months: monthsVal });
+
+    // Save user_settings
     await browser.storage.local.set({ user_settings: settings });
-    
-    // Also save backend_url separately for quick access
-    if (settings.backend_url) {
-      await browser.storage.local.set({ backend_url: settings.backend_url });
-    }
     
     // Sync to backend (best effort)
     try {
@@ -123,15 +149,17 @@ async function handleReset() {
   }
   
   try {
-    await browser.storage.local.remove("user_settings");
+    await browser.storage.local.remove(["user_settings", "domain_filters", "process_last_n_months"]);
     
     // Reload form with defaults
     Object.keys(DEFAULT_SETTINGS).forEach(key => {
       const element = document.getElementById(key);
-      if (element) {
-        element.value = DEFAULT_SETTINGS[key] || "";
-      }
+      if (element) element.value = DEFAULT_SETTINGS[key] || "";
     });
+    const filtersEl = document.getElementById("domain_filters");
+    if (filtersEl) filtersEl.value = "";
+    const monthsEl = document.getElementById("process_months");
+    if (monthsEl) monthsEl.value = "3";
     
     showStatus("🔄 Settings reset to defaults!", "success");
   } catch (error) {

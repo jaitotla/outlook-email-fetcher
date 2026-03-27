@@ -1,6 +1,6 @@
 """
-ChromaDB Vector Store Client - HTTP-Only Mode
-Connects to remote ChromaDB server, does not initialize local storage
+ChromaDB Vector Store Client - Persistent Local Storage
+Uses local persistent ChromaDB storage for all modes.
 """
 from typing import List, Dict, Any, Optional
 import chromadb
@@ -14,88 +14,50 @@ from .base import BaseVectorStore
 logger = logging.getLogger(__name__)
 
 
+
 class ChromaDBClient(BaseVectorStore):
     """
-    ChromaDB client that connects to a remote Chroma server via HTTP.
-    Does not create local directories or initialize local storage.
+    ChromaDB client using local persistent storage.
+    Works the same for both inbuilt and standard usage.
     """
     
     def __init__(self, settings: Optional[Dict[str, Any]] = None, inbuilt_mode: bool = False):
         """
-        Initialize ChromaDB HTTP client.
+        Initialize ChromaDB with local persistent storage per user.
         
         Args:
-            settings: Dict with 'chromaUrl' (e.g., 'http://localhost:8000')
-            inbuilt_mode: If True, uses INBUILT_CHROMA_URL env var
+            settings: Dict with 'user_id' key or None (uses USER_ID env var or default)
+            inbuilt_mode: Unused, kept for interface compatibility
         """
         settings = settings or {}
+        
+        # Get user_id from settings, environment, or default
+        user_id = settings.get("user_id") or os.environ.get("USER_ID", "default")
+        
+        # Create per-user isolated storage path
+        persistent_path = os.path.join(
+            os.path.dirname(__file__), 
+            "..", "data", user_id, "vector_db"
+        )
+        os.makedirs(persistent_path, exist_ok=True)
 
-        # Check if a persistent local path is requested (per-user persistent storage)
-        # Default to agent/data/vector_db when not provided by settings or env
-        persistent_path = os.path.join(os.path.dirname(__file__), "..", "data", "vector_db")
-
-        if persistent_path:
-            # Ensure directory exists
-            os.makedirs(persistent_path, exist_ok=True)
-            try:
-                # Initialize local persistent ChromaDB (stores chroma.sqlite3 files)
-                self.client = chromadb.PersistentClient(
-                    path=persistent_path,
-                    settings=ChromaSettings(anonymized_telemetry=False)
-                )
-                logger.info(f"Initialized local persistent ChromaDB at {persistent_path}")
-            except Exception as e:
-                raise ConnectionError(
-                    f"Failed to initialize persistent ChromaDB at {persistent_path}: {e}"
-                )
-            self.collections = {}
-            self._persistent = True
-            return
-
-        # Otherwise fall back to HTTP client (remote Chroma server)
-        if inbuilt_mode:
-            chroma_url = os.environ.get("INBUILT_CHROMA_URL", "http://localhost:8000")
-        else:
-            chroma_url = settings.get("chromaUrl") or os.environ.get("CHROMA_URL")
-
-        if not chroma_url:
-            raise ValueError(
-                "ChromaDB URL not configured. Set 'chromaUrl' in settings or "
-                "CHROMA_URL environment variable. ChromaDB runs in HTTP-only mode."
-            )
-
-        # Parse host and port from URL
         try:
-            from urllib.parse import urlparse
-            parsed = urlparse(chroma_url)
-            host = parsed.hostname or "localhost"
-            port = parsed.port or 8000
-        except Exception as e:
-            logger.warning(f"Failed to parse Chroma URL '{chroma_url}': {e}. Using defaults.")
-            host = "localhost"
-            port = 8000
-
-        # Initialize HTTP client - no local storage
-        try:
-            self.client = chromadb.HttpClient(
-                host=host,
-                port=port,
+            self.client = chromadb.PersistentClient(
+                path=persistent_path,
                 settings=ChromaSettings(anonymized_telemetry=False)
             )
-            # Test connection
-            self.client.heartbeat()
-            logger.info(f"Connected to ChromaDB at {host}:{port}")
+            logger.info(f"Initialized local persistent ChromaDB at {persistent_path}")
         except Exception as e:
             raise ConnectionError(
-                f"Failed to connect to ChromaDB at {host}:{port}. "
-                f"Ensure the Chroma server is running. Error: {e}"
+                f"Failed to initialize persistent ChromaDB at {persistent_path}: {e}"
             )
 
         self.collections = {}
-        self._persistent = False
+        self._persistent = True
+        self.user_id = user_id
     
     def _get_collection(self, namespace: str):
-        """Get collection for namespace (must already exist on server)"""
+        """Get or create collection for namespace"""
         if namespace not in self.collections:
             try:
                 # Try to get existing collection first
@@ -103,8 +65,7 @@ class ChromaDBClient(BaseVectorStore):
                     name=namespace
                 )
             except Exception:
-                # Collection doesn't exist - in remote mode, we create it
-                # but the actual data/index lives on the remote server
+                # Collection doesn't exist, create it
                 self.collections[namespace] = self.client.get_or_create_collection(
                     name=namespace,
                     metadata={"hnsw:space": "cosine"}

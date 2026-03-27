@@ -1,0 +1,19 @@
+---
+title: Vector DB Factory
+---
+flowchart TD
+    A["get_vector_client(provider, settings)"] --> B{provider?}
+    
+    B -->|pinecone| C[PineconeClient]
+    B -->|chroma| D["ChromaDBClient<br/>(per-user persistent)"]
+    B -->|weaviate| E[WeaviateClient]
+    B -->|inbuilt| F["ChromaDBClient<br/>(inbuilt_mode=True)"]
+    
+    C --> G[BaseVectorStore interface]
+    D --> G
+    E --> G
+    F --> G
+    
+    G --> H["upsert(id, embedding, metadata, namespace)"]
+    G --> I["query(embedding, namespace, limit, filter)"]
+    G --> J["delete(id, namespace)"]

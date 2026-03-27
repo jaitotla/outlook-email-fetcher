@@ -151,7 +151,7 @@ class ChatWithThreadPipeline:
         # For other providers, we'll use LLMService with appropriate fallback
         if self.llm_provider == "inbuilt":
             self.tool_caller_llm = ChatOpenAI(
-                model="gpt-4o-mini",
+                model="gpt-5-mini",
                 temperature=0,
                 api_key=OPENAI_KEY
             )
@@ -162,7 +162,7 @@ class ChatWithThreadPipeline:
         
         # Initialize EmbeddingService for embeddings and vector operations
         try:
-            self.embedding_service = EmbeddingService()
+            self.embedding_service = EmbeddingService(self.effective_settings if self.effective_settings else None)
             logger.info("✅ EmbeddingService initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize EmbeddingService: {e}")
@@ -388,9 +388,25 @@ class ChatWithThreadPipeline:
         logger.info(f"Found {len(messages)} messages in thread {thread_id}")
         return messages
     
+    def get_existing_message_ids_from_db(self, user_id: str, thread_id: str) -> Set[str]:
+        """Get all already-processed message IDs for a thread from the SQLite DB."""
+        self.ensure_user_db(user_id)
+        user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+        conn = sqlite3.connect(user_db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT message_id FROM email_embeddings WHERE user_id = ? AND thread_id = ? AND processed_status = 'completed'",
+            (user_id, thread_id)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        ids = {row[0] for row in rows}
+        logger.info(f"Found {len(ids)} already-processed messages in DB for thread {thread_id}")
+        return ids
+
     def get_unprocessed_messages(self, user_id: str, thread_id: str) -> List[Dict]:
         """Filter out already processed messages and return unprocessed ones"""
-        existing_message_ids = self.get_existing_message_ids_from_chroma(user_id, thread_id)
+        existing_message_ids = self.get_existing_message_ids_from_db(user_id, thread_id)
         all_messages = self.get_thread_messages(user_id, thread_id)
         
         unprocessed_messages = [

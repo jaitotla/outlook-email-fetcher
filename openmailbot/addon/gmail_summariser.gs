@@ -1,4 +1,23 @@
 /**
+ * Runs automatically when a user installs the add-on.
+ * Calls setupEmailMonitor() (defined in runbackground.gs) to register
+ * background triggers and start monitoring right away.
+ */
+function onInstall(e) {
+  try {
+    setupEmailMonitor();
+    Logger.log("✅ onInstall: setupEmailMonitor() completed successfully.");
+  } catch (err) {
+    Logger.log("❌ onInstall: setupEmailMonitor() failed — " + err.message);
+  }
+
+  // Also run the normal open handler so the add-on card loads for the user
+  onOpen(e);
+}
+
+
+
+/**
  * Entry point for Gmail Add-on — Premium home card
  */
 function buildAddOn(e) {
@@ -12,7 +31,7 @@ function buildAddOn(e) {
       CardService.newCardSection()
         .addWidget(
           CardService.newDecoratedText()
-            .setTopLabel("✦  POWERED BY AI  ✦")
+            .setTopLabel("✦  POWERED BY MANOTR  ✦")
             .setText("<b>Welcome to OpenMailBot</b>")
             .setBottomLabel("Summarize threads · Chat with emails · Draft smart replies")
             .setWrapText(true)

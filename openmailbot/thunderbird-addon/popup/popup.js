@@ -1,397 +1,492 @@
 /**
- * Popup script for Email Thread Assistant
- * Handles UI interactions and communication with background script
+ * OpenMailBot — popup.js
+ * Full feature parity with gmail_summariser.gs
  */
 
-let currentMessageId = null;
-let currentThreadId = null;
-let chatHistory = [];
+"use strict";
 
-// Initialize popup
+// ── STATE ──────────────────────────────────────────────
+let currentMessageId = null;
+let currentSummary    = "";
+let chatHistory       = [];
+let localFilters      = [];        // working copy edited before save
+
+const ALL_VIEWS = [
+  "main-menu", "loading", "summary-view", "draft-view",
+  "chat-view", "error-view", "settings-view", "advanced-view", "bulk-status-view"
+];
+
+// ── INIT ───────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
   try {
-    // Get current message
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-    const messageDisplay = await browser.messageDisplay.getDisplayedMessage(tabs[0].id);
-    
-    if (messageDisplay) {
-      currentMessageId = messageDisplay.id;
-      console.log("Current message ID:", currentMessageId);
+    const msg  = await browser.messageDisplay.getDisplayedMessage(tabs[0].id);
+    if (msg) {
+      currentMessageId = msg.id;
     } else {
-      showError("No email selected. Please select an email to analyze.");
+      showError("No email selected. Please open an email first.");
       return;
     }
-    
-    setupEventListeners();
-  } catch (error) {
-    console.error("Initialization error:", error);
-    showError("Failed to initialize: " + error.message);
+    bindEvents();
+  } catch (e) {
+    showError("Failed to initialise: " + e.message);
   }
 });
 
-/**
- * Setup event listeners for buttons
- */
-function setupEventListeners() {
+// ── EVENT BINDING ──────────────────────────────────────
+function bindEvents() {
   // Main menu
-  document.getElementById("summarize-btn").addEventListener("click", handleSummarize);
-  document.getElementById("chat-btn").addEventListener("click", handleShowChat);
-  document.getElementById("draft-btn").addEventListener("click", handleDraftWithAttachments);
-  document.getElementById("settings-btn").addEventListener("click", handleSettings);
-  
+  on("summarize-btn", "click", handleSummarize);
+  on("chat-btn",      "click", handleShowChat);
+  on("draft-btn",     "click", handleDraftWithAttachments);
+  on("settings-btn",  "click", handleOpenSettings);
+  on("advanced-btn",  "click", handleOpenAdvanced);
+
   // Summary view
-  document.getElementById("draft-response-btn").addEventListener("click", handleDraftResponse);
-  document.getElementById("back-from-summary-btn").addEventListener("click", showMainMenu);
-  
+  on("draft-response-btn",   "click", handleDraftResponse);
+  on("back-from-summary-btn","click", showMainMenu);
+
   // Draft view
-  document.getElementById("back-from-draft-btn").addEventListener("click", showMainMenu);
-  
+  on("back-from-draft-btn",  "click", showMainMenu);
+
   // Chat view
-  document.getElementById("send-chat-btn").addEventListener("click", handleSendChat);
-  document.getElementById("clear-chat-btn").addEventListener("click", handleClearChat);
-  document.getElementById("back-from-chat-btn").addEventListener("click", showMainMenu);
-  
+  on("send-chat-btn",        "click", handleSendChat);
+  on("clear-chat-btn",       "click", () => { chatHistory = []; renderChat(); });
+  on("back-from-chat-btn",   "click", showMainMenu);
+  on("chat-input", "keydown", e => { if (e.key === "Enter" && e.ctrlKey) handleSendChat(); });
+
   // Error view
-  document.getElementById("back-from-error-btn").addEventListener("click", showMainMenu);
-  
-  // Enter key in chat input
-  document.getElementById("chat-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && e.ctrlKey) {
-      handleSendChat();
-    }
-  });
+  on("back-from-error-btn",  "click", showMainMenu);
+
+  // Settings view
+  on("save-settings-btn",    "click", handleSaveSettings);
+  on("sync-settings-btn",    "click", handleSyncSettings);
+  on("reset-settings-btn",   "click", handleResetSettings);
+  on("back-from-settings-btn","click", showMainMenu);
+
+  // Advanced view
+  on("adv-add-filter-btn",   "click", handleAddFilter);
+  on("adv-save-filters-btn", "click", handleSaveFilters);
+  on("adv-test-filters-btn", "click", handleTestFilters);
+  on("run-bulk-btn",         "click", handleRunBulk);
+  on("bulk-confirm-yes-btn", "click", handleRunBulkConfirmed);
+  on("bulk-confirm-no-btn",  "click", hideBulkConfirm);
+  on("bulk-status-btn",      "click", handleOpenBulkStatus);
+  on("back-from-advanced-btn","click", showMainMenu);
+
+  // Bulk status view
+  on("bs-refresh-btn",       "click", handleRefreshBulkStatus);
+  on("bs-cancel-btn",        "click", handleCancelBulk);
+  on("back-from-bulk-btn",   "click", showView.bind(null, "advanced-view"));
 }
 
-/**
- * Show/hide views
- */
-function showView(viewId) {
-  const views = ["main-menu", "loading", "summary-view", "draft-view", "chat-view", "error-view"];
-  views.forEach(id => {
-    document.getElementById(id).classList.add("hidden");
-  });
-  document.getElementById(viewId).classList.remove("hidden");
+function on(id, event, fn) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener(event, fn);
 }
 
-function showMainMenu() {
-  showView("main-menu");
+// ── VIEW CONTROL ────────────────────────────────────────
+function showView(id) {
+  ALL_VIEWS.forEach(v => document.getElementById(v).classList.add("hidden"));
+  document.getElementById(id).classList.remove("hidden");
 }
-
-function showLoading(text = "Processing...") {
-  document.getElementById("loading-text").textContent = text;
+function showMainMenu() { showView("main-menu"); }
+function showLoading(txt = "Processing…") {
+  document.getElementById("loading-text").textContent = txt;
   showView("loading");
 }
-
-function showError(message) {
-  document.getElementById("error-message").textContent = message;
+function showError(msg) {
+  document.getElementById("error-message").textContent = msg;
   showView("error-view");
 }
+function setStatus(id, msg, isError = false) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  el.classList.toggle("error", isError);
+}
+function hideStatus(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.add("hidden");
+}
 
-/**
- * Handle summarize thread
- */
+// ── SUMMARIZE ──────────────────────────────────────────
 async function handleSummarize() {
   try {
-    showLoading("Analyzing thread...");
-    
-    const response = await browser.runtime.sendMessage({
-      action: "summarizeThread",
-      data: { messageId: currentMessageId }
-    });
-    
-    if (response.error) {
-      throw new Error(response.error);
-    }
-    
-    currentThreadId = response.threadId;
-    displaySummary(response.summary);
-    
-  } catch (error) {
-    console.error("Summarize error:", error);
-    showError("Error generating summary: " + error.message);
+    showLoading("Analysing thread…");
+    const resp = await send("summarizeThread", { messageId: currentMessageId });
+    currentSummary = resp.summary || "";
+    document.getElementById("summary-content").innerHTML = mdToHtml(currentSummary);
+    showView("summary-view");
+  } catch (e) {
+    showError("Summary failed: " + e.message);
   }
 }
 
-/**
- * Display summary
- */
-function displaySummary(summary) {
-  const summaryContent = document.getElementById("summary-content");
-  summaryContent.innerHTML = formatMarkdownToHtml(summary);
-  showView("summary-view");
-}
-
-/**
- * Handle draft response
- */
+// ── DRAFT RESPONSE (from summary) ─────────────────────
 async function handleDraftResponse() {
   try {
-    showLoading("Creating draft...");
-    
-    const summary = document.getElementById("summary-content").textContent;
-    
-    // Build draft prompt
-    const draftPrompt = `### Draft Response Email (Based on Current State)
-
-I am a professional email user
-Draft response from me
-
-Write a professional, neutral email that:
-- Acknowledges the current status
-- Restates pending actions
-- Requests the next expected step
-- Does NOT introduce new information
-
-Email format only. No explanations.
-
-Summary:
-${summary}`;
-    
-    // Call background to create draft
-    const response = await browser.runtime.sendMessage({
-      action: "createDraft",
-      data: { 
-        messageId: currentMessageId,
-        draftPrompt: draftPrompt
-      }
-    });
-    
-    if (response.error) {
-      throw new Error(response.error);
+    showLoading("Creating draft…");
+    const resp = await send("createDraft", { messageId: currentMessageId, summary: currentSummary });
+    if (resp.success) {
+      document.getElementById("draft-message").innerHTML =
+        "✅ <strong>Draft opened in compose window.</strong>";
+      document.getElementById("draft-processing").innerHTML = "";
+      const preview = (resp.draftContent || "").substring(0, 800);
+      document.getElementById("draft-preview").textContent =
+        preview + ((resp.draftContent||"").length > 800 ? "\n\n…" : "");
+      showView("draft-view");
     }
-    
-    showMainMenu();
-    
-  } catch (error) {
-    console.error("Draft error:", error);
-    showError("Error creating draft: " + error.message);
+  } catch (e) {
+    showError("Draft failed: " + e.message);
   }
 }
 
-/**
- * Handle draft with attachments
- */
+// ── DRAFT WITH ATTACHMENTS ─────────────────────────────
 async function handleDraftWithAttachments() {
   try {
-    showLoading("Creating draft with attachments...");
-    
-    const response = await browser.runtime.sendMessage({
-      action: "draftWithAttachments",
-      data: { messageId: currentMessageId }
-    });
-    
-    if (response.error) {
-      throw new Error(response.error);
-    }
-    
-    displayDraftResult(response);
-    
-  } catch (error) {
-    console.error("Draft with attachments error:", error);
-    showError("Error creating draft with attachments: " + error.message);
+    showLoading("Creating draft + indexing attachments…");
+    const resp = await send("draftWithAttachments", { messageId: currentMessageId });
+    const pi = resp.processingInfo || {};
+    document.getElementById("draft-message").innerHTML =
+      "✅ <strong>Draft opened in compose window.</strong>";
+    document.getElementById("draft-processing").innerHTML =
+      resp.attachmentCount > 0
+        ? `📎 ${resp.attachmentCount} attachment(s) indexed.`
+        : "ℹ️ No attachments found.";
+    const preview = (resp.draftContent || "").substring(0, 800);
+    document.getElementById("draft-preview").textContent =
+      preview + ((resp.draftContent||"").length > 800 ? "\n\n…" : "");
+    showView("draft-view");
+  } catch (e) {
+    showError("Draft failed: " + e.message);
   }
 }
 
-/**
- * Display draft result
- */
-function displayDraftResult(result) {
-  const { draftContent, processingInfo, attachmentCount } = result;
-  
-  // Set message
-  document.getElementById("draft-message").innerHTML = 
-    "✅ <strong>A draft has been created and opened in a compose window!</strong>";
-  
-  // Set processing info
-  let processingMsg = "";
-  if (attachmentCount > 0) {
-    processingMsg = `📊 <strong>Processing Summary:</strong><br>
-• Attachments found: ${processingInfo.attachments_found || attachmentCount}<br>
-• Newly processed: ${processingInfo.attachments_processed || attachmentCount}<br>
-• Already cached: ${processingInfo.attachments_skipped || 0}`;
-  } else {
-    processingMsg = "ℹ️ No attachments found in this thread.";
-  }
-  document.getElementById("draft-processing").innerHTML = processingMsg;
-  
-  // Set preview
-  const preview = draftContent.substring(0, 800);
-  document.getElementById("draft-preview").textContent = 
-    preview + (draftContent.length > 800 ? "\n\n... (draft continues)" : "");
-  
-  showView("draft-view");
-}
-
-/**
- * Handle show chat
- */
+// ── CHAT ───────────────────────────────────────────────
 async function handleShowChat() {
-  try {
-    showLoading("Loading chat interface...");
-    
-    // Get current message to extract thread ID
-    const message = await browser.messages.get(currentMessageId);
-    currentThreadId = message.headerMessageId || currentMessageId.toString();
-    
-    // Clear chat history
-    chatHistory = [];
-    
-    // Let background.js handle logging emails and attachments via the chat pipeline
-    // No need to call them directly here
-    
-    displayChat();
-  } catch (error) {
-    console.error("Show chat error:", error);
-    showError("Error opening chat: " + error.message);
-  }
-}
-
-/**
- * Display chat interface
- */
-function displayChat() {
-  const chatHistoryEl = document.getElementById("chat-history");
-  chatHistoryEl.innerHTML = "";
-  
-  if (chatHistory.length === 0) {
-    document.getElementById("example-questions").classList.remove("hidden");
-    document.getElementById("chat-processing").classList.add("hidden");
-  } else {
-    document.getElementById("example-questions").classList.add("hidden");
-    
-    chatHistory.forEach(msg => {
-      const messageDiv = document.createElement("div");
-      messageDiv.className = `chat-message ${msg.role}`;
-      
-      const label = msg.role === "user" ? "You:" : "AI:";
-      const content = msg.role === "assistant" ? formatMarkdownToHtml(msg.content) : escapeHtml(msg.content);
-      
-      messageDiv.innerHTML = `<strong>${label}</strong>${content}`;
-      chatHistoryEl.appendChild(messageDiv);
-    });
-    
-    // Scroll to bottom
-    chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
-  }
-  
-  document.getElementById("chat-input").value = "";
+  chatHistory = [];
+  renderChat();
   showView("chat-view");
 }
 
-/**
- * Handle send chat message
- */
-async function handleSendChat() {
-  const input = document.getElementById("chat-input");
-  const question = input.value.trim();
-  
-  if (!question) {
+function renderChat() {
+  const box = document.getElementById("chat-history");
+  box.innerHTML = "";
+  const exQ = document.getElementById("example-questions");
+  if (chatHistory.length === 0) {
+    exQ.classList.remove("hidden");
     return;
   }
-  
+  exQ.classList.add("hidden");
+  for (const m of chatHistory) {
+    const d = document.createElement("div");
+    d.className = "chat-message " + m.role;
+    d.innerHTML = `<strong>${m.role === "user" ? "You:" : "AI:"}</strong>` +
+      (m.role === "assistant" ? mdToHtml(m.content) : escHtml(m.content));
+    box.appendChild(d);
+  }
+  box.scrollTop = box.scrollHeight;
+  document.getElementById("chat-input").value = "";
+}
+
+async function handleSendChat() {
+  const inp = document.getElementById("chat-input");
+  const q   = inp.value.trim();
+  if (!q) return;
+  chatHistory.push({ role: "user", content: q });
+  inp.value = "";
+  renderChat();
+  showLoading("Thinking…");
   try {
-    // Add user message to history
-    chatHistory.push({ role: "user", content: question });
-    input.value = "";
-    displayChat();
-    
-    showLoading("Getting answer...");
-    
-    const response = await browser.runtime.sendMessage({
-      action: "chatWithThread",
-      data: {
-        messageId: currentMessageId,
-        question: question
-      }
-    });
-    
-    if (response.error) {
-      throw new Error(response.error);
-    }
-    
-    // Add AI response to history
-    chatHistory.push({ role: "assistant", content: response.answer });
-    
-    // Show processing info on first message
-    if (chatHistory.length === 2 && response.processingInfo) {
-      const info = response.processingInfo;
-      let msg = "📊 <strong>Processing Summary:</strong><br>";
-      
-      if (info.emails) {
-        msg += `• Total messages: ${info.emails.total_messages}<br>`;
-        msg += `• Already processed: ${info.emails.already_processed}<br>`;
-        msg += `• Newly processed: ${info.emails.newly_processed}<br>`;
-      }
-      
-      if (info.attachments && info.attachments.attachments_found > 0) {
-        msg += `• Attachments found: ${info.attachments.attachments_found}<br>`;
-        msg += `• Attachments processed: ${info.attachments.attachments_processed}<br>`;
-        msg += `• Attachments cached: ${info.attachments.attachments_skipped}`;
-      }
-      
-      document.getElementById("chat-processing").innerHTML = msg;
-      document.getElementById("chat-processing").classList.remove("hidden");
-    }
-    
-    displayChat();
-    
-  } catch (error) {
-    console.error("Chat error:", error);
-    // Remove user message from history on error
+    const resp = await send("chatWithThread", { messageId: currentMessageId, question: q });
+    chatHistory.push({ role: "assistant", content: resp.answer || "(no answer)" });
+    renderChat();
+    showView("chat-view");
+  } catch (e) {
     chatHistory.pop();
-    showError("Error in chat: " + error.message);
+    showError("Chat error: " + e.message);
   }
 }
 
-/**
- * Handle clear chat
- */
-function handleClearChat() {
-  chatHistory = [];
-  displayChat();
+// ── SETTINGS ───────────────────────────────────────────
+async function handleOpenSettings() {
+  try {
+    showLoading("Loading settings…");
+    const resp = await send("loadSettings");
+    const s = resp.settings || {};
+    setVal("s-backend-url",  s.backend_url        || "http://43.204.98.38:5050");
+    setVal("s-mode",         s.mode               || "inbuilt");
+    setVal("s-llm-provider", s.llm_provider        || "inbuilt");
+    setVal("s-llm-api-key",  s.llm_api_key         || "");
+    setVal("s-llm-model",    s.llm_model           || "gpt-4o-mini");
+    setVal("s-llm-base-url", s.llm_base_url        || "");
+    setVal("s-emb-provider", s.embedding_provider  || "inbuilt");
+    setVal("s-emb-api-key",  s.embedding_api_key   || "");
+    setVal("s-emb-model",    s.embedding_model     || "text-embedding-3-small");
+    setVal("s-vec-provider", s.vector_provider     || "inbuilt");
+    setVal("s-vec-url",      s.vector_url          || "");
+    setVal("s-vec-api-key",  s.vector_api_key      || "");
+    setVal("s-user-name",    s.user_name           || "");
+    setVal("s-user-position",s.user_position       || "");
+    setVal("s-user-tone",    s.user_tone           || "professional");
+    setVal("s-system-prompt",s.system_prompt       || "");
+    hideStatus("settings-status");
+    showView("settings-view");
+  } catch (e) {
+    showError("Could not load settings: " + e.message);
+  }
 }
 
-/**
- * Handle settings
- */
-function handleSettings() {
-  browser.runtime.openOptionsPage();
+async function handleSaveSettings() {
+  const settings = {
+    backend_url       : getVal("s-backend-url"),
+    mode              : getVal("s-mode"),
+    llm_provider      : getVal("s-llm-provider"),
+    llm_api_key       : getVal("s-llm-api-key"),
+    llm_model         : getVal("s-llm-model"),
+    llm_base_url      : getVal("s-llm-base-url"),
+    embedding_provider: getVal("s-emb-provider"),
+    embedding_api_key : getVal("s-emb-api-key"),
+    embedding_model   : getVal("s-emb-model"),
+    vector_provider   : getVal("s-vec-provider"),
+    vector_url        : getVal("s-vec-url"),
+    vector_api_key    : getVal("s-vec-api-key"),
+    user_name         : getVal("s-user-name"),
+    user_position     : getVal("s-user-position"),
+    user_tone         : getVal("s-user-tone"),
+    system_prompt     : getVal("s-system-prompt")
+  };
+  try {
+    await send("saveSettings", { settings });
+    setStatus("settings-status", "✅ Settings saved.", false);
+  } catch (e) {
+    setStatus("settings-status", "❌ Save failed: " + e.message, true);
+  }
 }
 
-/**
- * Format markdown to HTML
- */
-function formatMarkdownToHtml(text) {
+async function handleSyncSettings() {
+  try {
+    await send("syncSettings", {});
+    setStatus("settings-status", "✅ Synced to backend.", false);
+  } catch (e) {
+    setStatus("settings-status", "❌ Sync failed: " + e.message, true);
+  }
+}
+
+async function handleResetSettings() {
+  if (!confirm("Reset all settings to defaults?")) return;
+  try {
+    const resp = await send("resetSettings");
+    const s = resp.settings || {};
+    handleOpenSettings();        // reload form
+    setStatus("settings-status", "✅ Settings reset to defaults.", false);
+  } catch (e) {
+    setStatus("settings-status", "❌ Reset failed: " + e.message, true);
+  }
+}
+
+// ── ADVANCED ───────────────────────────────────────────
+async function handleOpenAdvanced() {
+  try {
+    showLoading("Loading advanced settings…");
+    const [filtersResp, monthsResp] = await Promise.all([
+      send("getDomainFilters"),
+      send("getProcessMonths")
+    ]);
+    localFilters = filtersResp.filters || [];
+    renderFilterList();
+    setVal("adv-months", monthsResp.months || "3");
+    hideStatus("adv-filter-result");
+    showView("advanced-view");
+  } catch (e) {
+    showError("Could not load advanced settings: " + e.message);
+  }
+}
+
+function renderFilterList() {
+  const el = document.getElementById("adv-filter-list");
+  el.innerHTML = "";
+  if (!localFilters.length) {
+    el.innerHTML = '<span style="font-size:12px;color:#777">No filters added yet.</span>';
+    return;
+  }
+  for (const f of localFilters) {
+    const tag = document.createElement("span");
+    tag.className = "filter-tag";
+    tag.innerHTML = `${escHtml(f)}<button class="remove-filter" title="Remove">&times;</button>`;
+    tag.querySelector(".remove-filter").addEventListener("click", () => {
+      localFilters = localFilters.filter(x => x !== f);
+      renderFilterList();
+    });
+    el.appendChild(tag);
+  }
+}
+
+function handleAddFilter() {
+  const inp = document.getElementById("adv-filter-input");
+  const v   = inp.value.trim().toLowerCase();
+  if (!v) return;
+  if (!localFilters.includes(v)) { localFilters.push(v); renderFilterList(); }
+  inp.value = "";
+}
+
+async function handleSaveFilters() {
+  try {
+    await send("saveDomainFilters", { filters: localFilters });
+    await send("saveProcessMonths", { months: getVal("adv-months") });
+    setStatus("adv-filter-result", "✅ Filters & months saved.", false);
+  } catch (e) {
+    setStatus("adv-filter-result", "❌ Save failed: " + e.message, true);
+  }
+}
+
+async function handleTestFilters() {
+  try {
+    setStatus("adv-filter-result", "Testing…", false);
+    const resp = await send("testDomainFilters");
+    if (resp.noFilters) {
+      setStatus("adv-filter-result", "ℹ️ No filters configured.", false);
+      return;
+    }
+    let msg = `🧪 Scanned ${resp.threadsScanned||0} messages — ` +
+      `${resp.filtered} filtered, ${resp.allowed} allowed.`;
+    if (resp.examples && resp.examples.length) {
+      msg += "\n" + resp.examples.join("\n");
+    }
+    setStatus("adv-filter-result", msg, false);
+  } catch (e) {
+    setStatus("adv-filter-result", "❌ Test failed: " + e.message, true);
+  }
+}
+
+// ── BULK PROCESSING ────────────────────────────────────
+function hideBulkConfirm() {
+  const box = document.getElementById("bulk-confirm-box");
+  if (box) box.classList.add("hidden");
+}
+
+function handleRunBulk() {
+  // native confirm() is silently blocked in extension popups — use inline panel instead
+  const months = getVal("adv-months");
+  const monthLabel = months === "1" ? "1 month" :
+                     months === "12" ? "1 year" :
+                     months === "24" ? "2 years" : `${months} months`;
+  const box = document.getElementById("bulk-confirm-box");
+  const msg = document.getElementById("bulk-confirm-msg");
+  if (msg) msg.textContent = `Index emails from the last ${monthLabel}? This may take several minutes.`;
+  if (box) box.classList.remove("hidden");
+}
+
+async function handleRunBulkConfirmed() {
+  hideBulkConfirm();
+  const months = getVal("adv-months");
+  try {
+    // Save months & filters first
+    await send("saveProcessMonths", { months });
+    await send("saveDomainFilters", { filters: localFilters });
+    showLoading("Starting bulk indexing…");
+    await send("runBulkProcess", { months });
+    handleOpenBulkStatus();
+  } catch (e) {
+    showError("Bulk process failed to start: " + e.message);
+  }
+}
+
+async function handleOpenBulkStatus() {
+  showView("bulk-status-view");
+  await handleRefreshBulkStatus();
+}
+
+async function handleRefreshBulkStatus() {
+  try {
+    const resp = await send("getBulkJobStatus");
+    const state = resp.state;
+    if (!state) {
+      setText("bs-status",   "No job running");
+      setText("bs-range",    "—");
+      setText("bs-labeled",  "—");
+      setText("bs-skipped",  "—");
+      setText("bs-filtered", "—");
+      setText("bs-errors",   "—");
+      return;
+    }
+    const st = state.stats || {};
+    let statusTxt = state.status || "unknown";
+    if (statusTxt === "running")     statusTxt = "⏳ Running\u2026";
+    else if (statusTxt === "done")        statusTxt = "✅ Done";
+    else if (statusTxt === "done_limit") statusTxt = "✅ Done (limit reached — run again to continue)";
+    else if (statusTxt === "cancelled")  statusTxt = "⛔ Cancelled";
+    else if (statusTxt === "error")      statusTxt = "❌ Error: " + (state.error || "");
+
+    setText("bs-status",   statusTxt);
+    setText("bs-range",    `${state.afterStr || "?"} → ${state.beforeStr || "?"}`);
+    setText("bs-labeled",  st.labeled    || 0);
+    setText("bs-skipped",  st.skipped    || 0);
+    setText("bs-filtered", st.filtered   || 0);
+    setText("bs-errors",   st.errors     || 0);
+
+    const total = (st.labeled || 0) + (st.errors || 0);
+    const wrap  = document.getElementById("bs-progress-wrap");
+    const bar   = document.getElementById("bs-progress-bar");
+    if (total > 0 && state.status === "running") {
+      wrap.classList.remove("hidden");
+      const pct = Math.min(100, (state.offset || 0) / total * 100);
+      bar.style.width = pct + "%";
+    } else {
+      wrap.classList.add("hidden");
+    }
+  } catch (e) {
+    console.error("Bulk status error:", e);
+  }
+}
+
+async function handleCancelBulk() {
+  try {
+    await send("cancelBulkJob");
+    setTimeout(handleRefreshBulkStatus, 800);
+  } catch (e) {
+    console.error("Cancel error:", e);
+  }
+}
+
+// ── HELPERS ────────────────────────────────────────────
+async function send(action, data) {
+  const resp = await browser.runtime.sendMessage({ action, data });
+  if (resp && resp.error) throw new Error(resp.error);
+  return resp;
+}
+
+function setVal(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.value = val;
+}
+function getVal(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : "";
+}
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function escHtml(t) {
+  const d = document.createElement("div");
+  d.textContent = t;
+  return d.innerHTML;
+}
+
+function mdToHtml(text) {
   if (!text) return "";
-  
-  // Convert line breaks to HTML breaks
-  text = text.replace(/\n/g, '<br>');
-  
-  // Replace markdown headers
-  text = text.replace(/####\s+(.*?)<br>/g, '<br><strong>$1</strong><br>');
-  text = text.replace(/###\s+(.*?)<br>/g, '<br><strong>$1</strong><br>');
-  
-  // Bold text between **
-  text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  
-  // Horizontal rules
-  text = text.replace(/---<br>/g, '━━━━━━━━━━━━━━<br>');
-  
-  // Bullet points
-  text = text.replace(/<br>-\s+(.*?)<br>/g, '<br>  • $1<br>');
-  
-  // Clean up multiple consecutive breaks
-  text = text.replace(/(<br>){3,}/g, '<br><br>');
-  
+  text = text.replace(/\n/g, "<br>");
+  text = text.replace(/####\s+(.*?)(<br>|$)/g, "<br><strong>$1</strong><br>");
+  text = text.replace(/###\s+(.*?)(<br>|$)/g,  "<br><strong>$1</strong><br>");
+  text = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/(?:<br>)---(?:<br>)/g, "<br>━━━━━━━━━━<br>");
+  text = text.replace(/(<br>)- (.*?)(?=<br>|$)/g, "$1• $2");
+  text = text.replace(/(<br>){3,}/g, "<br><br>");
   return text;
 }
 
-/**
- * Escape HTML special characters
- */
-function escapeHtml(text) {
-  if (!text) return "";
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
+

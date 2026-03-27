@@ -124,7 +124,7 @@ class DraftPipeline:
         # For other providers, we'll use LLMService with appropriate fallback
         if self.llm_provider == "inbuilt":
             self.tool_caller_llm = ChatOpenAI(
-                model="gpt-4o-mini",
+                model="gpt-5-mini",
                 temperature=0,
                 api_key=CONFIG.get('OPENAI_KEY')
             )

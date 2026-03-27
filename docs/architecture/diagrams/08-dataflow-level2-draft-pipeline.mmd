@@ -1,0 +1,26 @@
+---
+title: "Data Flow: Level 2 — Draft Pipeline"
+---
+flowchart TB
+    REQ["POST /api/draft-with-attachments<br/>{user_id, thread_id, user_preferences}"]
+    
+    REQ --> JOB["Create background job<br/>Return job_id immediately"]
+    JOB --> INIT["DraftPipeline(user_id)<br/>Load settings, init LLM + Embedding"]
+    
+    INIT --> LOAD["Load thread JSON<br/>data/{user_id}/log_emails/{thread_id}/"]
+    
+    LOAD --> ATT_PROC["Process unprocessed attachments<br/>Extract text → Embed → ChromaDB"]
+    
+    ATT_PROC --> HYBRID["Hybrid Draft Generation"]
+    
+    HYBRID --> TOOL_CALL{"Provider?"}
+    TOOL_CALL -->|inbuilt| OPENAI_TC["OpenAI tool calling<br/>Decides: get_attachments / query_attachments"]
+    TOOL_CALL -->|other| LLM_TC["LLMService tool selection"]
+    
+    OPENAI_TC --> ATT_SEARCH["Retrieve relevant attachment context<br/>from ChromaDB"]
+    LLM_TC --> ATT_SEARCH
+    
+    ATT_SEARCH --> DRAFT_GEN["LLMService.generate()<br/>System prompt with:<br/>- User name, position, tone<br/>- Email thread data<br/>- Attachment context<br/>- Custom instructions"]
+    
+    DRAFT_GEN --> RESP["Return {success, draft_content, processing_info}"]
+    RESP --> POLL["Client polls /api/job-status/{job_id}"]

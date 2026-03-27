@@ -36,15 +36,16 @@ class EmbeddingService:
         
         Args:
             effective_settings: Dict with:
+                - user_id: User identifier (passed to vector DB for per-user storage)
                 - embedding_provider: 'openai', 'nomic', 'gemini', 'sentence-transformers', 'inbuilt'
                 - embedding_model: Model name (provider-specific)
                 - embedding_api_key: API key for the provider
                 - vector_provider: 'pinecone', 'chroma', 'weaviate', 'inbuilt'
                 - Additional vector DB settings (chroma_url, weaviate_url, etc.)
-                If not provided, uses CONFIG as fallback
+                Must be provided - no fallback to CONFIG
         """
-        # Use provided settings or fall back to global CONFIG
-        self.effective_settings = effective_settings if effective_settings else (CONFIG or {})
+        # Use only the provided effective_settings - no CONFIG fallback
+        self.effective_settings = effective_settings or {}
         
         # Embedding provider config
         self.embedding_provider = self.effective_settings.get("embedding_provider") 
@@ -54,7 +55,7 @@ class EmbeddingService:
         #self.embedding_api_url = settings.EMBEDDING_API_URL if hasattr(settings, 'EMBEDDING_API_URL') else None
         
         # Vector DB config
-        vector_db_provider = self.effective_settings.get("vector_provider") or "inbuilt"
+        vector_db_provider = self.effective_settings.get("vector_provider") 
         
         # Initialize vector client via factory
         try:

@@ -82,7 +82,7 @@ class EmailLabelPipeline:
             try:
                 # Initialize LLM with structured output
                 self.llm = ChatOpenAI(
-                    model="gpt-4o-mini",
+                    model="gpt-5-mini",
                     temperature=0,
                     api_key=self.openai_api_key
                 )
@@ -469,8 +469,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
         print(f"\n📧 LABEL AND STORE THREAD: {thread_id}")
         print("="*70)
         
-        # Step 1: Label the thread
-        print("Step 1: Labeling thread...")
+        # Step 1: Label the thread using Ollama
+        print("Step 1: Labeling thread with Ollama...")
         ollama_pipeline = OllamaEmailLabelPipeline()
         label_result = ollama_pipeline.label_thread(messages)
         print(f"✓ Label: {label_result.label}")

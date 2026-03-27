@@ -32,6 +32,7 @@ from services.settings_manager import SettingsManager
 from services.preprocessing_emails import EmailPreprocessingPipeline
 from services.label_pipeline import EmailLabelPipeline
 from services.label_email_lockbook import get_user_lockbook, get_global_lockbook
+from services.store_pipeline import CheckAndStoreEmailPipeline, CheckAndStoreAttachmentsPipeline
 #from database.mongodb import MongoDBClient
 
 # Import request logger
@@ -391,6 +392,8 @@ class LogEmailRequest(BaseModel):
     user_id: str
     thread_id: str
     messages: List[EmailMessage]
+    access_token: Optional[str] = None  # Gmail OAuth token for server-side label push
+    attachments: Optional[List["AttachmentData"]] = None  # Optional attachments to store alongside labeling
 
 
 class AttachmentData(BaseModel):
@@ -404,6 +407,25 @@ class StoreAttachmentsRequest(BaseModel):
     thread_id: str
     message_id: str
     attachments: List[AttachmentData]
+
+
+# Root route
+@app.get("/")
+async def root():
+    """Root endpoint — confirms the server is running"""
+    return {
+        "service": "openmailbot-agent",
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
+# Suppress browser favicon 404 noise
+@app.get("/favicon.ico", status_code=204)
+async def favicon():
+    return None
 
 
 # Health check
@@ -1101,7 +1123,8 @@ async def label_email_data(request: LogEmailRequest):
         os.makedirs(thread_folder, exist_ok=True)
         
         # Save preprocessed messages with "preprocessed_" prefix
-        preprocessed_filename = f"preprocessed_{request.thread_id}.json"
+        last_msg_id = request.messages[-1].message_id if request.messages else request.thread_id
+        preprocessed_filename = f"{last_msg_id}.json"
         preprocessed_filepath = os.path.join(thread_folder, preprocessed_filename)
         
         # Prepare output data with preprocessed messages
@@ -1122,6 +1145,38 @@ async def label_email_data(request: LogEmailRequest):
             json.dump(preprocessed_output_data, f, indent=2, ensure_ascii=False)
         
         logger.info(f"   Stored preprocessed messages to: {preprocessed_filepath}")
+        
+        # Step 1.6: Embed preprocessed messages and attachments into vector DB
+        # Run both async store pipelines concurrently
+        try:
+            email_store_result, attachment_store_result = await asyncio.gather(
+                CheckAndStoreEmailPipeline(user_id=request.user_id).run(
+                    request.user_id,
+                    request.thread_id,
+                    processed_messages,
+                ),
+                CheckAndStoreAttachmentsPipeline(user_id=request.user_id).run(
+                    request.user_id,
+                    request.thread_id,
+                ),
+                return_exceptions=True
+            )
+
+            
+            # Log results (handling any exceptions returned)
+            if isinstance(email_store_result, Exception):
+                logger.warning(f"   Email vector store failed: {email_store_result}")
+            else:
+                logger.info(f"   Email vector store: {email_store_result}")
+            
+            if isinstance(attachment_store_result, Exception):
+                logger.warning(f"   Attachment vector store failed: {attachment_store_result}")
+            else:
+                logger.info(f"   Attachment vector store: {attachment_store_result}")
+                
+        except Exception as store_exc:
+            # Non-fatal: log but continue with labeling
+            logger.warning(f"   Vector store step failed (non-fatal): {store_exc}")
         
         # Step 2: Label the thread using the processed messages
         # Get OpenAI API key from environment or config
@@ -1217,6 +1272,445 @@ async def label_email_data(request: LogEmailRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ===========================================================================
+# Gmail REST API helper — applies a label directly on the user's mailbox
+# ===========================================================================
+
+# Max time the async labeler may spend before giving up (60 min for production, change to 5 * 60 for testing)
+_LABEL_PUSH_TIMEOUT_SECONDS = 60 * 60
+
+# Color palette matching the Apps Script CONFIG.LABEL_COLORS
+_GMAIL_LABEL_COLORS: Dict[str, Dict[str, str]] = {
+    "Response":       {"backgroundColor": "#4a86e8", "textColor": "#ffffff"},
+    "Fyi":            {"backgroundColor": "#16a766", "textColor": "#ffffff"},
+    "Notification":   {"backgroundColor": "#b7b7b7", "textColor": "#000000"},
+    "Meeting":        {"backgroundColor": "#9900ff", "textColor": "#ffffff"},
+    "Awaiting reply": {"backgroundColor": "#ffff00", "textColor": "#000000"},
+    "Escalation":     {"backgroundColor": "#cc0000", "textColor": "#ffffff"},
+    "Hotels":         {"backgroundColor": "#ff9900", "textColor": "#000000"},
+    "Airline":        {"backgroundColor": "#7f6000", "textColor": "#ffffff"},
+    "Airlines":       {"backgroundColor": "#7f6000", "textColor": "#ffffff"},
+    "Travel":         {"backgroundColor": "#274e13", "textColor": "#ffffff"},
+    "Restaurant":     {"backgroundColor": "#ff9900", "textColor": "#000000"},
+    "Booking":        {"backgroundColor": "#4a86e8", "textColor": "#ffffff"},
+    "Bank":           {"backgroundColor": "#16a766", "textColor": "#ffffff"},
+    "Recruitment":    {"backgroundColor": "#274e13", "textColor": "#ffffff"},
+}
+
+
+def _apply_gmail_label_sync(
+    thread_id: str,
+    label_name: str,
+    access_token: str,
+    logger,
+) -> dict:
+    """
+    Apply *label_name* to *thread_id* using the Gmail REST API.
+    Creates the label (with colour) if it does not already exist.
+    This is a synchronous function, safe to call from a thread-pool executor.
+    Includes detailed logging for all Gmail API calls.
+    """
+    import requests as _requests
+
+    GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+
+    # Normalise: capitalise first letter so "meeting" → "Meeting"
+    formatted = label_name.strip().title()
+    
+    logger.info(f"🔗 Gmail API: starting label push for thread {thread_id}")
+    logger.info(f"   Label name: '{label_name}' → formatted: '{formatted}'")
+
+    # ── Step 1: list existing labels ──────────────────────────────────────
+    logger.info(f"🔗 Gmail API [STEP 1/3]: GET /labels (list all labels)")
+    try:
+        resp = _requests.get(f"{GMAIL_BASE}/labels", headers=headers, timeout=30)
+        logger.info(f"   ✓ Response: {resp.status_code} OK")
+        
+        if resp.status_code != 200:
+            logger.error(f"   ✗ FAILED: {resp.status_code}")
+            logger.error(f"   Error body: {resp.text[:500]}")
+            raise RuntimeError(
+                f"Gmail list-labels failed [{resp.status_code}]: {resp.text[:300]}"
+            )
+        
+        labels_data = resp.json()
+        all_labels = labels_data.get("labels", [])
+        logger.info(f"   Found {len(all_labels)} existing labels in Gmail account")
+        
+        existing = {lbl["name"].lower(): lbl["id"] for lbl in all_labels}
+        label_id = existing.get(formatted.lower())
+        
+        if label_id:
+            logger.info(f"   ✓ Label '{formatted}' found in account → ID: {label_id}")
+        else:
+            logger.info(f"   ℹ️  Label '{formatted}' NOT in account → will CREATE")
+            
+    except Exception as e:
+        logger.error(f"   ✗ Exception: {str(e)}")
+        raise
+
+    # ── Step 2: create label if missing ───────────────────────────────────
+    if not label_id:
+        logger.info(f"🔗 Gmail API [STEP 2/3]: POST /labels (create label '{formatted}')")
+        
+        body: Dict[str, Any] = {"name": formatted, "labelListVisibility": "labelShow",
+                                 "messageListVisibility": "show"}
+        color = _GMAIL_LABEL_COLORS.get(formatted)
+        if color:
+            body["color"] = color
+            logger.info(f"   Color config: {color}")
+        
+        logger.info(f"   Request body: {body}")
+        
+        try:
+            cr = _requests.post(f"{GMAIL_BASE}/labels", headers=headers, json=body, timeout=30)
+            logger.info(f"   ✓ Response: {cr.status_code}")
+            
+            if cr.status_code not in (200, 201):
+                logger.error(f"   ✗ FAILED: {cr.status_code}")
+                logger.error(f"   Error body: {cr.text[:500]}")
+                raise RuntimeError(
+                    f"Gmail create-label failed [{cr.status_code}]: {cr.text[:300]}"
+                )
+            
+            cr_data = cr.json()
+            label_id = cr_data.get("id")
+            logger.info(f"   ✓ SUCCESS: created label '{formatted}'")
+            logger.info(f"   Label ID: {label_id}")
+            logger.info(f"   Response data: {cr_data}")
+            
+        except Exception as e:
+            logger.error(f"   ✗ Exception: {str(e)}")
+            raise
+    else:
+        logger.info(f"🔗 Gmail API [STEP 2/3]: SKIP (label already exists)")
+
+    # ── Step 3: apply label to thread ─────────────────────────────────────
+    logger.info(f"🔗 Gmail API [STEP 3/3]: POST /threads/{thread_id}/modify")
+    logger.info(f"   Applying label ID: {label_id} (name: '{formatted}')")
+    logger.info(f"   Request body: {{\"addLabelIds\": [\"{label_id}\"]}}")
+    
+    try:
+        mr = _requests.post(
+            f"{GMAIL_BASE}/threads/{thread_id}/modify",
+            headers=headers,
+            json={"addLabelIds": [label_id]},
+            timeout=30,
+        )
+        logger.info(f"   ✓ Response: {mr.status_code}")
+        
+        if mr.status_code != 200:
+            logger.error(f"   ✗ FAILED: {mr.status_code}")
+            logger.error(f"   Error body: {mr.text[:500]}")
+            raise RuntimeError(
+                f"Gmail modify-thread failed [{mr.status_code}]: {mr.text[:300]}"
+            )
+        
+        mr_data = mr.json()
+        logger.info(f"   ✓ SUCCESS: label applied to thread")
+        logger.info(f"   Response: {mr_data}")
+        logger.info(f"✅ Gmail API: COMPLETE — thread {thread_id} now labeled '{formatted}'")
+        
+        return {"label_id": label_id, "label_name": formatted}
+        
+    except Exception as e:
+        logger.error(f"   ✗ Exception: {str(e)}")
+        raise
+
+
+async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
+    """
+    Background task for /api/label-email-async.
+
+    1. Runs the full label pipeline (preprocessing + LLM/rule-based labeling).
+    2. Pushes the resulting label back to Gmail directly via REST API using
+       the OAuth access token supplied by the Apps Script caller.
+    3. Updates the job-store so callers can still poll /api/job-status/{job_id}.
+
+    Timeout: _LABEL_PUSH_TIMEOUT_SECONDS (5 min for testing).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"")
+    logger.info(f"╔════════════════════════════════════════════════════════════════╗")
+    logger.info(f"║         BACKGROUND JOB: label-email-async START                 ║")
+    logger.info(f"╚════════════════════════════════════════════════════════════════╝")
+    logger.info(f"Job ID:       {job_id}")
+    logger.info(f"User:         {request.user_id}")
+    logger.info(f"Thread:       {request.thread_id}")
+    logger.info(f"Messages:     {len(request.messages)}")
+    logger.info(f"Has token:    {'Yes' if request.access_token else 'No'}")
+    logger.info(f"Timeout:      {_LABEL_PUSH_TIMEOUT_SECONDS}s ({_LABEL_PUSH_TIMEOUT_SECONDS // 60} min)")
+    logger.info(f"")
+    
+    _set_job(job_id, "processing")
+
+    lockbook = get_user_lockbook(request.user_id)
+    global_lockbook = get_global_lockbook()
+
+    try:
+        # ── Preprocessing ────────────────────────────────────────────────
+        messages_dict = [
+            {
+                "message_id": msg.message_id,
+                "from": msg.from_address,
+                "to": msg.to,
+                "subject": msg.subject,
+                "timestamp": msg.timestamp,
+                "body": msg.body,
+            }
+            for msg in request.messages
+        ]
+        preprocessing_pipeline = EmailPreprocessingPipeline()
+        processed_messages = preprocessing_pipeline.process(messages_dict)
+        logger.info(f"   [job {job_id}] Preprocessed {len(processed_messages)} msg(s)")
+
+        # ── Persist preprocessed emails ──────────────────────────────────
+        user_dirs = get_user_data_dir(request.user_id)
+        thread_folder = os.path.join(user_dirs["log_emails"], request.thread_id)
+        os.makedirs(thread_folder, exist_ok=True)
+        last_msg_id = request.messages[-1].message_id if request.messages else request.thread_id
+        with open(os.path.join(thread_folder, f"{last_msg_id}.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "thread_id": request.thread_id,
+                    "user_id": request.user_id,
+                    "messages": processed_messages,
+                    "metadata": {
+                        "original_message_count": len(request.messages),
+                        "processed_message_count": len(processed_messages),
+                        "processing_type": "preprocessing_pipeline_async",
+                        "stored_at": datetime.utcnow().isoformat(),
+                    },
+                },
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
+
+        # ── Save attachments to disk (non-fatal, before vector store) ────
+        if request.attachments:
+            try:
+                attach_dir = os.path.join(user_dirs["attachments"], request.thread_id)
+                os.makedirs(attach_dir, exist_ok=True)
+                last_msg_id = request.messages[-1].message_id if request.messages else request.thread_id
+                saved_attach = []
+                for att in request.attachments:
+                    safe_name = "".join(c for c in att.filename if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
+                    safe_path = os.path.join(attach_dir, f"{last_msg_id}_{safe_name}")
+                    try:
+                        with open(safe_path, "wb") as af:
+                            af.write(base64.b64decode(att.content))
+                        saved_attach.append({"filename": safe_name, "filepath": safe_path, "mime_type": att.mime_type})
+                    except Exception as att_err:
+                        logger.warning(f"   [job {job_id}] Failed to save attachment '{att.filename}': {att_err}")
+                # Write metadata file alongside saved files
+                att_meta_path = os.path.join(attach_dir, f"{last_msg_id}_metadata.json")
+                with open(att_meta_path, "w", encoding="utf-8") as mf:
+                    json.dump({
+                        "user_id": request.user_id,
+                        "thread_id": request.thread_id,
+                        "message_id": last_msg_id,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "attachments": saved_attach,
+                    }, mf, indent=2)
+                logger.info(f"   [job {job_id}] Saved {len(saved_attach)} attachment(s) to disk")
+            except Exception as att_disk_err:
+                logger.warning(f"   [job {job_id}] Attachment disk-save error (non-fatal): {att_disk_err}")
+
+        # ── Vector store (non-fatal) ──────────────────────────────────────
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    CheckAndStoreEmailPipeline(user_id=request.user_id).run(request.user_id, request.thread_id, processed_messages),
+                    CheckAndStoreAttachmentsPipeline(user_id=request.user_id).run(request.user_id, request.thread_id),
+                    return_exceptions=True,
+                ),
+                timeout=_LABEL_PUSH_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"   [job {job_id}] Vector-store timed out — continuing to label")
+        except Exception as ve:
+            logger.warning(f"   [job {job_id}] Vector-store error (non-fatal): {ve}")
+
+        # ── Label pipeline (CPU-bound, run in thread pool) ────────────────
+        openai_api_key = os.getenv("OPENAI_API_KEY") or CONFIG.get("OPENAI_KEY")
+        label_pipeline = EmailLabelPipeline(openai_api_key=openai_api_key)
+        loop = asyncio.get_running_loop()
+        label_and_store_result = await loop.run_in_executor(
+            None,
+            partial(
+                label_pipeline.label_and_store_thread,
+                thread_id=request.thread_id,
+                messages=processed_messages,
+            ),
+        )
+        label_name: str = label_and_store_result["label_result"]["label"]
+        graph_status = label_and_store_result["graph_store_result"]
+        logger.info(f"   [job {job_id}] Label determined: '{label_name}'")
+
+        # ── Push label to Gmail via REST API ──────────────────────────────
+        gmail_result: Dict[str, Any] = {}
+        if request.access_token:
+            logger.info(f"📬 [job {job_id}] Starting Gmail API label push (background task)")
+            logger.info(f"   Thread ID: {request.thread_id}")
+            logger.info(f"   Label: '{label_name}'")
+            logger.info(f"   Access token: {request.access_token[:20]}..." if len(request.access_token) > 20 else request.access_token)
+            try:
+                logger.info(f"📤 [job {job_id}] Calling _apply_gmail_label_sync in thread pool executor...")
+                gmail_result = await loop.run_in_executor(
+                    None,
+                    partial(
+                        _apply_gmail_label_sync,
+                        thread_id=request.thread_id,
+                        label_name=label_name,
+                        access_token=request.access_token,
+                        logger=logger,
+                    ),
+                )
+                logger.info(f"✅ [job {job_id}] Gmail API push SUCCEEDED")
+                logger.info(f"   Result: {gmail_result}")
+            except Exception as gmail_err:
+                logger.error(f"❌ [job {job_id}] Gmail API push FAILED")
+                logger.error(f"   Error: {str(gmail_err)}")
+                import traceback
+                logger.error(f"   Traceback: {traceback.format_exc()}")
+                gmail_result = {"error": str(gmail_err)}
+        else:
+            logger.warning(f"⚠️ [job {job_id}] No access_token provided — skipping Gmail API push")
+
+        # ── Lock-book metrics ─────────────────────────────────────────────
+        num_stored = len(processed_messages) if graph_status.get("status") == "SUCCESS" else 0
+        for lb in (lockbook, global_lockbook):
+            try:
+                lb.log_request(
+                    thread_id=request.thread_id,
+                    label=label_name,
+                    num_labeled=len(processed_messages),
+                    num_graph_stored=num_stored,
+                    status="SUCCESS",
+                )
+            except Exception:
+                pass
+
+        _set_job(
+            job_id,
+            "done",
+            result={
+                "label": label_name,
+                "thread_id": request.thread_id,
+                "messages_processed": len(processed_messages),
+                "gmail_push": gmail_result,
+            },
+        )
+        
+        logger.info(f"✅ JOB COMPLETED SUCCESSFULLY")
+        logger.info(f"   Label: '{label_name}'")
+        logger.info(f"   Gmail push: {'SUCCESS' if 'label_id' in gmail_result else 'SKIPPED/FAILED'}")
+        logger.info(f"   Messages processed: {len(processed_messages)}")
+        logger.info(f"╔════════════════════════════════════════════════════════════════╗")
+        logger.info(f"║         BACKGROUND JOB: label-email-async COMPLETE            ║")
+        logger.info(f"╚════════════════════════════════════════════════════════════════╝")
+        logger.info(f"")
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"❌ JOB FAILED")
+        logger.error(f"   Error: {str(e)}")
+        logger.error(f"   Traceback:\n{tb}")
+        logger.error(f"╔════════════════════════════════════════════════════════════════╗")
+        logger.error(f"║         BACKGROUND JOB: label-email-async FAILED              ║")
+        logger.error(f"╚════════════════════════════════════════════════════════════════╝")
+        traceback.print_exc()
+        try:
+            lockbook.log_request(
+                thread_id=request.thread_id, label="error",
+                num_labeled=0, num_graph_stored=0, status="FAILED"
+            )
+            global_lockbook.log_request(
+                thread_id=request.thread_id, label="error",
+                num_labeled=0, num_graph_stored=0, status="FAILED"
+            )
+        except Exception:
+            pass
+        _set_job(job_id, "error", error=str(e))
+
+
+@app.post("/api/label-email-async", status_code=202)
+async def label_email_async(
+    request: LogEmailRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Server-push labeling (202 Accepted).
+
+    Flow:
+      1. Apps Script sends thread data + OAuth access_token → 202 returned immediately.
+      2. Server runs the full label pipeline in the background (max 5 min).
+      3. Server calls Gmail REST API (users.threads.modify) to apply the label
+         directly — no polling required from the client.
+      4. Job status is still available via GET /api/job-status/{job_id} if needed.
+
+    Expected payload (extends /api/label-email):
+    {
+        "user_id": "user@example.com",
+        "thread_id": "thread_xxx",
+        "messages": [ ... ],
+        "access_token": "ya29.xxx"   ← from ScriptApp.getOAuthToken()
+    }
+
+    Returns (202):
+    {
+        "job_id": "uuid",
+        "status": "pending",
+        "message": "Processing in background; label will be applied via Gmail API"
+    }
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"")
+    logger.info(f"📨 /api/label-email-async endpoint received")
+    logger.info(f"   User:       {request.user_id}")
+    logger.info(f"   Thread:     {request.thread_id}")
+    logger.info(f"   Messages:   {len(request.messages)}")
+    logger.info(f"   Token:      {request.access_token[:20]}..." if request.access_token and len(request.access_token) > 20 else f"   Token:      {request.access_token}")
+
+    if not request.access_token:
+        logger.error(f"❌ No access_token provided")
+        raise HTTPException(
+            status_code=400,
+            detail="access_token is required for server-push labeling",
+        )
+    if not request.messages:
+        logger.error(f"❌ No messages provided")
+        raise HTTPException(status_code=400, detail="No messages provided")
+
+    job_id = str(uuid.uuid4())
+    logger.info(f"")
+    logger.info(f"🆔 Job ID: {job_id}")
+    logger.info(f"✅ Job queued for background processing")
+    logger.info(f"")
+    
+    _set_job(job_id, "pending")
+    background_tasks.add_task(_run_label_and_push_to_gmail, job_id, request)
+    
+    logger.info(f"📤 Returning 202 Accepted immediately (async processing)")
+    logger.info(f"   Poll status: GET /api/job-status/{job_id}")
+    
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Processing in background; label will be applied via Gmail API",
+    }
+
+
 @app.post("/api/store-attachments")
 async def store_attachments(request: StoreAttachmentsRequest):
     """
@@ -1302,13 +1796,28 @@ async def store_attachments(request: StoreAttachmentsRequest):
         with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2)
         
+        logger.info(f"   Saved {len(saved_files)} attachments to disk")
+        
+        # Step 2: Embed attachments into vector DB asynchronously
+        try:
+            attachment_store_result = await CheckAndStoreAttachmentsPipeline(user_id=request.user_id).run(
+                request.user_id,
+                request.thread_id,
+            )
+            logger.info(f"   Attachment vector store: {attachment_store_result}")
+        except Exception as store_exc:
+            # Non-fatal: log but continue with response
+            logger.warning(f"   Attachment vector store step failed (non-fatal): {store_exc}")
+            attachment_store_result = None
+        
         return {
             "success": True,
             "message": f"Stored {len(saved_files)} attachments",
             "user_id": request.user_id,
             "thread_id": request.thread_id,
             "saved_files": saved_files,
-            "metadata_file": metadata_file
+            "metadata_file": metadata_file,
+            "vector_store_result": attachment_store_result
         }
     
     except HTTPException:

@@ -24,7 +24,7 @@ def get_vector_client(provider: str, settings: Optional[Dict[str, Any]] = None) 
     
     if provider == "pinecone":
         try:
-            return PineconeClient()
+            return PineconeClient(settings_dict=settings)
         except Exception as e:
             logging.getLogger(__name__).warning(f"Pinecone init failed, falling back to NoOpVectorClient: {e}")
             return NoOpVectorClient()

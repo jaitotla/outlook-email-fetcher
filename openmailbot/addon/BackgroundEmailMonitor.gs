@@ -71,6 +71,15 @@ function monitorEmails() {
     console.log("=== EMAIL MONITOR START ===");
     console.log("Time: " + startTime.toISOString());
     
+    // ✅ CHECK FOR PENDING BULK JOB CONTINUATION
+    var scriptProps = PropertiesService.getScriptProperties();
+    if (scriptProps.getProperty(BULK_JOB_STATE_KEY) && scriptProps.getProperty('bulk_job_pending_continuation') === 'true') {
+      console.log("🔄 Detected pending bulk job continuation. Resuming...");
+      scriptProps.deleteProperty('bulk_job_pending_continuation');
+      _runBulkJob();
+      return; // Exit monitor early, will resume next cycle if needed
+    }
+    
     // Check server URL
     var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
     if (!flaskUrl) {
@@ -146,7 +155,7 @@ function monitorEmails() {
         
         var threadId = message.getThread().getId();
         
-        // Send email to server for labeling
+        // Send email to server for labeling (attachments are included automatically)
         try {
           var label = sendEmailToServer(threadId, message);
           stats.emailsSent++;
@@ -154,29 +163,10 @@ function monitorEmails() {
             stats.labelsApplied++;
             console.log("  ✓ Email labeled: " + label);
           } else {
-            console.log("  ✓ Email sent (no label assigned)");
+            console.log("  ✓ Email sent (async — label will be applied by server)");
           }
         } catch (emailError) {
           console.log("  ⚠️  Email send failed: " + emailError.message);
-        }
-        
-        // Process attachments
-        var attachments = message.getAttachments ? message.getAttachments() : [];
-        console.log("  Attachments found: " + attachments.length);
-        
-        if (attachments.length > 0) {
-          var allowedAtts = filterAllowedAttachments(attachments);
-          console.log("  Allowed attachments: " + allowedAtts.length);
-          
-          if (allowedAtts.length > 0) {
-            try {
-              sendAttachmentsToServer(threadId, message, allowedAtts);
-              stats.attachmentsSent += allowedAtts.length;
-              console.log("  ✓ Uploaded " + allowedAtts.length + " attachment(s)");
-            } catch (attError) {
-              console.log("  ❌ Attachment upload failed: " + attError.message);
-            }
-          }
         }
         
         stats.processed++;
@@ -321,43 +311,13 @@ function processMessage(message) {
     label: null
   };
   
-  // Step 1: Send email data to server for labeling
+  // Send email + attachments to server in a single request
   try {
     var label = sendEmailToServer(threadId, message);
     stats.label = label;
-    Logger.log("   ✓ Email labeled: " + label);
+    Logger.log("   ✓ Email sent (attachments included if present)");
   } catch (emailError) {
-    Logger.log("   ⚠️ Failed to label email: " + emailError.message);
-    // Continue to try attachments anyway
-  }
-  
-  // Step 2: Process attachments
-  var attachments = message.getAttachments ? message.getAttachments() : [];
-  
-  if (attachments.length === 0) {
-    Logger.log("   No attachments");
-    return stats;
-  }
-  
-  Logger.log("   Found " + attachments.length + " attachment(s)");
-  
-  // Filter allowed attachments
-  var allowedAttachments = filterAllowedAttachments(attachments);
-  
-  if (allowedAttachments.length === 0) {
-    Logger.log("   All attachments filtered out");
-    return stats;
-  }
-  
-  Logger.log("   " + allowedAttachments.length + " allowed attachment(s)");
-  
-  // Send attachments to server
-  try {
-    sendAttachmentsToServer(threadId, message, allowedAttachments);
-    stats.attachmentsSent = allowedAttachments.length;
-    Logger.log("   ✓ " + allowedAttachments.length + " attachment(s) sent");
-  } catch (attError) {
-    Logger.log("   ⚠️ Failed to send attachments: " + attError.message);
+    Logger.log("   ⚠️ Failed to send email: " + emailError.message);
   }
   
   return stats;
@@ -639,64 +599,213 @@ function viewRecentLogs(count) {
 // ============================================================================
 
 /**
- * Send email data to Flask server for labeling
- * Returns the label assigned to the email
+ * Helper: collect allowed attachments from a message and encode them for the API payload.
+ * Returns an array of { filename, content (base64), mime_type } objects, or [] if none.
+ */
+function _getAttachmentsForPayload(message) {
+  try {
+    var blobs = message.getAttachments ? message.getAttachments() : [];
+    if (!blobs || blobs.length === 0) return [];
+
+    var allowed = [];
+    for (var i = 0; i < blobs.length; i++) {
+      var blob = blobs[i];
+      var name = blob.getName ? blob.getName() : '';
+      if (!name) continue;
+      var lname = name.toLowerCase();
+      var ok = false;
+      for (var j = 0; j < CONFIG.ALLOWED_EXTENSIONS.length; j++) {
+        if (lname.indexOf(CONFIG.ALLOWED_EXTENSIONS[j]) !== -1) { ok = true; break; }
+      }
+      if (!ok) continue;
+      try {
+        allowed.push({
+          filename:  name,
+          content:   Utilities.base64Encode(blob.getBytes()),
+          mime_type: blob.getContentType ? blob.getContentType() : 'application/octet-stream'
+        });
+      } catch (blobErr) {
+        console.log('⚠️ Could not encode attachment ' + name + ': ' + blobErr.message);
+      }
+    }
+    return allowed;
+  } catch (e) {
+    console.log('⚠️ _getAttachmentsForPayload error: ' + e.message);
+    return [];
+  }
+}
+
+/**
+ * Send email data to server using the server-push labeling flow.
+ *
+ * NEW FLOW (label-email-async):
+ *   1. Obtains a fresh OAuth token via ScriptApp.getOAuthToken().
+ *   2. Sends thread data + token to /api/label-email-async.
+ *   3. Server returns 202 Accepted immediately (job queued).
+ *   4. Server runs the label pipeline in the background (≤5 min for testing).
+ *   5. Server calls Gmail REST API (users.threads.modify) to apply the label
+ *      directly — NO polling needed from this script.
+ *
+ * Returns null (label application is handled server-side).
  */
 function sendEmailToServer(threadId, message) {
   var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
   if (!flaskUrl) {
     throw new Error("FLASK_SERVER_URL not configured in Script Properties");
   }
-  
+
   var baseUrl = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
-  var endpoint = baseUrl + '/api/label-email';
-  
+  var endpoint = baseUrl + '/api/label-email-async';
+
   var userId = Session.getEffectiveUser().getEmail();
-  
+
+  // Obtain a fresh short-lived OAuth token so the server can call Gmail REST API
+  // on behalf of this user.  Valid for ~1 hour — well within the 5-min test window.
+  var accessToken = ScriptApp.getOAuthToken();
+
   var emailData = {
-    message_id: message.getId(),
+    message_id:   message.getId(),
     from_address: message.getFrom(),
-    to: message.getTo().split(',').map(function(e) { return e.trim(); }),
-    subject: message.getSubject(),
-    timestamp: message.getDate().toISOString(),
-    body: message.getPlainBody ? message.getPlainBody() : (message.getBody ? message.getBody() : "")
+    to:           message.getTo().split(',').map(function(e) { return e.trim(); }),
+    subject:      message.getSubject(),
+    timestamp:    message.getDate().toISOString(),
+    body:         message.getPlainBody ? message.getPlainBody()
+                                       : (message.getBody ? message.getBody() : "")
   };
-  
+
+  // Collect allowed attachments and include them in the same request.
+  // The server will save them to disk and embed them into the vector store.
+  var attachmentPayload = _getAttachmentsForPayload(message);
+
   var payload = {
-    user_id: userId,
-    thread_id: threadId,
-    messages: [emailData]
+    user_id:      userId,
+    thread_id:    threadId,
+    messages:     [emailData],
+    access_token: accessToken,  // ← server uses this to push the label via Gmail API
+    attachments:  attachmentPayload.length > 0 ? attachmentPayload : undefined
   };
-  
+
   var options = {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
+    method:          "post",
+    contentType:     "application/json",
+    payload:         JSON.stringify(payload),
+    muteHttpExceptions: true,
+    timeout:         10000   // 10 s — only for the initial handshake; processing is async
   };
-  
-  var resp = UrlFetchApp.fetch(endpoint, options);
+
+  Logger.log("📤 Sending email to server for async labeling (server-push flow)...");
+  var resp        = UrlFetchApp.fetch(endpoint, options);
   var responseCode = resp.getResponseCode();
-  
-  if (responseCode !== 200) {
-    throw new Error("Server returned " + responseCode + ": " + resp.getContentText());
+  var responseText = resp.getContentText();
+
+  Logger.log("📬 Response code: " + responseCode);
+
+  if (responseCode !== 200 && responseCode !== 202) {
+    throw new Error("Server returned " + responseCode + ": " + responseText.substring(0, 200));
   }
-  
-  // Parse response and extract label
-  var responseData = JSON.parse(resp.getContentText());
+
+  var responseData;
+  try {
+    responseData = JSON.parse(responseText);
+  } catch (parseErr) {
+    throw new Error("Failed to parse server response: " + parseErr.message);
+  }
+
+  // ── Server-push path (202 + job_id) ────────────────────────────────────
+  // Server accepted the job and will call Gmail REST API to label the thread.
+  // No polling needed — return null so processMessage() skips GAS-side labeling.
+  if (responseData.job_id) {
+    Logger.log("✅ Async job accepted: " + responseData.job_id);
+    Logger.log("   Server will label thread '" + threadId + "' via Gmail API — no polling needed.");
+    return null;
+  }
+
+  // ── Fallback: synchronous/immediate response (old endpoint behaviour) ──
   var label = responseData.label;
-  
-  // Apply label to the thread
+  Logger.log("📌 Immediate label response: " + (label || "none"));
   if (label) {
     try {
       applyLabelToThread(threadId, label);
     } catch (labelError) {
-      Logger.log("⚠️ Failed to apply label: " + labelError.message);
-      // Don't throw - labeling failure shouldn't block the process
+      Logger.log("⚠️ Failed to apply label locally: " + labelError.message);
     }
   }
-  
   return label;
+}
+
+/**
+ * Poll for labeling job result
+ * @param {string} jobId - The job ID returned by backend
+ * @param {string} baseUrl - Base server URL
+ * @returns {string|null} The label if available, null if timeout
+ */
+function _pollLabelingJob(jobId, baseUrl) {
+  var statusEndpoint = baseUrl + '/api/job-status/' + jobId;
+  var maxWaitMs = 30000;  // 30 second timeout for background job
+  var pollInterval = 2000; // Poll every 2 seconds
+  var waited = 0;
+  var consecutiveErrors = 0;
+  var maxRetries = 3;
+  
+  Logger.log("🔍 Polling job status: " + jobId);
+  
+  while (waited < maxWaitMs) {
+    try {
+      var resp = UrlFetchApp.fetch(statusEndpoint, {
+        method: "get",
+        muteHttpExceptions: true,
+        timeout: 5000
+      });
+      
+      if (resp.getResponseCode() === 200) {
+        var data = JSON.parse(resp.getContentText());
+        consecutiveErrors = 0;  // Reset error counter
+        
+        Logger.log("📊 Job status: " + data.status + " (waited: " + (waited / 1000).toFixed(1) + "s)");
+        
+        if (data.status === "done") {
+          var result = data.result || {};
+          var label = result.label;
+          Logger.log("✅ Job completed - label: " + (label || "none"));
+          return label;
+        }
+        
+        if (data.status === "error") {
+          Logger.log("❌ Job error: " + (data.error || "unknown"));
+          return null;
+        }
+        
+        // Status is "processing", continue polling
+      } else if (resp.getResponseCode() === 404) {
+        Logger.log("❌ Job not found (404): " + jobId);
+        return null;
+      } else if (resp.getResponseCode() >= 500) {
+        Logger.log("⚠️ Server error (" + resp.getResponseCode() + "), retrying...");
+        consecutiveErrors++;
+        if (consecutiveErrors > maxRetries) {
+          Logger.log("❌ Too many server errors, giving up");
+          return null;
+        }
+      }
+      
+    } catch (err) {
+      Logger.log("⚠️ Poll error: " + err.message);
+      consecutiveErrors++;
+      if (consecutiveErrors > maxRetries) {
+        Logger.log("❌ Polling failed after " + maxRetries + " retries");
+        return null;
+      }
+    }
+    
+    // Back-off sleep with error-based increase
+    var backoffMs = Math.min(pollInterval + (consecutiveErrors * 500), 5000);
+    Utilities.sleep(backoffMs);
+    waited += backoffMs;
+    Logger.log("⏳ Still polling... (" + (waited / 1000).toFixed(1) + "s)");
+  }
+  
+  Logger.log("⏱️ Polling timeout after " + (maxWaitMs / 1000) + "s");
+  return null;
 }
 
 /**
@@ -1245,8 +1354,9 @@ function setLabelColor(labelName, color) {
 
 /**
  * ASYNC LAUNCHER — called from the UI (Run Now button).
- * Immediately initialises the job state and schedules a background trigger.
+ * Initialises the job state and sets a continuation flag.
  * Returns within milliseconds so the UI is never blocked.
+ * The monitorEmails() loop (running every 1 minute) will detect and start the job.
  * @param {string|number} months - Number of months to process
  * @returns {Object} status - { n, afterStr, beforeStr } for the confirmation card
  */
@@ -1262,7 +1372,7 @@ function _launchBulkJobAsync(months) {
   // Clear any leftover abort flag and old job state
   scriptProps.deleteProperty(BULK_JOB_ABORT_KEY);
   scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
-  _deleteAllContinuationTriggers();
+  scriptProps.deleteProperty('bulk_job_pending_continuation');
 
   // Initialise fresh job state (writes afterStr / beforeStr etc.)
   _initBulkJob();
@@ -1270,13 +1380,10 @@ function _launchBulkJobAsync(months) {
   // Read back the state we just wrote so we can show dates to the user
   var state = JSON.parse(scriptProps.getProperty(BULK_JOB_STATE_KEY));
 
-  // Schedule the first real run via a background trigger (~1 minute)
-  ScriptApp.newTrigger('_continueBulkJob')
-    .timeBased()
-    .after(60 * 1000)
-    .create();
+  // Set flag for monitorEmails() to pick up on next cycle (~1 minute)
+  scriptProps.setProperty('bulk_job_pending_continuation', 'true');
 
-  console.log("🚀 Async job launched: " + state.afterStr + " → " + state.beforeStr + " (starts in ~1 min)");
+  console.log("🚀 Async job launched: " + state.afterStr + " → " + state.beforeStr + " (starts in ~1 min via monitor loop)");
   return state;
 }
 
@@ -1363,7 +1470,7 @@ function _initBulkJob() {
 }
 
 function _runBulkJob() {
-  var SAFE_DURATION_MS = 4.5 * 60 * 1000;
+  var SAFE_DURATION_MS = 60 * 60 * 1000;  // 3600s = 60 minutes for production (change to 4.5 * 60 * 1000 for testing)
   var BATCH_SIZE       = 50;
   var CALL_GAP_MS      = 2000; // 15 second gap between each API call
 
@@ -1393,7 +1500,7 @@ function _runBulkJob() {
   }
 
   var baseUrl    = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
-  var endpoint   = baseUrl + '/api/label-email';
+  var endpoint   = baseUrl + '/api/label-email-async';  // ← server-push: backend calls Gmail REST API directly
   var userId     = Session.getEffectiveUser().getEmail();
   var startDate  = new Date(state.startDate);
   var endDate    = new Date(state.endDate);
@@ -1420,6 +1527,8 @@ function _runBulkJob() {
     }
 
     var threads;
+    // 🔑 Refresh OAuth token once per batch (valid ~1hr, refresh each batch to be safe)
+    var accessToken = ScriptApp.getOAuthToken();
     try {
       threads = GmailApp.search(gmailQuery, state.offset, BATCH_SIZE);
     } catch (searchErr) {
@@ -1488,36 +1597,55 @@ function _runBulkJob() {
           continue;
         }
 
-        // Call /api/label-email
+        // Call /api/label-email-async (server-push: backend labels thread via Gmail REST API)
         try {
+          var msgAttachments = _getAttachmentsForPayload(message);
+          var bulkPayload = {
+            user_id      : userId,
+            thread_id    : threadId,
+            access_token : accessToken,
+            messages     : [{
+              message_id   : messageId,
+              from_address : message.getFrom(),
+              to           : message.getTo().split(',').map(function(e){ return e.trim(); }),
+              subject      : message.getSubject(),
+              timestamp    : message.getDate().toISOString(),
+              body         : message.getPlainBody ? message.getPlainBody() : ""
+            }]
+          };
+          if (msgAttachments.length > 0) {
+            bulkPayload.attachments = msgAttachments;
+            console.log('  📎 Including ' + msgAttachments.length + ' attachment(s) with label request');
+          }
+
           var resp = UrlFetchApp.fetch(endpoint, {
             method             : "post",
             contentType        : "application/json",
-            payload            : JSON.stringify({
-              user_id   : userId,
-              thread_id : threadId,
-              messages  : [{
-                message_id   : messageId,
-                from_address : message.getFrom(),
-                to           : message.getTo().split(',').map(function(e){ return e.trim(); }),
-                subject      : message.getSubject(),
-                timestamp    : message.getDate().toISOString(),
-                body         : message.getPlainBody ? message.getPlainBody() : ""
-              }]
-            }),
-            muteHttpExceptions : true
+            payload            : JSON.stringify(bulkPayload),
+            muteHttpExceptions : true,
+            timeout            : 10000
           });
 
-          if (resp.getResponseCode() !== 200) {
+          if (resp.getResponseCode() !== 200 && resp.getResponseCode() !== 202) {
             console.log("  ❌ Server " + resp.getResponseCode() + ": " + message.getSubject().substring(0, 40));
             state.stats.errors++;
           } else {
-            var label = JSON.parse(resp.getContentText()).label;
-            if (label) {
-              try { applyLabelToThread(threadId, label); } catch(le) {}
-              console.log("  ✓ [" + label + "] " + message.getSubject().substring(0, 45));
+            var respData = JSON.parse(resp.getContentText());
+            if (respData.job_id) {
+              // ✅ 202 Accepted — server will apply label via Gmail REST API (visible in backend logs)
+              console.log("  ✅ Async job accepted: " + respData.job_id.substring(0, 8) + "... → server will label via Gmail API");
+              state.stats.labeled++;
+            } else {
+              // Fallback: immediate label response (shouldn't happen with async endpoint)
+              var label = respData.label;
+              if (label) {
+                try { applyLabelToThread(threadId, label); } catch(le) {}
+                console.log("  ✓ [" + label + "] " + message.getSubject().substring(0, 45));
+                state.stats.labeled++;
+              } else {
+                console.log("  ℹ️  No label assigned");
+              }
             }
-            state.stats.labeled++;
           }
 
           markMessageProcessed(messageId);
@@ -1554,53 +1682,28 @@ function _runBulkJob() {
     console.log("🛑 Job stopped cleanly after abort.");
   } else if (timedOut) {
     scriptProps.setProperty(BULK_JOB_STATE_KEY, JSON.stringify(state));
-    _scheduleContinuation();
-    console.log("⏭️  Saved. Continuing in ~1 minute.");
+    scriptProps.setProperty('bulk_job_pending_continuation', 'true');
+    console.log("⏭️  Saved state. Will continue at next monitor cycle (~1 minute).");
   } else {
     _markJobComplete(state);
   }
 }
 
 /**
- * Schedule a one-time trigger to continue the job in 1 minute
- * Removes any existing continuation triggers first to avoid duplicates
+ * DEPRECATED: Continuation now handled by monitorEmails() using property flags
+ * This function is kept for backward compatibility but should not be called
  */
 function _scheduleContinuation() {
-  // Delete existing continuation triggers
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === '_continueBulkJob') {
-      ScriptApp.deleteTrigger(triggers[i]);
-    }
-  }
-
-  // Schedule new one-time trigger 1 minute from now
-  ScriptApp.newTrigger('_continueBulkJob')
-    .timeBased()
-    .after(1 * 60 * 1000) // 1 minute in milliseconds
-    .create();
+  // This is now a no-op. Continuation is managed via property flags in monitorEmails()
+  console.log("ℹ️  _scheduleContinuation() called (legacy). Continuation handled by monitor loop.");
 }
 
+/**
+ * DEPRECATED: No longer needed - continuations are detected in monitorEmails()
+ */
 function _continueBulkJob() {
-  _deleteAllContinuationTriggers(); // self-delete first
-
-  var scriptProps = PropertiesService.getScriptProperties();
-
-  // ✅ Check abort flag before doing ANYTHING
-  if (scriptProps.getProperty(BULK_JOB_ABORT_KEY) === "true") {
-    console.log("🛑 Abort flag found in continuation. Cleaning up, not continuing.");
-    _cleanupAfterAbort();
-    return;
-  }
-
-  // Also check state exists
-  if (!scriptProps.getProperty(BULK_JOB_STATE_KEY)) {
-    console.log("ℹ️  No job state found. Job was cancelled. Not continuing.");
-    return;
-  }
-
-  console.log("🔄 Auto-continuing bulk job...");
-  _runBulkJob();
+  // Legacy function - should not be called. Continuations now handled in monitorEmails()
+  console.log("ℹ️  _continueBulkJob() called (legacy). Continuations handled by monitor loop.");
 }
 // ============================================================================
 // NEW HELPER — cleanup on abort
@@ -1609,23 +1712,17 @@ function _cleanupAfterAbort() {
   var scriptProps = PropertiesService.getScriptProperties();
   scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
   scriptProps.deleteProperty(BULK_JOB_ABORT_KEY);
-  _deleteAllContinuationTriggers();
+  scriptProps.deleteProperty('bulk_job_pending_continuation');
   console.log("✓ Abort cleanup complete.");
 }
 
 // ============================================================================
-// NEW HELPER — centralized trigger deletion
+// LEGACY HELPER — kept for backward compatibility
 // ============================================================================
 function _deleteAllContinuationTriggers() {
-  var triggers = ScriptApp.getProjectTriggers();
-  var count = 0;
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === '_continueBulkJob') {
-      ScriptApp.deleteTrigger(triggers[i]);
-      count++;
-    }
-  }
-  if (count > 0) console.log("✓ Removed " + count + " continuation trigger(s).");
+  // This function is no longer used since we switched to property-based continuation detection
+  // Kept for backward compatibility
+  console.log("ℹ️  _deleteAllContinuationTriggers() called (legacy). No longer needed.");
 }
 
 /**
@@ -1635,7 +1732,7 @@ function _markJobComplete(state) {
   var scriptProps = PropertiesService.getScriptProperties();
   scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
   scriptProps.deleteProperty(BULK_JOB_ABORT_KEY);
-  _deleteAllContinuationTriggers();
+  scriptProps.deleteProperty('bulk_job_pending_continuation');
   console.log("🎉 JOB COMPLETE!");
   console.log("Total labeled  : " + state.stats.labeled);
   console.log("Total skipped  : " + state.stats.skipped);
@@ -1683,7 +1780,7 @@ function checkBulkJobStatus() {
 }
 
 /**
- * Cancel a running bulk job and clean up all triggers
+ * Cancel a running bulk job and clean up all state
  */
 function cancelBulkJob() {
   var scriptProps = PropertiesService.getScriptProperties();
@@ -1693,14 +1790,11 @@ function cancelBulkJob() {
 
   // Step 2: Wipe job state so no new run can start
   scriptProps.deleteProperty(BULK_JOB_STATE_KEY);
-
-  // Step 3: Kill all continuation triggers
-  _deleteAllContinuationTriggers();
+  scriptProps.deleteProperty('bulk_job_pending_continuation');
 
   console.log("🛑 CANCELLED.");
   console.log("   Abort flag SET   → running loop stops at next message");
   console.log("   Job state WIPED  → no new runs possible");
-  console.log("   Triggers REMOVED → no scheduled continuations");
   console.log("");
   console.log("⚠️  If calls still arrive for ~1-2 seconds, that's the");
   console.log("   current UrlFetchApp.fetch() finishing. It will stop after that.");

@@ -1,36 +1,51 @@
 {
   "manifest_version": 2,
-  "name": "Email Thread Assistant",
-  "description": "Analyze and interact with your email threads using AI",
-  "version": "1.0.0",
-  "author": "Your Name",
+  "name": "OpenMailBot",
+  "description": "AI-powered email assistant — Summarize threads, chat with emails, draft smart replies, and bulk-index historical mail.",
+  "version": "2.0.0",
+  "author": "OpenMailBot",
   "applications": {
     "gecko": {
-      "id": "email-assistant@thunderbird.addon",
-      "strict_min_version": "91.0"
+      "id": "openmailbot@thunderbird.addon",
+      "strict_min_version": "121.0"
     }
   },
   "icons": {
-    "64": "icons/icon-64.png",
-    "32": "icons/icon-32.png"
+    "16": "icons/icon.svg",
+    "32": "icons/icon.svg",
+    "64": "icons/icon.svg",
+    "128": "icons/icon.svg"
   },
   "permissions": [
     "messagesRead",
+    "messagesModify",
+    "messagesMove",
+    "messagesTags",
+    "messagesTagsList",
     "accountsRead",
     "storage",
     "compose",
-    "http://43.204.98.38:8000/*",
-    "https://43.204.98.38:8000/*"
+    "tabs",
+    "<all_urls>"
   ],
   "background": {
     "scripts": ["background.js"]
   },
   "message_display_action": {
-    "default_title": "Email Thread Assistant",
-    "default_popup": "popup/popup.html"
+    "default_title": "OpenMailBot — AI Email Assistant",
+    "default_popup": "popup/popup.html",
+    "default_icon": "icons/icon.svg"
   },
   "options_ui": {
     "page": "options/options.html",
     "open_in_tab": true
+  },
+  "commands": {
+    "_execute_message_display_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+O"
+      },
+      "description": "Open OpenMailBot panel"
+    }
   }
 }

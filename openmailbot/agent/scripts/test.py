@@ -1,101 +1,123 @@
+#!/usr/bin/env python3
+"""
+Query settings from encrypted database for a user
+"""
+import sys
 import os
-from dotenv import load_dotenv
-from langchain_core.prompts import PromptTemplate
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+import sqlite3
+import json
+import base64
 
-from langchain_community.graphs import Neo4jGraph
+# Add the agent directory to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from langchain_neo4j import GraphCypherQAChain
-def setup_retrieval(neo4j_url, neo4j_username, neo4j_password):
-    """Initialize Neo4j connection and set up the QA retrieval chain."""
+from services.settings_manager import decrypt_settings, SettingsManager
+
+def query_user_settings(user_id):
+    """Query and display user settings from encrypted database"""
+    print(f"\n{'='*70}")
+    print(f"Querying Settings Database for User: {user_id}")
+    print(f"{'='*70}\n")
     
-    load_dotenv()
+    # Get the database path
+    base_data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    user_db = os.path.join(base_data_dir, user_id, "sql_data", "chat_thread_processing.db")
     
-    # Initialize embeddings and LLM
-    embeddings = OpenAIEmbeddings()
-    key="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"
-    llm = ChatOpenAI(model_name="gpt-4o",api_key=key)
+    # Check if database exists
+    if not os.path.exists(user_db):
+        print(f"❌ Database not found at: {user_db}")
+        print(f"   Database path should be: data/{user_id}/sql_data/chat_thread_processing.db")
+        return False
     
-    # Connect to Neo4j graph
-    graph = Neo4jGraph(
-        url=neo4j_url,
-        username=neo4j_username,
-        password=neo4j_password
-    )
+    print(f"✅ Database found at: {user_db}")
+    print(f"   File size: {os.path.getsize(user_db)} bytes\n")
     
-   
-    
-    # Retrieve the graph schema (call if it's callable)
     try:
-        schema = graph.get_schema()
-    except TypeError:
-        schema = graph.get_schema
-    
-    
-    # Set up the QA chain
-    template = """
-Task: Generate a Cypher statement to query the graph database.
+        # Connect to database
+        conn = sqlite3.connect(user_db)
+        cursor = conn.cursor()
+        
+        # Check if user_settings table exists
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='user_settings'
+        """)
+        table_exists = cursor.fetchone()
+        
+        if not table_exists:
+            print("❌ user_settings table not found in database")
+            conn.close()
+            return False
+        
+        print("✅ user_settings table found\n")
+        
+        # Query all settings for this user
+        cursor.execute('''
+            SELECT id, setting_key, encrypted_value, setting_type, 
+                   timestamp, updated_timestamp
+            FROM user_settings
+            WHERE user_id = ?
+            ORDER BY updated_timestamp DESC
+        ''', (user_id,))
+        
+        rows = cursor.fetchall()
+        
+        if not rows:
+            print(f"⚠️  No settings found for user {user_id}")
+            conn.close()
+            return False
+        
+        print(f"✅ Found {len(rows)} setting(s) in database\n")
+        print(f"{'-'*70}")
+        
+        # Display raw database entries
+        print("\n📋 Raw Database Entries:")
+        print(f"{'-'*70}\n")
+        
+        for row in rows:
+            id_, key, encrypted_val, setting_type, timestamp, updated_ts = row
+            print(f"ID: {id_}")
+            print(f"Key: {key}")
+            print(f"Type: {setting_type}")
+            print(f"Timestamp: {timestamp}")
+            print(f"Updated: {updated_ts}")
+            print(f"Encrypted Value (first 50 chars): {encrypted_val[:50]}...")
+            print()
+        
+        # Try to decrypt settings
+        print(f"{'-'*70}")
+        print("\n🔐 Decrypted Settings:")
+        print(f"{'-'*70}\n")
+        
+        manager = SettingsManager(user_id)
+        settings = manager.get_settings(user_id, "general")
+        
+        if settings:
+            print(json.dumps(settings, indent=2))
+            print(f"\n✅ Total settings retrieved: {len(settings)}")
+            print(f"   Settings: {', '.join(settings.keys())}")
+        else:
+            print("❌ Failed to retrieve/decrypt settings")
+        
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error querying database: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-Instructions:
-Use only relationship types and properties provided in schema.
-Do not use other relationship types or properties that are not provided.
-
-schema:
-{schema}
-
-Note: Do not include explanations or apologies in your answers.
-Do not answer questions that ask anything other than creating Cypher statements.
-Do not include any text other than generated Cypher statements.
-
-Question: {question}"""
-    
-    question_prompt = PromptTemplate(
-        template=template,
-        input_variables=["schema", "question"]
-    )
-    
-    qa = GraphCypherQAChain.from_llm(
-        llm=llm,
-        graph=graph,
-        cypher_prompt=question_prompt,
-        verbose=True,
-        allow_dangerous_requests=True
-    )
-    
-    return qa
-
-def ask_question(qa, question):
-    """Ask a question using the QA chain and return the result."""
-    result = qa.invoke({"query": question})
-    return result.get('result', 'No result returned')
-
-def main():
-    # Configuration
-    NEO4J_URL = os.getenv("NEO4J_URL", "neo4j+s://e5c7fa42.databases.neo4j.io")
-    NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
-    NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "xR15egCk9mX8Tf4Xo1Wf_Z355rINJ7iO-uyZyx_1T8k")
-    
-    print("Initializing retrieval chain...")
-    qa = setup_retrieval(NEO4J_URL, NEO4J_USERNAME, NEO4J_PASSWORD)
-    # `qa.graph.get_schema` may be a callable or a cached string; handle both.
-    schema_attr = qa.graph.get_schema
-    if callable(schema_attr):
-        print(schema_attr())
-    else:
-        print(schema_attr)
-    print("Ready for queries.\n")
-    
-    # Interactive question loop
-    while True:
-        question = input("Enter your question (or 'quit' to exit): ").strip()
-        if question.lower() == 'quit':
-            break
-        if question:
-            print("\nGenerating answer...")
-            answer = ask_question(qa, question)
-            print(f"Answer: {answer}\n")
 
 if __name__ == "__main__":
-    main()
+    user_email = "patilswapnil5090@gmail.com"
+    success = query_user_settings(user_email)
+    
+    if success:
+        print(f"\n✅ Query completed successfully")
+    else:
+        print(f"\n❌ Query failed")
+    
+    sys.exit(0 if success else 1)
 
 
