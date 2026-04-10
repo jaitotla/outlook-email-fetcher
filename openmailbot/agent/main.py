@@ -33,7 +33,88 @@ from services.preprocessing_emails import EmailPreprocessingPipeline
 from services.label_pipeline import EmailLabelPipeline
 from services.label_email_lockbook import get_user_lockbook, get_global_lockbook
 from services.store_pipeline import CheckAndStoreEmailPipeline, CheckAndStoreAttachmentsPipeline
+from services.summarization_pipeline import SummarizationPipeline
 #from database.mongodb import MongoDBClient
+from services.simple_draft_pipeline import SimpleDraftPipeline
+
+import sys
+import logging
+
+# # ── Startup diagnostic logger ──────────────────────────────────────────────
+# logging.basicConfig(
+#     level=logging.DEBUG,
+#     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+#     stream=sys.stdout,
+# )
+# _slog = logging.getLogger("startup")
+
+# _slog.info("▶ 1/10 stdlib imports OK")
+
+# try:
+#     from config import settings
+#     _slog.info(f"▶ 2/10 config imported — HOST={settings.HOST} PORT={settings.PORT} "
+#                f"LLM={settings.LLM_PROVIDER} EMB={settings.EMBEDDING_PROVIDER} "
+#                f"VEC={settings.VECTOR_PROVIDER} BACKEND={settings.BACKEND_API_URL}")
+# except Exception as e:
+#     _slog.exception(f"✗ 2/10 config FAILED: {e}")
+#     sys.exit(1)
+
+# try:
+#     from services.chat_pipeline import ChatWithThreadPipeline
+#     _slog.info("▶ 3/10 ChatWithThreadPipeline imported")
+# except Exception as e:
+#     _slog.exception(f"✗ 3/10 ChatWithThreadPipeline FAILED: {e}")
+
+# try:
+#     from services.draft_pipeline import DraftPipeline
+#     _slog.info("▶ 4/10 DraftPipeline imported")
+# except Exception as e:
+#     _slog.exception(f"✗ 4/10 DraftPipeline FAILED: {e}")
+
+# try:
+#     from services.settings_manager import SettingsManager
+#     _slog.info("▶ 5/10 SettingsManager imported")
+# except Exception as e:
+#     _slog.exception(f"✗ 5/10 SettingsManager FAILED: {e}")
+
+# try:
+#     from services.preprocessing_emails import EmailPreprocessingPipeline
+#     _slog.info("▶ 6/10 EmailPreprocessingPipeline imported")
+# except Exception as e:
+#     _slog.exception(f"✗ 6/10 EmailPreprocessingPipeline FAILED: {e}")
+
+# try:
+#     from services.label_pipeline import EmailLabelPipeline
+#     _slog.info("▶ 7/10 EmailLabelPipeline imported")
+# except Exception as e:
+#     _slog.exception(f"✗ 7/10 EmailLabelPipeline FAILED: {e}")
+
+# try:
+#     from services.label_email_lockbook import get_user_lockbook, get_global_lockbook
+#     _slog.info("▶ 8/10 lockbook imported")
+# except Exception as e:
+#     _slog.exception(f"✗ 8/10 lockbook FAILED: {e}")
+
+# try:
+#     from services.store_pipeline import CheckAndStoreEmailPipeline, CheckAndStoreAttachmentsPipeline
+#     _slog.info("▶ 9/10 store pipelines imported")
+# except Exception as e:
+#     _slog.exception(f"✗ 9/10 store pipelines FAILED: {e}")
+
+# try:
+#     from agent_request_logger import log_request
+#     _slog.info("▶ 10/10 agent_request_logger imported")
+# except Exception as e:
+#     _slog.warning(f"⚠ 10/10 agent_request_logger not found (using no-op): {e}")
+#     def log_request(*args, **kwargs):
+#         pass
+
+# _slog.info("✅ All imports done — building FastAPI app")
+
+
+
+
+
 
 # Import request logger
 import sys
@@ -62,6 +143,10 @@ def _load_config() -> dict:
     return {}
 
 CONFIG = _load_config()
+
+# _slog.info("▶ Loading config.json...")
+# CONFIG = _load_config()
+# _slog.info(f"▶ CONFIG keys loaded: {list(CONFIG.keys())}")
 
 # In-memory job store for background task tracking
 _job_store: Dict[str, Dict[str, Any]] = {}
@@ -386,6 +471,12 @@ class EmailMessage(BaseModel):
     subject: str
     timestamp: str
     body: str
+
+
+class SimpleDraftRequest(BaseModel):
+    user_id: str
+    thread_id: str
+    user_preferences: Optional[Dict[str, Any]] = None
 
 
 class LogEmailRequest(BaseModel):
@@ -733,6 +824,13 @@ class DraftWithAttachmentsRequest(BaseModel):
     user_preferences: Optional[Dict[str, Any]] = None
 
 
+class SummarizeThreadRequest(BaseModel):
+    """Request model for email thread summarization"""
+    user_id: str
+    thread_id: str
+    user_name: Optional[str] = "User"  # Name for draft response generation
+
+
 class SyncSettingsRequest(BaseModel):
     user_id: str
     settings: Dict[str, Any]
@@ -903,6 +1001,105 @@ def _run_draft_pipeline(job_id: str, request: DraftWithAttachmentsRequest):
         ))
         _set_job(job_id, "done", result=result)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _set_job(job_id, "error", error=str(e))
+
+
+
+
+def _run_simple_draft_pipeline(job_id: str, request: SimpleDraftRequest):
+    _set_job(job_id, "processing")
+    try:
+        pipeline = SimpleDraftPipeline(user_id=request.user_id)
+        result = asyncio.run(pipeline.process_email_request(
+            request.user_id,
+            request.thread_id,
+            request.user_preferences,
+        ))
+        _set_job(job_id, "done", result=result)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _set_job(job_id, "error", error=str(e))
+
+
+@app.post("/api/draft")
+async def simple_draft(request: SimpleDraftRequest, background_tasks: BackgroundTasks):
+    """
+    Generate email draft from thread emails (no attachments).
+
+    Returns a job_id immediately; processing runs in background.
+    Poll /api/job-status/{job_id} until status is "done" or "error".
+
+    Request:
+    {
+        "user_id": "user@example.com",
+        "thread_id": "thread_123abc",
+        "user_preferences": {
+            "name": "Alice",
+            "position": "Manager",
+            "tone": "professional",
+            "custom_instructions": ""
+        }
+    }
+    """
+    job_id = str(uuid.uuid4())
+    _set_job(job_id, "pending")
+    background_tasks.add_task(_run_simple_draft_pipeline, job_id, request)
+    return {"job_id": job_id, "status": "pending"}
+
+
+
+
+# ==================== SUMMARIZATION ENDPOINTS ====================
+
+@app.post("/api/summarize-thread")
+async def summarize_thread(request: SummarizeThreadRequest, background_tasks: BackgroundTasks):
+    """
+    Summarize an email thread using LLM analysis
+    
+    Returns a job_id immediately; heavy processing runs in background.
+    Poll /api/job-status/{job_id} until status is "done" or "error".
+    
+    Request:
+    {
+        "user_id": "user@example.com",
+        "thread_id": "thread_123abc",
+        "user_name": "Puja"  # Optional, used for draft response
+    }
+    
+    Response:
+    {
+        "job_id": "uuid-here",
+        "status": "pending"
+    }
+    """
+    job_id = str(uuid.uuid4())
+    _set_job(job_id, "pending")
+    
+    print(f"📋 /api/summarize-thread endpoint called")
+    print(f"   Job ID: {job_id}")
+    print(f"   User: {request.user_id}")
+    print(f"   Thread: {request.thread_id}")
+    print(f"   User Name: {request.user_name}")
+    
+    background_tasks.add_task(_run_summarization_pipeline, job_id, request)
+    return {"job_id": job_id, "status": "pending"}
+
+
+def _run_summarization_pipeline(job_id: str, request: SummarizeThreadRequest):
+    """Background task for summarization pipeline"""
+    _set_job(job_id, "processing")
+    try:
+        summarization_pipeline = SummarizationPipeline(user_id=request.user_id)
+        result = summarization_pipeline.process_and_summarize(
+            user_id=request.user_id,
+            thread_id=request.thread_id
+        )
+        _set_job(job_id, "done", result=result)
+    except Exception as e:
+        print(f"❌ Summarization pipeline error: {str(e)}")
         import traceback
         traceback.print_exc()
         _set_job(job_id, "error", error=str(e))

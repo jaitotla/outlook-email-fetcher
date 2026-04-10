@@ -13,11 +13,21 @@ Provider priorities:
 from pydantic_settings import BaseSettings
 from typing import Optional, Dict,Any
 import os
+from pydantic import field_validator
+import re 
 import json
 class Settings(BaseSettings):
     # Server
     HOST: str = "0.0.0.0"
-    PORT: int = 5050
+    @field_validator("HOST")
+    @classmethod
+    def sanitize_host(cls, v: str) -> str:
+        valid = re.match(r'^(\d{1,3}\.){3}\d{1,3}$', v) or v in ('localhost', '0.0.0.0', '127.0.0.1')
+        if not valid:
+            print(f"⚠️  HOST='{v}' is invalid (conda env var?), using 0.0.0.0")
+            return "0.0.0.0"
+        return v
+    PORT: int = 5051
     ENVIRONMENT: str = "development"
     
     # Backend API

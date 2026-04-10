@@ -30,9 +30,13 @@ class ChromaDBClient(BaseVectorStore):
             inbuilt_mode: Unused, kept for interface compatibility
         """
         settings = settings or {}
-        
+        a=settings.get("user_id")
+        logger.info(f" look at the userid {a} ")
         # Get user_id from settings, environment, or default
-        user_id = settings.get("user_id") or os.environ.get("USER_ID", "default")
+        user_id = settings.get("user_id")
+        if not user_id:
+            
+            raise ValueError("user_id is required for ChromaDBClient")
         
         # Create per-user isolated storage path
         persistent_path = os.path.join(

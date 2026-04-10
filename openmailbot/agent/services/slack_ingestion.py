@@ -17,7 +17,7 @@ class SlackIngestionService:
     
     def __init__(
         self,
-        backend_url: str = "http://backend:5000",
+        backend_url: str = "http://localhost:5003",
         llm_service: Optional[LLMService] = None,
         file_processor: Optional[FileProcessor] = None
     ):

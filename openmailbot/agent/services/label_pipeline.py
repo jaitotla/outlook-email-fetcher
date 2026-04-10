@@ -13,7 +13,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 # Import from the same services directory
-from .store_graph_pipeline import StoreGraphPipeline, ThreadGraphData
+# from .store_graph_pipeline import StoreGraphPipeline, ThreadGraphData  # Removed: label storage
 from .ollama_lable_pipline import EmailLabelPipeline as OllamaEmailLabelPipeline
 
 # Define allowed labels using Literal
@@ -504,29 +504,29 @@ Provide the label, category, topic, and subtopic for this email based on the use
         print(f"  Message ID: {message_id}")
         print(f"  Timestamp: {timestamp}")
         
-        # Step 3: Store in graph database
-        print("\nStep 3: Storing in graph database...")
-        
-        # Create ThreadGraphData from label result
-        graph_data = ThreadGraphData(
-            thread_id=thread_id,
-            subject=subject,
-            participants=participants,
-            category=label_result.category,
-            topic=label_result.topic,
-            user_id=user_id,
-            subtopic=label_result.subtopic,
-            subject_matter=label_result.subject_matter,
-            message_id=message_id,
-            timestamp=timestamp
-        )
-        
-        # Create and run graph pipeline only for specific labels
-        if label_result.label in ["response", "FYI", "Awaiting Reply"]:
-            graph_pipeline = StoreGraphPipeline()
-            graph_store_result = graph_pipeline.store_thread_graph(graph_data)
-        else:
-            graph_store_result = {"status": "SKIPPED", "reason": "Label not eligible for graph storage"}
+        # Step 3: Store in graph database (COMMENTED OUT)
+        # print("\nStep 3: Storing in graph database...")
+        # 
+        # # Create ThreadGraphData from label result
+        # graph_data = ThreadGraphData(
+        #     thread_id=thread_id,
+        #     subject=subject,
+        #     participants=participants,
+        #     category=label_result.category,
+        #     topic=label_result.topic,
+        #     user_id=user_id,
+        #     subtopic=label_result.subtopic,
+        #     subject_matter=label_result.subject_matter,
+        #     message_id=message_id,
+        #     timestamp=timestamp
+        # )
+        # 
+        # # Create and run graph pipeline only for specific labels
+        # if label_result.label in ["response", "FYI", "Awaiting Reply"]:
+        #     graph_pipeline = StoreGraphPipeline()
+        #     graph_store_result = graph_pipeline.store_thread_graph(graph_data)
+        # else:
+        #     graph_store_result = {"status": "SKIPPED", "reason": "Label not eligible for graph storage"}
         
         # Combine results
         combined_result = {
@@ -539,8 +539,7 @@ Provide the label, category, topic, and subtopic for this email based on the use
                 "subtopic": label_result.subtopic,
                 "subject_matter": label_result.subject_matter
             },
-            "graph_store_result": graph_store_result,
-            "status": "SUCCESS" if graph_store_result.get("status") == "SUCCESS" else "COMPLETED_WITH_ERRORS"
+            "status": "SUCCESS"
         }
         
         print("\n" + "="*70)

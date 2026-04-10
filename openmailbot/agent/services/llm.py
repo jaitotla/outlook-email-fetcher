@@ -14,7 +14,8 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 # Load configuration
-CONFIG_PATH = "/home/ubuntu/openmailbot/openmailbot/agent/config.json"
+CONFIG_PATH = "/home/manotr/openmailbot/openmailbot/agent/config.json"
+# openmailbot/openmailbot/agent/config.json
 with open(CONFIG_PATH, 'r') as f:
     CONFIG = json.load(f)
 

@@ -28,7 +28,7 @@ class LabelEmailLockBook:
         self.user_id = user_id or "global"
         
         # Create lockbook directory
-        self.lockbook_dir = Path("/home/ubuntu/openmailbot/openmailbot/agent/data/lockbook")
+        self.lockbook_dir = Path("/home/manotr/openmailbot/openmailbot/agent/data/lockbook")
         self.lockbook_dir.mkdir(parents=True, exist_ok=True)
         
         # Lock book file path

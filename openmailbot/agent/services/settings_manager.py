@@ -25,7 +25,8 @@ except ImportError as e:
 logger = logging.getLogger(__name__)
 
 # Base data directory under the agent package: agent/data/{user_id}/...
-BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# Use abspath so the path is always absolute regardless of working directory
+BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
 # Encryption key - in production, this should come from environment variable
 # For now, using a default that should be changed
@@ -209,10 +210,11 @@ class SettingsManager:
         
         try:
             user_db = os.path.join(self.base_data_dir, user_id, "sql_data", "chat_thread_processing.db")
+            logger.info(f"DEBUG get_settings looking for DB at: {os.path.abspath(user_db)}")
             
-            # Check if DB exists
+            # If DB doesn't exist yet, ensure it gets created (first run after wipe/restart)
             if not os.path.exists(user_db):
-                logger.warning(f"Database not found for user {user_id}")
+                logger.warning(f"Database not found for user {user_id} at {os.path.abspath(user_db)}")
                 return None
             
             conn = sqlite3.connect(user_db)

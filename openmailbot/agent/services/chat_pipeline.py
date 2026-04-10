@@ -49,7 +49,8 @@ from services.settings_manager import SettingsManager
 
 # Constants
 # Base data directory under the agent package: agent/data/{user_id}/...
-BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+# Backwards-compatible alias
 # Backwards-compatible alias
 BASE_PATH = BASE_DATA_DIR
 FLASK_EMBED_URL = CONFIG.get('FLASK_EMBED_URL', 'https://lsdiedb39c.pagekite.me/embed')
@@ -125,6 +126,7 @@ class ChatWithThreadPipeline:
             # Load from encrypted DB storage
             settings_manager = SettingsManager(user_id)
             retrieved_settings = settings_manager.get_settings(user_id, "general")
+            logger.info(f" these are setttings {retrieved_settings}")
             self.effective_settings = retrieved_settings if retrieved_settings else {}
         else:
             # Fallback to empty dict
@@ -152,7 +154,7 @@ class ChatWithThreadPipeline:
         if self.llm_provider == "inbuilt":
             self.tool_caller_llm = ChatOpenAI(
                 model="gpt-5-mini",
-                temperature=0,
+            
                 api_key=OPENAI_KEY
             )
             logger.info("✅ OpenAI tool caller initialized for inbuilt mode")
@@ -162,7 +164,10 @@ class ChatWithThreadPipeline:
         
         # Initialize EmbeddingService for embeddings and vector operations
         try:
-            self.embedding_service = EmbeddingService(self.effective_settings if self.effective_settings else None)
+            self.embedding_service = EmbeddingService({
+                        **(self.effective_settings or {}),
+                        "user_id": user_id
+                    })
             logger.info("✅ EmbeddingService initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize EmbeddingService: {e}")
@@ -289,6 +294,7 @@ class ChatWithThreadPipeline:
         """Get or create ChromaDB client for a specific user"""
         # Use per-user vector DB directory: data/{user_id}/vector_db/
         user_vector_path = os.path.join(BASE_DATA_DIR, user_id, "vector_db")
+        logger.info(f"look where is datais stored {user_vector_path}")
         os.makedirs(user_vector_path, exist_ok=True)
         # keep a consistent folder name inside the user's vector_db
         user_chroma_path = os.path.join(user_vector_path, f"cdb_{user_id}")

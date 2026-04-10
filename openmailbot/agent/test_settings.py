@@ -7,7 +7,7 @@ import requests
 import json
 import time
 
-BASE_URL = "http://localhost:5050"
+BASE_URL = "http://m15.lsdiedb39c.pagekite.me"
 
 def test_get_settings():
     """Test getting current settings"""

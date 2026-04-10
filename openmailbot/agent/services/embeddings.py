@@ -16,7 +16,7 @@ from services.llm import ProviderError
 logger = logging.getLogger(__name__)
 
 # Load configuration
-CONFIG_PATH = "/home/ubuntu/openmailbot/openmailbot/agent/config.json"
+CONFIG_PATH = "/home/manotr/openmailbot/openmailbot/agent/config.json"
 with open(CONFIG_PATH, 'r') as f:
     CONFIG = json.load(f)
 
@@ -30,7 +30,7 @@ class EmbeddingService:
     - inbuilt: Uses utils.py call_embed_api for central server
     """
     
-    def __init__(self, effective_settings: Optional[Dict[str, Any]] = None):
+    def __init__(self, effective_settings: Optional[Dict[str, Any]] = None,):
         """
         Initialize embedding service.
         
@@ -46,6 +46,10 @@ class EmbeddingService:
         """
         # Use only the provided effective_settings - no CONFIG fallback
         self.effective_settings = effective_settings or {}
+        self.user_id = self.effective_settings.get("user_id")
+        if not self.user_id:
+            
+            raise ProviderError("embedding", "user_id missing in effective_settings")
         
         # Embedding provider config
         self.embedding_provider = self.effective_settings.get("embedding_provider") 
@@ -56,6 +60,12 @@ class EmbeddingService:
         
         # Vector DB config
         vector_db_provider = self.effective_settings.get("vector_provider") 
+        a=self.effective_settings.get("vector_provider")
+        logger.info(f" look at the userid {a} ")
+        logger.info(f" look at the userid {a} ")
+        logger.info(f" look at the userid {a} ")
+        logger.info(f" look at the userid {a} ")
+        
         
         # Initialize vector client via factory
         try:
