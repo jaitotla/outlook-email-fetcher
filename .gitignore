@@ -1,0 +1,72 @@
+# .gitignore for OpenMailBot
+
+# Environment files
+.env
+.env.local
+.env.*.local
+agent/.env
+agent/config.json
+
+# Jupyter checkpoints
+**/.ipynb_checkpoints/
+
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Build outputs
+.next/
+out/
+build/
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+
+# Database
+*.sqlite
+*.db
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+coverage/
+.pytest_cache/
+
+# FAISS indices
+*.index
+*.faiss
+
+# Misc
+.cache/
+temp/
+tmp/
+
+openmailbot/__pycache__/
+openmailbot/agent/__pycache__/
+openmailbot/agent/*/__pycache__/
+openmailbot/agent/*/*/__pycache__/
+openmailbot/agent/graph/chroma_db/
+openmailbot/agent/graph/chroma_db
+*/__pycache__/
+*.log
+*/*/chroma_db/
+*/*/chroma_db
+openmailbot/agent/config.json
+
