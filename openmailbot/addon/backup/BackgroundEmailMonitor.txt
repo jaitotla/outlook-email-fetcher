@@ -1,61 +1,26 @@
 /**
  * Runs automatically when a user installs the add-on.
+ * Calls setupEmailMonitor() (defined in runbackground.gs) to register
+ * background triggers and start monitoring right away.
  */
 function onInstall(e) {
-  // Do NOT auto-start the monitor — onboarding wizard handles that.
+  try {
+    setupEmailMonitor();
+    Logger.log("✅ onInstall: setupEmailMonitor() completed successfully.");
+  } catch (err) {
+    Logger.log("❌ onInstall: setupEmailMonitor() failed — " + err.message);
+  }
+
+  // Also run the normal open handler so the add-on card loads for the user
   onOpen(e);
 }
 
-/**
- * Runs when the add-on is opened.
- */
-function onOpen(e) {
-  // Nothing special needed here; buildAddOn handles the home card.
-}
-
-/**
- * Returns true if the user has completed the first-time onboarding.
- */
-function isOnboardingComplete() {
-  return PropertiesService.getUserProperties().getProperty("onboarding_complete") === "true";
-}
-
-/**
- * Ensure the monitorEmails background trigger is installed.
- * Only creates a new trigger if none exists — safe to call multiple times.
- */
-function ensureMonitorRunning() {
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'monitorEmails') {
-      return; // already installed
-    }
-  }
-  // Not found — create it
-  ScriptApp.newTrigger('monitorEmails')
-    .timeBased()
-    .everyMinutes(1)
-    .create();
-  Logger.log("✅ monitorEmails trigger installed.");
-}
-
 
 
 /**
- * Entry point for Gmail Add-on — checks onboarding then shows home card
+ * Entry point for Gmail Add-on — Premium home card
  */
 function buildAddOn(e) {
-  // First-time users must complete onboarding before accessing the main UI
-  if (!isOnboardingComplete()) {
-    return showOnboardingStep1(e);
-  }
-  return buildHomeCard();
-}
-
-/**
- * The main home card (only shown after onboarding is complete)
- */
-function buildHomeCard() {
   return CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
@@ -131,406 +96,15 @@ function buildHomeCard() {
     .build();
 }
 
-// NOTE: A shorter version of draftWithAttachments existed here and was removed.
-// The active implementation is further below.
-
-// ============================================================================
-// CANONICAL THREAD ID
-// ============================================================================
-
-/**
- * Returns the bare RFC Message-ID of the thread's first (root) message,
- * without angle brackets — matching the format stored by Thunderbird.
- *
- * Gmail's thread.getId() returns a Gmail-internal hex ID that IMAP clients
- * never see, so it cannot be used as a cross-client ChromaDB key.
- *
- * @param {GmailThread} thread
- * @returns {string} e.g. "86.B7.46200.5C7CDD96@mta.example.com"
+/*
+ * COMMENTED OUT: Duplicate function - using the fuller version below (line ~189+)
+ * 
+ * function draftWithAttachments(e) {
+ *   // This was a shorter version that's now superseded by the more complete
+ *   // implementation below that includes email logging and better error handling.
+ *   // See the active draftWithAttachments function around line 189.
+ * }
  */
-function getCanonicalThreadId(thread) {
-  try {
-    var rootMsgId = thread.getMessages()[0].getHeader('Message-ID');
-    if (rootMsgId && rootMsgId.trim()) {
-      // Strip RFC angle bracket wrappers: <local@domain> → local@domain
-      return rootMsgId.trim().replace(/^<|>$/g, '');
-    }
-  } catch (e) {
-    Logger.log('getCanonicalThreadId fallback to thread.getId(): ' + e.message);
-  }
-  return thread.getId();
-}
-
-// ============================================================================
-// ONBOARDING WIZARD — shown only to first-time users, cannot be skipped
-// ============================================================================
-
-/**
- * Step 1 of 2: Choose profile & AI provider settings
- * (Mirrors every option from showSettingsCard so users configure everything here)
- */
-function showOnboardingStep1(e) {
-  return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader()
-        .setTitle("👋  Welcome to OpenMailBot")
-        .setSubtitle("Step 1 of 2 — Your Profile & AI Setup")
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newTextParagraph()
-            .setText(
-              "<b>Let's get you set up in 2 quick steps.</b>\n\n" +
-              "First, tell us about yourself and choose how OpenMailBot should work. " +
-              "You can always change these later in Settings."
-            )
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .setHeader("👤  YOUR PROFILE")
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("user_name")
-            .setTitle("Full Name *")
-            .setHint("e.g., Alex Johnson")
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("user_position")
-            .setTitle("Job Title / Role")
-            .setHint("e.g., Product Manager · CEO · Developer")
-        )
-        .addWidget(
-          CardService.newSelectionInput()
-            .setType(CardService.SelectionInputType.DROPDOWN)
-            .setFieldName("user_tone")
-            .setTitle("Writing Tone for Drafts")
-            .addItem("🎯  Professional (Default)", "professional", true)
-            .addItem("😊  Friendly & Warm", "friendly", false)
-            .addItem("📋  Formal & Structured", "formal", false)
-            .addItem("💬  Casual & Relaxed", "casual", false)
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .setHeader("🤖  AI CONFIGURATION MODE")
-        .addWidget(
-          CardService.newTextParagraph()
-            .setText(
-              "✨ <b>Inbuilt</b> — Zero config. OpenMailBot's hosted AI handles everything.\n" +
-              "⚡ <b>Custom</b> — Bring your own API keys for full control."
-            )
-        )
-        .addWidget(
-          CardService.newSelectionInput()
-            .setType(CardService.SelectionInputType.RADIO_BUTTON)
-            .setFieldName("mode")
-            .addItem("✨  Inbuilt (Zero Configuration — Recommended)", "inbuilt", true)
-            .addItem("⚡  Custom (Your Own API Keys)", "custom", false)
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .setHeader("🤖  AI LANGUAGE MODEL  (Custom mode)")
-        .setCollapsible(true)
-        .setNumUncollapsibleWidgets(0)
-        .addWidget(
-          CardService.newSelectionInput()
-            .setType(CardService.SelectionInputType.DROPDOWN)
-            .setFieldName("llm_provider")
-            .setTitle("LLM Provider")
-            .addItem("✨  Inbuilt (Default)", "inbuilt", true)
-            .addItem("🌐  OpenAI (GPT-4o, GPT-3.5)", "openai", false)
-            .addItem("🤖  Anthropic (Claude 3)", "anthropic", false)
-            .addItem("✦  Google Gemini", "gemini", false)
-            .addItem("🖥️  Ollama (Self-hosted)", "ollama", false)
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("llm_api_key")
-            .setTitle("🔑 LLM API Key")
-            .setHint("Leave empty for Inbuilt mode")
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("llm_model")
-            .setTitle("📦 Model Name")
-            .setValue("gpt-4o-mini")
-            .setHint("gpt-4o-mini · claude-3-sonnet · gemini-pro · llama3.2")
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("llm_base_url")
-            .setTitle("🔗 Base URL (Ollama only)")
-            .setHint("e.g., http://localhost:11434")
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .setHeader("📊  EMBEDDING ENGINE  (Custom mode)")
-        .setCollapsible(true)
-        .setNumUncollapsibleWidgets(0)
-        .addWidget(
-          CardService.newSelectionInput()
-            .setType(CardService.SelectionInputType.DROPDOWN)
-            .setFieldName("embedding_provider")
-            .setTitle("Embedding Provider")
-            .addItem("✨  Inbuilt (Default)", "inbuilt", true)
-            .addItem("🌐  OpenAI Embeddings", "openai", false)
-            .addItem("🧠  Nomic Embed", "nomic", false)
-            .addItem("🤗  Sentence Transformers (Local)", "sentence-transformers", false)
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("embedding_api_key")
-            .setTitle("🔑 Embedding API Key")
-            .setHint("Leave empty for Inbuilt or Sentence-Transformers")
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("embedding_model")
-            .setTitle("📦 Embedding Model")
-            .setValue("text-embedding-3-small")
-            .setHint("text-embedding-3-small · nomic-embed-text-v1.5")
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .setHeader("🗄️  VECTOR DATABASE  (Custom mode)")
-        .setCollapsible(true)
-        .setNumUncollapsibleWidgets(0)
-        .addWidget(
-          CardService.newSelectionInput()
-            .setType(CardService.SelectionInputType.DROPDOWN)
-            .setFieldName("vector_provider")
-            .setTitle("Vector DB Provider")
-            .addItem("✨  Inbuilt (Default)", "inbuilt", true)
-            .addItem("🌲  Pinecone (Cloud)", "pinecone", false)
-            .addItem("🎨  ChromaDB", "chroma", false)
-            .addItem("🕸️  Weaviate", "weaviate", false)
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("vector_url")
-            .setTitle("🔗 Server URL")
-            .setHint("https://your-index.pinecone.io  ·  http://localhost:8000")
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName("vector_api_key")
-            .setTitle("🔑 Vector DB API Key")
-            .setHint("Leave empty for Inbuilt / ChromaDB local mode")
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newTextButton()
-            .setText("Next: Email Context Setup →")
-            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-            .setBackgroundColor("#4285F4")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("saveOnboardingStep1")
-            )
-        )
-    )
-    .build();
-}
-
-/**
- * Save step 1 data then show step 2
- */
-function saveOnboardingStep1(e) {
-  var f = e.formInput || {};
-
-  var settings = {
-    mode:               f.mode               || "inbuilt",
-    llm_provider:       f.llm_provider       || "inbuilt",
-    llm_api_key:        f.llm_api_key         || "",
-    llm_model:          f.llm_model           || "gpt-4o-mini",
-    llm_base_url:       f.llm_base_url        || "",
-    embedding_provider: f.embedding_provider || "inbuilt",
-    embedding_api_key:  f.embedding_api_key  || "",
-    embedding_model:    f.embedding_model     || "text-embedding-3-small",
-    vector_provider:    f.vector_provider     || "inbuilt",
-    vector_url:         f.vector_url          || "",
-    vector_api_key:     f.vector_api_key      || "",
-    user_name:          f.user_name           || "",
-    user_position:      f.user_position       || "",
-    user_tone:          f.user_tone           || "professional",
-    system_prompt:      ""
-  };
-
-  var userProps = PropertiesService.getUserProperties();
-  userProps.setProperty("user_settings", JSON.stringify(settings));
-  userProps.setProperty("onboarding_page1_done", "true");
-
-  return showOnboardingStep2();
-}
-
-/**
- * Step 2 of 2: Choose how much email history to index
- */
-function showOnboardingStep2() {
-  return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader()
-        .setTitle("📧  Email Context Setup")
-        .setSubtitle("Step 2 of 2 — Build your AI knowledge base")
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newTextParagraph()
-            .setText(
-              "<b>How far back should OpenMailBot learn from your emails?</b>\n\n" +
-              "The AI will index your past emails to understand your projects, communication style, and key contacts. " +
-              "The more history you include, the more accurate the AI becomes.\n\n" +
-              "⚠️ <b>This step cannot be skipped.</b> You must select a time window to continue."
-            )
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .setHeader("📅  EMAIL HISTORY TO INDEX  (required)")
-        .addWidget(
-          CardService.newSelectionInput()
-            .setType(CardService.SelectionInputType.RADIO_BUTTON)
-            .setFieldName("onboarding_months")
-            .setTitle("How many months of email history?")
-            .addItem("⚡  1 month  (Quick start ~ 5-10 min)", "1", false)
-            .addItem("📅  2 months  (Good balance ~ 15-25 min)", "2", false)
-            .addItem("📅  3 months  (Recommended ~ 20-40 min)", "3", true)
-            .addItem("📁  6 months  (Rich context ~ 45-90 min)", "6", false)
-            .addItem("🗂️  12 months  (Full year)", "12", false)
-        )
-        .addWidget(
-          CardService.newTextParagraph()
-            .setText(
-              "ℹ️  Processing runs securely in the background — you can use Gmail normally while it runs.\n" +
-              "✅  Features work immediately; AI improves as indexing completes."
-            )
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newButtonSet()
-            .addButton(
-              CardService.newTextButton()
-                .setText("← Back")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("showOnboardingStep1")
-                )
-            )
-            .addButton(
-              CardService.newTextButton()
-                .setText("✅  Complete Setup & Start Indexing")
-                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-                .setBackgroundColor("#0F9D58")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("completeOnboarding")
-                )
-            )
-        )
-    )
-    .build();
-}
-
-/**
- * Final onboarding step: save months, start monitor, launch bulk job
- */
-function completeOnboarding(e) {
-  var formInputs = e.formInput || {};
-  var months = formInputs.onboarding_months || "3";
-
-  // Mark onboarding complete
-  var userProps = PropertiesService.getUserProperties();
-  userProps.setProperty("onboarding_complete", "true");
-
-  // Save months selection
-  PropertiesService.getScriptProperties().setProperty("process_last_n_months", months);
-
-  // Enable background monitoring by default
-  PropertiesService.getScriptProperties().setProperty("background_monitor_enabled", "true");
-
-  // Sync settings to backend (best effort)
-  try {
-    var settings = loadUserSettings();
-    syncSettingsToBackend(settings);
-  } catch (syncErr) {
-    Logger.log("Onboarding: settings sync failed — " + syncErr.message);
-  }
-
-  // Ensure the background monitor trigger is running
-  try {
-    ensureMonitorRunning();
-  } catch (monErr) {
-    Logger.log("Onboarding: monitor setup failed — " + monErr.message);
-  }
-
-  // Launch historical email indexing in the background
-  try {
-    _launchBulkJobAsync(months);
-  } catch (bulkErr) {
-    Logger.log("Onboarding: bulk job launch failed — " + bulkErr.message);
-  }
-
-  return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader()
-        .setTitle("🎉  Setup Complete!")
-        .setSubtitle("OpenMailBot is now active")
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel("● ALL SET")
-            .setText("<b>OpenMailBot is ready to use!</b>")
-            .setBottomLabel(
-              "Background monitor active  ·  Indexing last " + months + " months of email history"
-            )
-            .setWrapText(true)
-        )
-        .addWidget(
-          CardService.newTextParagraph()
-            .setText(
-              "⏱️  Email indexing starts in ~1 minute and runs in the background.\n\n" +
-              "You can start using all features right now:\n" +
-              "  • 📝  Summarize any email thread\n" +
-              "  • 💬  Chat with emails and attachments\n" +
-              "  • 📎  Generate AI-powered draft replies\n\n" +
-              "⚙️  Change any setting anytime via Settings."
-            )
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newButtonSet()
-            .addButton(
-              CardService.newTextButton()
-                .setText("🏠  Go to Home")
-                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-                .setBackgroundColor("#4285F4")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("buildAddOn")
-                )
-            )
-            .addButton(
-              CardService.newTextButton()
-                .setText("📊  Indexing Progress")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("showBulkJobStatusCard")
-                )
-            )
-        )
-    )
-    .build();
-}
 
 /**
  * NEW: Draft with Attachments - Main handler
@@ -541,7 +115,7 @@ function draftWithAttachments(e) {
     var messageId = e.gmail.messageId;
     var thread = GmailApp.getMessageById(messageId).getThread();
     var messages = thread.getMessages();
-    var threadId = getCanonicalThreadId(thread);
+    var threadId = thread.getId();
     
     // Get user ID (email address)
     var userId = Session.getEffectiveUser().getEmail();
@@ -841,7 +415,7 @@ function summarizeThread(e) {
     var messageId = e.gmail.messageId;
     var thread = GmailApp.getMessageById(messageId).getThread();
     var messages = thread.getMessages();
-    var threadId = getCanonicalThreadId(thread);
+    var threadId = thread.getId();
     var userId = Session.getEffectiveUser().getEmail();
     
     // Show loading state
@@ -1367,7 +941,7 @@ function showChatInterface(e) {
   try {
     var messageId = e.gmail.messageId;
     var thread = GmailApp.getMessageById(messageId).getThread();
-    var threadId = getCanonicalThreadId(thread);
+    var threadId = thread.getId();
     var messages = thread.getMessages();
     
     // Send email data to server in new format
@@ -2261,9 +1835,9 @@ function showSettingsCard(e) {
       .addWidget(CardService.newDivider())
       .addWidget(
         CardService.newDecoratedText()
-          .setTopLabel("BACKGROUND MONITOR  ·  PRIVACY FILTERS")
+          .setTopLabel("BACKGROUND MONITOR  ·  PRIVACY FILTERS  ·  HISTORICAL SYNC")
           .setText("<b>🔒  Advanced Settings</b>")
-          .setBottomLabel("Configure automation & email privacy filters")
+          .setBottomLabel("Configure automation, email privacy filters & historical data processing")
           .setWrapText(true)
           .setButton(
             CardService.newTextButton()
@@ -2274,86 +1848,6 @@ function showSettingsCard(e) {
           )
       )
   );
-
-  // ── Historical Email Processing (outside of Advanced Settings) ─────────
-  var isJobRunning = !!PropertiesService.getScriptProperties().getProperty("bulk_job_state");
-  var savedMonthsForSettings = PropertiesService.getScriptProperties().getProperty("process_last_n_months") || "3";
-
-  var historicalSection = CardService.newCardSection()
-    .setHeader("📅  HISTORICAL EMAIL PROCESSING");
-
-  historicalSection.addWidget(
-    CardService.newDecoratedText()
-      .setTopLabel("SAVED TIME WINDOW")
-      .setText("<b>" + savedMonthsForSettings + " month" + (savedMonthsForSettings !== "1" ? "s" : "") + " back</b>")
-      .setBottomLabel("Bulk-index past emails so AI has full historical context")
-      .setWrapText(true)
-  );
-
-  if (isJobRunning) {
-    historicalSection.addWidget(
-      CardService.newDecoratedText()
-        .setTopLabel("● JOB IN PROGRESS")
-        .setText("<b>A bulk indexing job is currently running</b>")
-        .setBottomLabel("You can check progress or stop the job below")
-        .setWrapText(true)
-    );
-    historicalSection.addWidget(
-      CardService.newButtonSet()
-        .addButton(
-          CardService.newTextButton()
-            .setText("📊  View Job Status")
-            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-            .setBackgroundColor("#1a73e8")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("showBulkJobStatusCard")
-            )
-        )
-        .addButton(
-          CardService.newTextButton()
-            .setText("🛑  Stop Job")
-            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-            .setBackgroundColor("#d93025")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("cancelBulkJobFromUI")
-            )
-        )
-    );
-  } else {
-    historicalSection.addWidget(
-      CardService.newSelectionInput()
-        .setType(CardService.SelectionInputType.DROPDOWN)
-        .setFieldName("process_last_n_months")
-        .setTitle("📆  Time Window")
-        .addItem("⚡  1 month   (Fast — recent only)",   "1",  savedMonthsForSettings === "1")
-        .addItem("📅  2 months",                         "2",  savedMonthsForSettings === "2")
-        .addItem("📅  3 months  (Recommended)",          "3",  savedMonthsForSettings === "3")
-        .addItem("📁  6 months  (Deep context)",         "6",  savedMonthsForSettings === "6")
-        .addItem("🗂️  12 months  (Full year)",           "12", savedMonthsForSettings === "12")
-        .addItem("📦  24 months  (Maximum — slow)",      "24", savedMonthsForSettings === "24")
-    );
-    historicalSection.addWidget(
-      CardService.newButtonSet()
-        .addButton(
-          CardService.newTextButton()
-            .setText("💾  Save Selection")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("saveProcessMonthsSetting")
-            )
-        )
-        .addButton(
-          CardService.newTextButton()
-            .setText("▶  Run Now")
-            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-            .setBackgroundColor("#1a73e8")
-            .setOnClickAction(
-              CardService.newAction().setFunctionName("runProcessLastNMonths")
-            )
-        )
-    );
-  }
-
-  card.addSection(historicalSection);
 
   // ── Action Bar ────────────────────────────────────────────────────────
   card.addSection(
@@ -2777,27 +2271,26 @@ function shouldFilterMessage(message) {
 }
 /**
  * Show Advanced Settings Card
- * - Background monitoring toggle (enable / disable)
+ * - Process Past Emails: Save Selection and Run Now are SEPARATE actions
+ * - Save Selection → saves to UserProperties only (does NOT run)
+ * - Run Now → directly calls processLastNMonthsEmails
  * - Email & Domain Filters section
- * NOTE: Historical email processing has been moved to showSettingsCard
  */
 function showAdvancedSettingsCard(e) {
   var filters = JSON.parse(
     PropertiesService.getScriptProperties().getProperty("domain_filters") || "[]"
   );
   var filtersText  = filters.join('\n');
+  var savedMonths  = PropertiesService.getScriptProperties().getProperty("process_last_n_months") || "3";
   var filterStatus = filters.length > 0
     ? filters.length + " active filter" + (filters.length !== 1 ? "s" : "")
     : "No filters configured";
-
-  var bgEnabled = PropertiesService.getScriptProperties().getProperty("background_monitor_enabled") !== "false";
-  var bgLabel   = bgEnabled ? "✅  Enabled" : "⏸️  Paused";
 
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
         .setTitle("🔒  Advanced Settings")
-        .setSubtitle("Automation · Privacy Filters")
+        .setSubtitle("Automation · Privacy Filters · Historical Data")
     );
 
   // ── Status Banner ──────────────────────────────────────────────────────
@@ -2806,50 +2299,62 @@ function showAdvancedSettingsCard(e) {
       .addWidget(
         CardService.newDecoratedText()
           .setTopLabel("● SYSTEM STATUS")
-          .setText("<b>Background Monitor: " + bgLabel + "</b>")
-          .setBottomLabel("🛡️ Privacy filters: " + filterStatus)
+          .setText("<b>Background Monitor Configuration</b>")
+          .setBottomLabel(
+            "📅 Process window: " + savedMonths + " month(s)" +
+            "  ·  🛡️ Privacy filters: " + filterStatus
+          )
           .setWrapText(true)
       )
   );
 
-  // ── Background Monitoring Toggle ───────────────────────────────────────
+  // ── Historical Email Processing ────────────────────────────────────────
   card.addSection(
     CardService.newCardSection()
-      .setHeader("🔄  BACKGROUND EMAIL MONITORING")
+      .setHeader("📅  HISTORICAL EMAIL PROCESSING")
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel("SAVED TIME WINDOW")
+          .setText("<b>" + savedMonths + " month" + (savedMonths !== "1" ? "s" : "") + " back</b>")
+          .setBottomLabel("Bulk-index past emails so the AI has full historical context")
+          .setWrapText(true)
+      )
       .addWidget(
         CardService.newTextParagraph()
           .setText(
-            "When <b>enabled</b>, OpenMailBot checks your inbox every minute to label and index new emails automatically.\n\n" +
-            "When <b>disabled</b>, the monitor is paused. Manual Summarize / Chat / Draft still work normally."
+            "① Select a time window\n" +
+            "② Tap <b>Save Selection</b> to store your choice\n" +
+            "③ Tap <b>▶ Run Now</b> to start background indexing immediately"
           )
       )
       .addWidget(
-        CardService.newDecoratedText()
-          .setTopLabel("CURRENT STATUS")
-          .setText("<b>" + bgLabel + "</b>")
-          .setBottomLabel(bgEnabled
-            ? "Monitor is active and processing new emails every minute"
-            : "Monitor is paused — new emails are not being auto-indexed")
-          .setWrapText(true)
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName("process_last_n_months")
+          .setTitle("📆  Time Window")
+          .addItem("⚡  1 month   (Fast — recent only)",          "1",  savedMonths === "1")
+          .addItem("📅  2 months",                                "2",  savedMonths === "2")
+          .addItem("📅  3 months  (Recommended)",                 "3",  savedMonths === "3")
+          .addItem("📁  6 months  (Deep context)",                "6",  savedMonths === "6")
+          .addItem("🗂️  12 months  (Full year)",                 "12", savedMonths === "12")
+          .addItem("📦  24 months  (Maximum — slow)",            "24", savedMonths === "24")
       )
       .addWidget(
         CardService.newButtonSet()
           .addButton(
             CardService.newTextButton()
-              .setText("✅  Enable Monitor")
-              .setTextButtonStyle(bgEnabled ? CardService.TextButtonStyle.OUTLINED : CardService.TextButtonStyle.FILLED)
-              .setBackgroundColor("#0F9D58")
+              .setText("💾  Save Selection")
               .setOnClickAction(
-                CardService.newAction().setFunctionName("enableBackgroundMonitor")
+                CardService.newAction().setFunctionName("saveProcessMonthsSetting")
               )
           )
           .addButton(
             CardService.newTextButton()
-              .setText("⏸️  Pause Monitor")
-              .setTextButtonStyle(bgEnabled ? CardService.TextButtonStyle.FILLED : CardService.TextButtonStyle.OUTLINED)
-              .setBackgroundColor("#d93025")
+              .setText("▶  Run Now")
+              .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+              .setBackgroundColor("#1a73e8")
               .setOnClickAction(
-                CardService.newAction().setFunctionName("disableBackgroundMonitor")
+                CardService.newAction().setFunctionName("runProcessLastNMonths")
               )
           )
       )
@@ -2950,101 +2455,6 @@ function showAdvancedSettingsCard(e) {
   return card.build();
 }
 
-/**
- * Enable background email monitoring
- */
-function enableBackgroundMonitor(e) {
-  PropertiesService.getScriptProperties().setProperty("background_monitor_enabled", "true");
-  try { ensureMonitorRunning(); } catch (err) { Logger.log("enableBackgroundMonitor: " + err.message); }
-
-  return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader()
-        .setTitle("✅  Monitor Enabled")
-        .setSubtitle("Background processing is now active")
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel("● ACTIVE")
-            .setText("<b>Background monitor is now running</b>")
-            .setBottomLabel("New emails will be automatically indexed every minute")
-            .setWrapText(true)
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newButtonSet()
-            .addButton(
-              CardService.newTextButton()
-                .setText("◀  Advanced Settings")
-                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-                .setBackgroundColor("#5F6368")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
-                )
-            )
-            .addButton(
-              CardService.newTextButton()
-                .setText("🏠 Home")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("buildAddOn")
-                )
-            )
-        )
-    )
-    .build();
-}
-
-/**
- * Disable background email monitoring
- */
-function disableBackgroundMonitor(e) {
-  PropertiesService.getScriptProperties().setProperty("background_monitor_enabled", "false");
-
-  return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader()
-        .setTitle("⏸️  Monitor Paused")
-        .setSubtitle("Background processing is now disabled")
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel("● PAUSED")
-            .setText("<b>Background monitor is now paused</b>")
-            .setBottomLabel("New emails won't be auto-indexed. Manual features still work normally.")
-            .setWrapText(true)
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newButtonSet()
-            .addButton(
-              CardService.newTextButton()
-                .setText("◀  Advanced Settings")
-                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-                .setBackgroundColor("#5F6368")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
-                )
-            )
-            .addButton(
-              CardService.newTextButton()
-                .setText("🏠 Home")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("buildAddOn")
-                )
-            )
-        )
-    )
-    .build();
-}
-
 
 /**
  * Save the "process last N months" selection to ScriptProperties ONLY.
@@ -3104,18 +2514,10 @@ function saveProcessMonthsSetting(e) {
  * Returns a confirmation card immediately so the user can keep using the add-on.
  */
 function runProcessLastNMonths(e) {
-  // Guard: if a job is already running, redirect to status card
-  if (PropertiesService.getScriptProperties().getProperty("bulk_job_state")) {
-    return showBulkJobStatusCard(e);
-  }
-
   // Prefer live dropdown value, fall back to last saved, then default to "3"
   var months = (e && e.formInput && e.formInput.process_last_n_months)
     || PropertiesService.getScriptProperties().getProperty("process_last_n_months")
     || "3";
-
-  // Ensure the background trigger is active (needed for continuation)
-  try { ensureMonitorRunning(); } catch (err) { Logger.log("runProcessLastNMonths: " + err.message); }
 
   // Launch entirely in the background — does NOT block the UI
   var state = _launchBulkJobAsync(months);
@@ -3159,18 +2561,16 @@ function runProcessLastNMonths(e) {
             )
             .addButton(
               CardService.newTextButton()
-                .setText("🛑  Stop Job")
-                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-                .setBackgroundColor("#d93025")
+                .setText("🛑  Cancel Job")
                 .setOnClickAction(
                   CardService.newAction().setFunctionName("cancelBulkJobFromUI")
                 )
             )
             .addButton(
               CardService.newTextButton()
-                .setText("⚙️  Settings")
+                .setText("◀  Advanced")
                 .setOnClickAction(
-                  CardService.newAction().setFunctionName("showSettingsCard")
+                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
                 )
             )
         )
@@ -3179,63 +2579,52 @@ function runProcessLastNMonths(e) {
 }
 
 /**
- * Card showing live bulk-job progress — user can refresh or stop.
+ * Card showing live bulk-job progress — user can refresh or cancel.
  */
 function showBulkJobStatusCard(e) {
   var scriptProps = PropertiesService.getScriptProperties();
   var stateJson   = scriptProps.getProperty("bulk_job_state");
   var aborted     = scriptProps.getProperty("bulk_job_abort") === "true";
-  var refreshedAt = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss");
 
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
         .setTitle("📊  Processing Status")
-        .setSubtitle("Historical email indexing · Last refreshed: " + refreshedAt)
+        .setSubtitle("Historical email indexing")
     );
 
   if (!stateJson) {
     card.addSection(
       CardService.newCardSection()
         .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel(aborted ? "● STOPPED" : "● NO JOB RUNNING")
+          CardService.newTextParagraph()
             .setText(aborted
-              ? "<b>Job was stopped by you</b>"
-              : "<b>No indexing job is currently running</b>")
-            .setBottomLabel(aborted
-              ? "You can start a new job from Settings"
-              : "Start a new job from Settings → Historical Email Processing")
-            .setWrapText(true)
+              ? "🛑  Job was cancelled."
+              : "✅  No job running. Processing is complete or has not been started.")
         )
     );
   } else {
     var state = JSON.parse(stateJson);
-    var pct = state.stats.messagesFound > 0
-      ? Math.round((state.stats.labeled + state.stats.skipped + state.stats.filtered) / state.stats.messagesFound * 100)
+    var pct = state.stats.threadsScanned > 0
+      ? Math.round((state.stats.labeled + state.stats.skipped + state.stats.filtered) / Math.max(state.stats.messagesFound, 1) * 100)
       : 0;
 
     card.addSection(
       CardService.newCardSection()
         .addWidget(
           CardService.newDecoratedText()
-            .setTopLabel("● " + (state.status || "RUNNING").toUpperCase())
+            .setTopLabel("● " + (state.status || "running").toUpperCase())
             .setText("<b>Last " + state.n + " months</b>  ·  " + state.afterStr + " → " + state.beforeStr)
-            .setBottomLabel(
-              "Threads scanned: " + state.stats.threadsScanned +
-              "  ·  Messages found: " + state.stats.messagesFound +
-              "  ·  Offset: " + state.offset
-            )
+            .setBottomLabel("Threads scanned: " + state.stats.threadsScanned + "  ·  Offset: " + state.offset)
             .setWrapText(true)
         )
         .addWidget(
           CardService.newTextParagraph()
             .setText(
               "✅  Labeled   : " + state.stats.labeled + "\n" +
-              "⊘   Skipped   : " + state.stats.skipped + "\n" +
+              "⊘  Skipped   : " + state.stats.skipped + "\n" +
               "🚫  Filtered  : " + state.stats.filtered + "\n" +
-              "❌  Errors    : " + state.stats.errors + "\n\n" +
-              "⏳  Processing continues in background — batches run every ~1 minute."
+              "❌  Errors    : " + state.stats.errors
             )
         )
     );
@@ -3248,24 +2637,22 @@ function showBulkJobStatusCard(e) {
           .addButton(
             CardService.newTextButton()
               .setText("🔄  Refresh")
-              .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-              .setBackgroundColor("#1a73e8")
               .setOnClickAction(
                 CardService.newAction().setFunctionName("showBulkJobStatusCard")
               )
           )
           .addButton(
             CardService.newTextButton()
-              .setText("🛑  Stop Job")
+              .setText("🛑  Cancel Job")
               .setOnClickAction(
                 CardService.newAction().setFunctionName("cancelBulkJobFromUI")
               )
           )
           .addButton(
             CardService.newTextButton()
-              .setText("◀  Settings")
+              .setText("◀  Advanced")
               .setOnClickAction(
-                CardService.newAction().setFunctionName("showSettingsCard")
+                CardService.newAction().setFunctionName("showAdvancedSettingsCard")
               )
           )
       )
@@ -3275,96 +2662,25 @@ function showBulkJobStatusCard(e) {
 }
 
 /**
- * Show a confirmation card before actually stopping the job.
+ * Cancel the running bulk job from the UI and show confirmation.
  */
 function cancelBulkJobFromUI(e) {
-  var stateJson = PropertiesService.getScriptProperties().getProperty("bulk_job_state");
-
-  if (!stateJson) {
-    // Nothing running — go straight to status card
-    return showBulkJobStatusCard(e);
-  }
-
-  var state = JSON.parse(stateJson);
-
-  return CardService.newCardBuilder()
-    .setHeader(
-      CardService.newCardHeader()
-        .setTitle("⚠️  Stop Indexing Job?")
-        .setSubtitle("Confirm before stopping")
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel("● CONFIRMATION REQUIRED")
-            .setText("<b>Are you sure you want to stop the running job?</b>")
-            .setBottomLabel(
-              "Job: last " + state.n + " months  ·  " +
-              "Labeled so far: " + state.stats.labeled +
-              "  ·  Offset: " + state.offset
-            )
-            .setWrapText(true)
-        )
-        .addWidget(
-          CardService.newTextParagraph()
-            .setText(
-              "ℹ️  Emails already indexed will remain available.\n" +
-              "You can re-run indexing anytime from Settings."
-            )
-        )
-    )
-    .addSection(
-      CardService.newCardSection()
-        .addWidget(
-          CardService.newButtonSet()
-            .addButton(
-              CardService.newTextButton()
-                .setText("🛑  Yes, Stop Job")
-                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-                .setBackgroundColor("#d93025")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("confirmStopBulkJob")
-                )
-            )
-            .addButton(
-              CardService.newTextButton()
-                .setText("← Keep Running")
-                .setOnClickAction(
-                  CardService.newAction().setFunctionName("showBulkJobStatusCard")
-                )
-            )
-        )
-    )
-    .build();
-}
-
-/**
- * Actually stop the bulk job after user confirms.
- */
-function confirmStopBulkJob(e) {
   cancelBulkJob(); // defined in BackgroundEmailMonitor.gs
 
   return CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle("🛑  Job Stopped")
-        .setSubtitle("Background indexing has been stopped")
+        .setTitle("🛑  Job Cancelled")
+        .setSubtitle("Background processing stopped")
     )
     .addSection(
       CardService.newCardSection()
         .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel("● STOPPED")
-            .setText("<b>The indexing job has been stopped successfully.</b>")
-            .setBottomLabel("Emails already indexed remain available. You can re-run indexing anytime.")
-            .setWrapText(true)
-        )
-        .addWidget(
           CardService.newTextParagraph()
             .setText(
-              "✅  All previously indexed emails are still fully searchable.\n" +
-              "📅  To index more emails, go to Settings → Historical Email Processing."
+              "The indexing job has been cancelled.\n" +
+              "Any emails already processed remain indexed.\n\n" +
+              "You can start a new job anytime from Advanced Settings."
             )
         )
     )
@@ -3374,11 +2690,9 @@ function confirmStopBulkJob(e) {
           CardService.newButtonSet()
             .addButton(
               CardService.newTextButton()
-                .setText("⚙️  Settings")
-                .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-                .setBackgroundColor("#5F6368")
+                .setText("◀  Advanced Settings")
                 .setOnClickAction(
-                  CardService.newAction().setFunctionName("showSettingsCard")
+                  CardService.newAction().setFunctionName("showAdvancedSettingsCard")
                 )
             )
             .addButton(

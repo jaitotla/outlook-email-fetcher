@@ -71,8 +71,14 @@ function monitorEmails() {
     console.log("=== EMAIL MONITOR START ===");
     console.log("Time: " + startTime.toISOString());
     
-    // ✅ CHECK FOR PENDING BULK JOB CONTINUATION
+    // ✅ CHECK IF BACKGROUND MONITORING IS DISABLED BY USER
     var scriptProps = PropertiesService.getScriptProperties();
+    if (scriptProps.getProperty("background_monitor_enabled") === "false") {
+      console.log("⏸️  Background monitoring is disabled by user. Skipping this cycle.");
+      return;
+    }
+    
+    // ✅ CHECK FOR PENDING BULK JOB CONTINUATION
     if (scriptProps.getProperty(BULK_JOB_STATE_KEY) && scriptProps.getProperty('bulk_job_pending_continuation') === 'true') {
       console.log("🔄 Detected pending bulk job continuation. Resuming...");
       scriptProps.deleteProperty('bulk_job_pending_continuation');
@@ -224,7 +230,7 @@ function monitorEmails() {
 function processMessageWithLogging(message, executionLog) {
   var messageId = message.getId();
   var thread = message.getThread();
-  var threadId = thread.getId();
+  var threadId = getCanonicalThreadId(thread);
   
   var result = {
     emailSent: false,
@@ -291,7 +297,7 @@ function processMessageWithLogging(message, executionLog) {
 function processMessage(message) {
   var messageId = message.getId();
   var thread = message.getThread();
-  var threadId = thread.getId();
+  var threadId = getCanonicalThreadId(thread);
   
   // ⚠️ APPLY DOMAIN FILTER FIRST (ONLY IN BACKGROUND MONITOR)
   if (shouldFilterMessage(message)) {
@@ -903,6 +909,33 @@ function getNewEmailsSince(lastCheckTime) {
 }
 
 // ============================================================================
+// CANONICAL THREAD ID
+// ============================================================================
+
+/**
+ * Returns the bare RFC Message-ID of the thread's first (root) message,
+ * without angle brackets — matching the format stored by Thunderbird.
+ *
+ * Gmail's thread.getId() returns a Gmail-internal hex ID that IMAP clients
+ * never see, so it cannot be used as a cross-client ChromaDB key.
+ *
+ * @param {GmailThread} thread
+ * @returns {string} e.g. "86.B7.46200.5C7CDD96@mta.example.com"
+ */
+function getCanonicalThreadId(thread) {
+  try {
+    var rootMsgId = thread.getMessages()[0].getHeader('Message-ID');
+    if (rootMsgId && rootMsgId.trim()) {
+      // Strip RFC angle bracket wrappers: <local@domain> → local@domain
+      return rootMsgId.trim().replace(/^<|>$/g, '');
+    }
+  } catch (e) {
+    Logger.log('getCanonicalThreadId fallback to thread.getId(): ' + e.message);
+  }
+  return thread.getId();
+}
+
+// ============================================================================
 // TRACKING AND PERSISTENCE
 // ============================================================================
 
@@ -1470,9 +1503,9 @@ function _initBulkJob() {
 }
 
 function _runBulkJob() {
-  var SAFE_DURATION_MS = 60 * 60 * 1000;  // 3600s = 60 minutes for production (change to 4.5 * 60 * 1000 for testing)
+  var SAFE_DURATION_MS = 4.5 * 60 * 1000;  // 270s = 4.5 minutes (leaves buffer before Apps Script 6-min hard limit)
   var BATCH_SIZE       = 50;
-  var CALL_GAP_MS      = 2000; // 15 second gap between each API call
+  var CALL_GAP_MS      = 2000; // 2 second gap between each API call
 
   var runStart    = new Date();
   var scriptProps = PropertiesService.getScriptProperties();
@@ -1559,7 +1592,7 @@ function _runBulkJob() {
       }
 
       var thread   = threads[i];
-      var threadId = thread.getId();
+      var threadId = getCanonicalThreadId(thread);
       var messages = thread.getMessages();
 
       for (var j = 0; j < messages.length; j++) {

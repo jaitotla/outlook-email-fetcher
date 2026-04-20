@@ -1,0 +1,31 @@
+{
+  "_comment": "OpenMailBot Addon Configuration — stored ADDON-SIDE only (never sent to server). Edit this file to set default domain filters, blocked addresses, and other addon-level defaults.",
+
+  "agent_url": "http://m15.lsdiedb39c.pagekite.me/",
+  "backend_url": "http://m15.lsdiedb39c.pagekite.me/",
+
+  "domain_filters": {
+    "_comment": "Emails FROM or TO these domains/addresses are skipped during bulk indexing. Add company-internal or noisy domains here.",
+    "blocked_domains": [
+      "noreply.github.com",
+      "notifications.github.com"
+    ],
+    "blocked_addresses": []
+  },
+
+  "bulk_processing": {
+    "default_months": 3,
+    "batch_size": 10,
+    "max_messages_per_run": 2000,
+    "request_delay_ms": 200
+  },
+
+  "allowed_attachment_extensions": [
+    ".pdf", ".csv",  ".docx", ".doc", ".txt", ".md"
+  ],
+
+  "llm_defaults": {
+    "model": "gpt-4o-mini",
+    "embedding_model": "text-embedding-3-small"
+  }
+}

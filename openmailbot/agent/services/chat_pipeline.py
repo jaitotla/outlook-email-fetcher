@@ -131,7 +131,22 @@ class ChatWithThreadPipeline:
         else:
             # Fallback to empty dict
             self.effective_settings = {}
-        
+
+        # Apply inbuilt defaults for any critical fields that are missing/empty.
+        # This ensures the pipeline works even if the user hasn't completed onboarding
+        # or the settings sync to the backend failed for some reason.
+        _INBUILT_DEFAULTS = {
+            "vector_provider"    : "inbuilt",
+            "embedding_provider" : "inbuilt",
+            "llm_provider"       : "inbuilt",
+            "embedding_model"    : "text-embedding-3-small",
+            "llm_model"          : "gpt-4o-mini",
+        }
+        for _key, _default in _INBUILT_DEFAULTS.items():
+            if not self.effective_settings.get(_key):
+                self.effective_settings[_key] = _default
+                logger.info(f"Settings default applied: {_key}={_default}")
+
         self.llm_provider = self.effective_settings.get("llm_provider", "inbuilt")
         self.llm_model = self.effective_settings.get("llm_model", "gpt-4o-mini")
         

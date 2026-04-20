@@ -174,6 +174,39 @@ app = FastAPI(
 # Data Storage Pipeline Configuration
 BASE_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
+
+def normalize_thread_id(thread_id: str) -> str:
+    """
+    Normalize a thread ID to a canonical form so that the same email thread
+    submitted from different clients (Gmail Add-on vs Thunderbird) is stored
+    as a single entry in ChromaDB.
+
+    Conversion rules:
+    ┌─────────────────────────────────┬────────────────────────────────────────────┐
+    │ Input format                    │ Output                                      │
+    ├─────────────────────────────────┼────────────────────────────────────────────┤
+    │ Large decimal (X-GM-THRID IMAP) │ Lowercase hex  e.g. "17f1a2b3c4d5e6f7"     │
+    │ 16-char hex (GAS thread.getId)  │ Lowercase hex (unchanged)                   │
+    │ RFC Message-ID  <abc@host>      │ Returned as-is                              │
+    │ Outlook Conversation-ID         │ Returned as-is (stripped)                   │
+    │ Anything else                   │ Stripped of surrounding whitespace          │
+    └─────────────────────────────────┴────────────────────────────────────────────┘
+    """
+    if not thread_id:
+        return thread_id
+    tid = thread_id.strip()
+    # Strip RFC Message-ID angle bracket wrappers: <local@domain> → local@domain
+    if tid.startswith('<') and tid.endswith('>'):
+        tid = tid[1:-1].strip()
+    # Large decimal integer → convert to lowercase hex (X-GM-THRID from IMAP)
+    if re.fullmatch(r'\d{10,20}', tid):
+        try:
+            return format(int(tid), 'x')
+        except (ValueError, OverflowError):
+            pass
+    return tid
+
+
 def get_user_data_dir(user_id: str) -> Dict[str, str]:
     """
     Get all data directories for a specific user.
@@ -412,6 +445,52 @@ def deduplicate_messages(messages):
         processed.append(processed_msg)
     
     return processed
+
+
+def clean_thread_data(user_id: str, thread_id: str):
+    """
+    Delete stored email logs and attachments for a thread after pipeline processing is complete.
+    
+    This function safely removes:
+    - data/{user_id}/log_emails/{thread_id}/
+    - data/{user_id}/store_attachments/{thread_id}/
+    
+    Error handling ensures cleanup failures don't break the main pipeline.
+    
+    Args:
+        user_id: The user's ID
+        thread_id: The normalized thread ID (already normalized via normalize_thread_id())
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        user_dirs = get_user_data_dir(user_id)
+        
+        # Path 1: Delete log_emails/{thread_id}
+        log_thread_path = os.path.join(user_dirs["log_emails"], thread_id)
+        if os.path.exists(log_thread_path):
+            try:
+                import shutil
+                shutil.rmtree(log_thread_path)
+                logger.info(f"   [cleanup] Deleted log_emails: {log_thread_path}")
+            except Exception as e:
+                logger.warning(f"   [cleanup] Failed to delete log_emails {log_thread_path}: {str(e)}")
+        
+        # Path 2: Delete store_attachments/{thread_id}
+        attachments_thread_path = os.path.join(user_dirs["attachments"], thread_id)
+        if os.path.exists(attachments_thread_path):
+            try:
+                import shutil
+                shutil.rmtree(attachments_thread_path)
+                logger.info(f"   [cleanup] Deleted attachments: {attachments_thread_path}")
+            except Exception as e:
+                logger.warning(f"   [cleanup] Failed to delete attachments {attachments_thread_path}: {str(e)}")
+        
+        logger.info(f"✅ Cleanup complete for thread {thread_id}")
+        
+    except Exception as e:
+        logger.warning(f"   [cleanup] Unexpected error during cleanup: {str(e)}", exc_info=True)
+        # Note: Don't raise - cleanup failures should not break the pipeline
 
 
 # Request/Response Models
@@ -922,14 +1001,21 @@ async def chat_with_thread(request: ChatWithThreadRequest, background_tasks: Bac
 
 def _run_chat_pipeline(job_id: str, request: ChatWithThreadRequest):
     _set_job(job_id, "processing")
+    logger = logging.getLogger(__name__)
     try:
         chat_pipeline = ChatWithThreadPipeline(user_id=request.user_id)
+        norm_thread_id = normalize_thread_id(request.thread_id)
         result = chat_pipeline.process_and_chat(
             request.user_id,
-            request.thread_id,
+            norm_thread_id,
             request.question,
         )
         _set_job(job_id, "done", result=result)
+        
+        # ─ Cleanup stored email data and attachments after pipeline completes ─
+        logger.info(f"   [job {job_id}] Pipeline complete, starting cleanup...")
+        clean_thread_data(request.user_id, norm_thread_id)
+        
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -949,19 +1035,20 @@ async def reset_and_reprocess_thread(request: ChatWithThreadRequest):
     This will delete old embeddings and re-embed all emails and attachments
     with the correct metadata structure.
     """
-    import logger
+    logger = logging.getLogger(__name__)
     try:
         chat_pipeline = ChatWithThreadPipeline(user_id=request.user_id)
+        norm_thread_id = normalize_thread_id(request.thread_id)
         
         # Step 1: Clear old embeddings
-        logger.info(f"🧹 Clearing embeddings for thread {request.thread_id}")
-        clear_info = chat_pipeline.clear_thread_embeddings(request.user_id, request.thread_id)
+        logger.info(f"🧹 Clearing embeddings for thread {norm_thread_id}")
+        clear_info = chat_pipeline.clear_thread_embeddings(request.user_id, norm_thread_id)
         
         # Step 2: Re-process emails and attachments
         logger.info(f"🔄 Re-processing thread with new metadata structure")
         result = chat_pipeline.process_and_chat(
             request.user_id,
-            request.thread_id,
+            norm_thread_id,
             request.question
         )
         
@@ -992,14 +1079,21 @@ async def draft_with_attachments(request: DraftWithAttachmentsRequest, backgroun
 
 def _run_draft_pipeline(job_id: str, request: DraftWithAttachmentsRequest):
     _set_job(job_id, "processing")
+    logger = logging.getLogger(__name__)
     try:
         draft_pipeline = DraftPipeline(user_id=request.user_id)
+        norm_thread_id = normalize_thread_id(request.thread_id)
         result = asyncio.run(draft_pipeline.process_email_request(
             request.user_id,
-            request.thread_id,
+            norm_thread_id,
             request.user_preferences,
         ))
         _set_job(job_id, "done", result=result)
+        
+        # ─ Cleanup stored email data and attachments after pipeline completes ─
+        logger.info(f"   [job {job_id}] Draft pipeline complete, starting cleanup...")
+        clean_thread_data(request.user_id, norm_thread_id)
+        
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1010,14 +1104,21 @@ def _run_draft_pipeline(job_id: str, request: DraftWithAttachmentsRequest):
 
 def _run_simple_draft_pipeline(job_id: str, request: SimpleDraftRequest):
     _set_job(job_id, "processing")
+    logger = logging.getLogger(__name__)
     try:
         pipeline = SimpleDraftPipeline(user_id=request.user_id)
+        norm_thread_id = normalize_thread_id(request.thread_id)
         result = asyncio.run(pipeline.process_email_request(
             request.user_id,
-            request.thread_id,
+            norm_thread_id,
             request.user_preferences,
         ))
         _set_job(job_id, "done", result=result)
+        
+        # ─ Cleanup stored email data and attachments after pipeline completes ─
+        logger.info(f"   [job {job_id}] Simple draft pipeline complete, starting cleanup...")
+        clean_thread_data(request.user_id, norm_thread_id)
+        
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1091,13 +1192,20 @@ async def summarize_thread(request: SummarizeThreadRequest, background_tasks: Ba
 def _run_summarization_pipeline(job_id: str, request: SummarizeThreadRequest):
     """Background task for summarization pipeline"""
     _set_job(job_id, "processing")
+    logger = logging.getLogger(__name__)
     try:
         summarization_pipeline = SummarizationPipeline(user_id=request.user_id)
+        norm_thread_id = normalize_thread_id(request.thread_id)
         result = summarization_pipeline.process_and_summarize(
             user_id=request.user_id,
-            thread_id=request.thread_id
+            thread_id=norm_thread_id
         )
         _set_job(job_id, "done", result=result)
+        
+        # ─ Cleanup stored email data and attachments after pipeline completes ─
+        logger.info(f"   [job {job_id}] Summarization pipeline complete, starting cleanup...")
+        clean_thread_data(request.user_id, norm_thread_id)
+        
     except Exception as e:
         print(f"❌ Summarization pipeline error: {str(e)}")
         import traceback
@@ -1171,13 +1279,19 @@ async def log_email_data(request: LogEmailRequest):
     try:
         if not request.messages:
             raise HTTPException(status_code=400, detail="No messages provided")
-        
+
+        # Normalize thread_id so Gmail Add-on (hex) and Thunderbird (X-GM-THRID decimal)
+        # map to the identical key, preventing duplicate ChromaDB entries.
+        thread_id = normalize_thread_id(request.thread_id)
+        if thread_id != request.thread_id:
+            logger.info(f"   Thread ID normalized: {request.thread_id!r} → {thread_id!r}")
+
         # Get user's data directories
         user_dirs = get_user_data_dir(request.user_id)
         log_dir = user_dirs["log_emails"]
         
         # Create thread folder: data/{user_id}/log_emails/thread_xxx/
-        thread_folder = os.path.join(log_dir, request.thread_id)
+        thread_folder = os.path.join(log_dir, thread_id)
         os.makedirs(thread_folder, exist_ok=True)
         
         # Convert messages to dict format for deduplication
@@ -1197,12 +1311,12 @@ async def log_email_data(request: LogEmailRequest):
         clean_messages = deduplicate_messages(messages_dict)
         
         # Save as single JSON file: thread_id.json
-        filename = f"{request.thread_id}.json"
+        filename = f"{thread_id}.json"
         filepath = os.path.join(thread_folder, filename)
         
         # Prepare output data with cleaned messages
         output_data = {
-            'thread_id': request.thread_id,
+            'thread_id': thread_id,
             'user_id': request.user_id,
             'messages': clean_messages,
             'metadata': {
@@ -1222,7 +1336,7 @@ async def log_email_data(request: LogEmailRequest):
             "success": True,
             "message": f"Saved {len(clean_messages)} messages (cleaned from {len(request.messages)} original)",
             "user_id": request.user_id,
-            "thread_id": request.thread_id,
+            "thread_id": thread_id,
             "filepath": filepath,
             "original_count": len(request.messages),
             "clean_count": len(clean_messages)
@@ -1284,14 +1398,15 @@ async def label_email_data(request: LogEmailRequest):
     logger.info(f"   Thread: {request.thread_id}")
     logger.info(f"   Messages count: {len(request.messages) if request.messages else 0}")
     
-    # Initialize lock book for this user
-    lockbook = get_user_lockbook(request.user_id)
-    global_lockbook = get_global_lockbook()
-    
     try:
         if not request.messages:
             raise HTTPException(status_code=400, detail="No messages provided")
-        
+
+        # Normalize thread_id to prevent duplicate ChromaDB entries from different clients
+        thread_id = normalize_thread_id(request.thread_id)
+        if thread_id != request.thread_id:
+            logger.info(f"   Thread ID normalized: {request.thread_id!r} → {thread_id!r}")
+
         # Convert messages to dict format for preprocessing
         messages_dict = [
             {
@@ -1316,17 +1431,17 @@ async def label_email_data(request: LogEmailRequest):
         log_dir = user_dirs["log_emails"]
         
         # Create thread folder: data/{user_id}/log_emails/thread_xxx/
-        thread_folder = os.path.join(log_dir, request.thread_id)
+        thread_folder = os.path.join(log_dir, thread_id)
         os.makedirs(thread_folder, exist_ok=True)
         
         # Save preprocessed messages with "preprocessed_" prefix
-        last_msg_id = request.messages[-1].message_id if request.messages else request.thread_id
+        last_msg_id = request.messages[-1].message_id if request.messages else thread_id
         preprocessed_filename = f"{last_msg_id}.json"
         preprocessed_filepath = os.path.join(thread_folder, preprocessed_filename)
         
         # Prepare output data with preprocessed messages
         preprocessed_output_data = {
-            'thread_id': request.thread_id,
+            'thread_id': thread_id,
             'user_id': request.user_id,
             'messages': processed_messages,
             'metadata': {
@@ -1342,38 +1457,6 @@ async def label_email_data(request: LogEmailRequest):
             json.dump(preprocessed_output_data, f, indent=2, ensure_ascii=False)
         
         logger.info(f"   Stored preprocessed messages to: {preprocessed_filepath}")
-        
-        # Step 1.6: Embed preprocessed messages and attachments into vector DB
-        # Run both async store pipelines concurrently
-        try:
-            email_store_result, attachment_store_result = await asyncio.gather(
-                CheckAndStoreEmailPipeline(user_id=request.user_id).run(
-                    request.user_id,
-                    request.thread_id,
-                    processed_messages,
-                ),
-                CheckAndStoreAttachmentsPipeline(user_id=request.user_id).run(
-                    request.user_id,
-                    request.thread_id,
-                ),
-                return_exceptions=True
-            )
-
-            
-            # Log results (handling any exceptions returned)
-            if isinstance(email_store_result, Exception):
-                logger.warning(f"   Email vector store failed: {email_store_result}")
-            else:
-                logger.info(f"   Email vector store: {email_store_result}")
-            
-            if isinstance(attachment_store_result, Exception):
-                logger.warning(f"   Attachment vector store failed: {attachment_store_result}")
-            else:
-                logger.info(f"   Attachment vector store: {attachment_store_result}")
-                
-        except Exception as store_exc:
-            # Non-fatal: log but continue with labeling
-            logger.warning(f"   Vector store step failed (non-fatal): {store_exc}")
         
         # Step 2: Label the thread using the processed messages
         # Get OpenAI API key from environment or config
@@ -1391,41 +1474,18 @@ async def label_email_data(request: LogEmailRequest):
             None,
             partial(
                 label_pipeline.label_and_store_thread,
-                thread_id=request.thread_id,
+                thread_id=thread_id,
                 messages=processed_messages,
             )
         )
         
         label = label_and_store_result["label_result"]
-        graph_status = label_and_store_result["graph_store_result"]
         
-        logger.info(f"✅ Email labeled and stored: {label}")
-        logger.info(f"   Graph storage status: {graph_status.get('status')}")
+        logger.info(f"✅ Email labeled: {label}")
         
-        # Determine if graph storage was successful
-        num_graph_stored = len(processed_messages) if graph_status.get("status") == "SUCCESS" else 0
-        
-        # Log to lock book
-        lockbook.log_request(
-            thread_id=request.thread_id,
-            label=label["label"],
-            num_labeled=len(processed_messages),
-            num_graph_stored=num_graph_stored,
-            status="SUCCESS"
-        )
-        
-        # Also log to global lock book
-        global_lockbook.log_request(
-            thread_id=request.thread_id,
-            label=label["label"],
-            num_labeled=len(processed_messages),
-            num_graph_stored=num_graph_stored,
-            status="SUCCESS"
-        )
-        
-        logger.info(f"📝 Lock book updated")
-        logger.info(f"   User metrics saved to: data/lockbook/label_email_metrics_{request.user_id}.json")
-        logger.info(f"   Global metrics saved to: data/lockbook/label_email_metrics_global.json")
+        # ─ Cleanup stored email data and attachments after pipeline completes ─
+        logger.info(f"   Labeling complete, starting cleanup...")
+        clean_thread_data(request.user_id, thread_id)
         
         return {
             "success": True,
@@ -1434,10 +1494,10 @@ async def label_email_data(request: LogEmailRequest):
             "topic": label["topic"],
             "subtopic": label["subtopic"],
             "user_id": request.user_id,
-            "thread_id": request.thread_id,
+            "thread_id": thread_id,
             "messages_processed": len(processed_messages),
-            "graph_store_status": graph_status.get("status"),
-            "graph_store_steps": len(graph_status.get("steps", []))
+            # "graph_store_status": None,  # DISABLED: graph storage
+            # "graph_store_steps": 0          # DISABLED: graph storage
         }
         
     except HTTPException:
@@ -1446,26 +1506,6 @@ async def label_email_data(request: LogEmailRequest):
         logger.error(f"❌ Error labeling email: {str(e)}")
         import traceback
         traceback.print_exc()
-        
-        # Log failure to lock book
-        try:
-            lockbook.log_request(
-                thread_id=request.thread_id,
-                label="error",
-                num_labeled=0,
-                num_graph_stored=0,
-                status="FAILED"
-            )
-            global_lockbook.log_request(
-                thread_id=request.thread_id,
-                label="error",
-                num_labeled=0,
-                num_graph_stored=0,
-                status="FAILED"
-            )
-        except:
-            pass  # Fallback if lock book logging fails
-        
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1650,6 +1690,11 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
     lockbook = get_user_lockbook(request.user_id)
     global_lockbook = get_global_lockbook()
 
+    # Normalize thread_id once — all storage and API calls below use this value
+    thread_id = normalize_thread_id(request.thread_id)
+    if thread_id != request.thread_id:
+        logger.info(f"   [job {job_id}] Thread ID normalized: {request.thread_id!r} → {thread_id!r}")
+
     try:
         # ── Preprocessing ────────────────────────────────────────────────
         messages_dict = [
@@ -1669,13 +1714,13 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
 
         # ── Persist preprocessed emails ──────────────────────────────────
         user_dirs = get_user_data_dir(request.user_id)
-        thread_folder = os.path.join(user_dirs["log_emails"], request.thread_id)
+        thread_folder = os.path.join(user_dirs["log_emails"], thread_id)
         os.makedirs(thread_folder, exist_ok=True)
-        last_msg_id = request.messages[-1].message_id if request.messages else request.thread_id
+        last_msg_id = request.messages[-1].message_id if request.messages else thread_id
         with open(os.path.join(thread_folder, f"{last_msg_id}.json"), "w", encoding="utf-8") as f:
             json.dump(
                 {
-                    "thread_id": request.thread_id,
+                    "thread_id": thread_id,
                     "user_id": request.user_id,
                     "messages": processed_messages,
                     "metadata": {
@@ -1693,9 +1738,9 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
         # ── Save attachments to disk (non-fatal, before vector store) ────
         if request.attachments:
             try:
-                attach_dir = os.path.join(user_dirs["attachments"], request.thread_id)
+                attach_dir = os.path.join(user_dirs["attachments"], thread_id)
                 os.makedirs(attach_dir, exist_ok=True)
-                last_msg_id = request.messages[-1].message_id if request.messages else request.thread_id
+                last_msg_id = request.messages[-1].message_id if request.messages else thread_id
                 saved_attach = []
                 for att in request.attachments:
                     safe_name = "".join(c for c in att.filename if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
@@ -1711,7 +1756,7 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                 with open(att_meta_path, "w", encoding="utf-8") as mf:
                     json.dump({
                         "user_id": request.user_id,
-                        "thread_id": request.thread_id,
+                        "thread_id": thread_id,
                         "message_id": last_msg_id,
                         "timestamp": datetime.utcnow().isoformat(),
                         "attachments": saved_attach,
@@ -1724,8 +1769,8 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
         try:
             await asyncio.wait_for(
                 asyncio.gather(
-                    CheckAndStoreEmailPipeline(user_id=request.user_id).run(request.user_id, request.thread_id, processed_messages),
-                    CheckAndStoreAttachmentsPipeline(user_id=request.user_id).run(request.user_id, request.thread_id),
+                    CheckAndStoreEmailPipeline(user_id=request.user_id).run(request.user_id, thread_id, processed_messages),
+                    CheckAndStoreAttachmentsPipeline(user_id=request.user_id).run(request.user_id, thread_id),
                     return_exceptions=True,
                 ),
                 timeout=_LABEL_PUSH_TIMEOUT_SECONDS,
@@ -1743,19 +1788,19 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
             None,
             partial(
                 label_pipeline.label_and_store_thread,
-                thread_id=request.thread_id,
+                thread_id=thread_id,
                 messages=processed_messages,
             ),
         )
         label_name: str = label_and_store_result["label_result"]["label"]
-        graph_status = label_and_store_result["graph_store_result"]
+        # graph_status = label_and_store_result.get("graph_store_result") or {}  # DISABLED: graph storage
         logger.info(f"   [job {job_id}] Label determined: '{label_name}'")
 
         # ── Push label to Gmail via REST API ──────────────────────────────
         gmail_result: Dict[str, Any] = {}
         if request.access_token:
             logger.info(f"📬 [job {job_id}] Starting Gmail API label push (background task)")
-            logger.info(f"   Thread ID: {request.thread_id}")
+            logger.info(f"   Thread ID: {thread_id}")
             logger.info(f"   Label: '{label_name}'")
             logger.info(f"   Access token: {request.access_token[:20]}..." if len(request.access_token) > 20 else request.access_token)
             try:
@@ -1764,7 +1809,7 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                     None,
                     partial(
                         _apply_gmail_label_sync,
-                        thread_id=request.thread_id,
+                        thread_id=thread_id,
                         label_name=label_name,
                         access_token=request.access_token,
                         logger=logger,
@@ -1782,11 +1827,11 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
             logger.warning(f"⚠️ [job {job_id}] No access_token provided — skipping Gmail API push")
 
         # ── Lock-book metrics ─────────────────────────────────────────────
-        num_stored = len(processed_messages) if graph_status.get("status") == "SUCCESS" else 0
+        num_stored = 0  # Graph storage disabled
         for lb in (lockbook, global_lockbook):
             try:
                 lb.log_request(
-                    thread_id=request.thread_id,
+                    thread_id=thread_id,
                     label=label_name,
                     num_labeled=len(processed_messages),
                     num_graph_stored=num_stored,
@@ -1800,11 +1845,15 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
             "done",
             result={
                 "label": label_name,
-                "thread_id": request.thread_id,
+                "thread_id": thread_id,
                 "messages_processed": len(processed_messages),
                 "gmail_push": gmail_result,
             },
         )
+        
+        # ─ Cleanup stored email data and attachments after pipeline completes ─
+        logger.info(f"   [job {job_id}] Labeling complete, starting cleanup...")
+        clean_thread_data(request.user_id, thread_id)
         
         logger.info(f"✅ JOB COMPLETED SUCCESSFULLY")
         logger.info(f"   Label: '{label_name}'")
@@ -1837,6 +1886,14 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
         except Exception:
             pass
         _set_job(job_id, "error", error=str(e))
+        
+        # ─ Cleanup stored email data and attachments even on error ─
+        try:
+            norm_thread_id = normalize_thread_id(request.thread_id)
+            logger.info(f"   [job {job_id}] Error occurred, attempting cleanup...")
+            clean_thread_data(request.user_id, norm_thread_id)
+        except Exception as cleanup_err:
+            logger.warning(f"   [job {job_id}] Cleanup failed: {str(cleanup_err)}")
 
 
 @app.post("/api/label-email-async", status_code=202)
@@ -1939,13 +1996,18 @@ async def store_attachments(request: StoreAttachmentsRequest):
     try:
         if not request.attachments:
             raise HTTPException(status_code=400, detail="No attachments provided")
-        
+
+        # Normalize thread_id for consistent ChromaDB keying
+        thread_id = normalize_thread_id(request.thread_id)
+        if thread_id != request.thread_id:
+            logger.info(f"   Thread ID normalized: {request.thread_id!r} → {thread_id!r}")
+
         # Get user's data directories
         user_dirs = get_user_data_dir(request.user_id)
         attachment_dir = user_dirs["attachments"]
         
         # Create directory for this thread: data/{user_id}/store_attachments/thread_xxx/
-        thread_dir = os.path.join(attachment_dir, request.thread_id)
+        thread_dir = os.path.join(attachment_dir, thread_id)
         os.makedirs(thread_dir, exist_ok=True)
         
         saved_files = []
@@ -1983,7 +2045,7 @@ async def store_attachments(request: StoreAttachmentsRequest):
         # Create metadata file
         metadata = {
             "user_id": request.user_id,
-            "thread_id": request.thread_id,
+            "thread_id": thread_id,
             "message_id": request.message_id,
             "timestamp": datetime.utcnow().isoformat(),
             "attachments": saved_files
@@ -1999,7 +2061,7 @@ async def store_attachments(request: StoreAttachmentsRequest):
         try:
             attachment_store_result = await CheckAndStoreAttachmentsPipeline(user_id=request.user_id).run(
                 request.user_id,
-                request.thread_id,
+                thread_id,
             )
             logger.info(f"   Attachment vector store: {attachment_store_result}")
         except Exception as store_exc:
@@ -2011,7 +2073,7 @@ async def store_attachments(request: StoreAttachmentsRequest):
             "success": True,
             "message": f"Stored {len(saved_files)} attachments",
             "user_id": request.user_id,
-            "thread_id": request.thread_id,
+            "thread_id": thread_id,
             "saved_files": saved_files,
             "metadata_file": metadata_file,
             "vector_store_result": attachment_store_result
@@ -2157,6 +2219,303 @@ async def get_label_stats(user_id: Optional[str] = None, label: Optional[str] = 
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SETTINGS MANAGEMENT ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SettingsRequest(BaseModel):
+    """Request model for settings operations"""
+    user_id: str = Field(..., description="User email or ID")
+    settings: Optional[Dict[str, Any]] = Field(None, description="Settings object to save")
+
+class SettingsResponse(BaseModel):
+    """Response model for settings operations"""
+    success: bool
+    user_id: str
+    settings: Optional[Dict[str, Any]] = None
+    source: Optional[str] = None  # 'database', 'defaults', 'encrypted'
+    message: Optional[str] = None
+
+@app.get("/api/settings")
+async def get_settings_by_email(user_id: str = None):
+    """
+    Fetch user settings by email/ID
+    
+    **Query Parameters:**
+    - user_id (required): User email address or ID
+    
+    **Returns:**
+    - Settings object with all user configurations
+    - Defaults if user has no saved settings
+    
+    **Example:**
+    ```
+    GET /api/settings?user_id=ankitgoel2004@gmail.com
+    
+    Response:
+    {
+        "success": true,
+        "user_id": "ankitgoel2004@gmail.com",
+        "settings": {
+            "mode": "inbuilt",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            ...
+        },
+        "source": "database"
+    }
+    ```
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Missing required parameter: user_id"
+        )
+    
+    try:
+        manager = SettingsManager(user_id=user_id)
+        settings = manager.get_settings()
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "settings": settings,
+            "source": "database" if settings else "defaults",
+            "message": "Settings retrieved successfully"
+        }
+    except Exception as e:
+        print(f"[Settings] Error fetching settings for {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error fetching settings: {str(e)}"
+        )
+
+@app.post("/api/settings")
+async def save_settings(request: SettingsRequest):
+    """
+    Save or update user settings
+    
+    **Request Body:**
+    ```json
+    {
+        "user_id": "ankitgoel2004@gmail.com",
+        "settings": {
+            "mode": "inbuilt",
+            "llm_provider": "openai",
+            "llm_api_key": "sk-...",
+            "llm_model": "gpt-4o-mini",
+            "user_name": "Ankit Goel",
+            "user_tone": "professional",
+            ...
+        }
+    }
+    ```
+    
+    **Returns:**
+    - Updated settings object
+    - Confirmation message
+    
+    **Example Response:**
+    ```json
+    {
+        "success": true,
+        "user_id": "ankitgoel2004@gmail.com",
+        "settings": { ... },
+        "source": "encrypted",
+        "message": "Settings saved successfully"
+    }
+    ```
+    """
+    if not request.user_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Missing required field: user_id"
+        )
+    
+    if not request.settings:
+        raise HTTPException(
+            status_code=400, 
+            detail="Missing required field: settings"
+        )
+    
+    try:
+        manager = SettingsManager(user_id=request.user_id)
+        saved_settings = manager.save_settings(request.settings)
+        
+        return {
+            "success": True,
+            "user_id": request.user_id,
+            "settings": saved_settings,
+            "source": "encrypted",
+            "message": "Settings saved successfully"
+        }
+    except Exception as e:
+        print(f"[Settings] Error saving settings for {request.user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error saving settings: {str(e)}"
+        )
+
+@app.get("/api/settings/{user_id}")
+async def get_settings_by_path(user_id: str):
+    """
+    Fetch user settings by path parameter
+    
+    Alternative to /api/settings?user_id=... 
+    
+    **Path Parameters:**
+    - user_id: User email or ID (URL encoded)
+    
+    **Returns:**
+    - Settings object with all configurations
+    
+    **Example:**
+    ```
+    GET /api/settings/ankitgoel2004@gmail.com
+    ```
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Missing user_id in path"
+        )
+    
+    try:
+        manager = SettingsManager(user_id=user_id)
+        settings = manager.get_settings()
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "settings": settings,
+            "source": "database" if settings else "defaults",
+            "message": "Settings retrieved successfully"
+        }
+    except Exception as e:
+        print(f"[Settings] Error fetching settings for {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error fetching settings: {str(e)}"
+        )
+
+@app.delete("/api/settings/{user_id}")
+async def delete_settings(user_id: str):
+    """
+    Delete all settings for a user
+    
+    **Path Parameters:**
+    - user_id: User email or ID
+    
+    **Returns:**
+    - Confirmation of deletion
+    
+    **Warning:**
+    This action cannot be undone. All user settings will be reset to defaults.
+    
+    **Example:**
+    ```
+    DELETE /api/settings/ankitgoel2004@gmail.com
+    ```
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Missing user_id in path"
+        )
+    
+    try:
+        manager = SettingsManager(user_id=user_id)
+        manager.clear_settings()
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "message": "Settings deleted successfully. User will use defaults on next login."
+        }
+    except Exception as e:
+        print(f"[Settings] Error deleting settings for {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error deleting settings: {str(e)}"
+        )
+
+@app.get("/api/settings/{user_id}/validate")
+async def validate_settings(user_id: str):
+    """
+    Validate that settings are properly configured
+    
+    **Returns:**
+    - Validation status for each provider
+    - Any configuration issues
+    
+    **Example:**
+    ```
+    GET /api/settings/ankitgoel2004@gmail.com/validate
+    
+    Response:
+    {
+        "success": true,
+        "user_id": "ankitgoel2004@gmail.com",
+        "valid": true,
+        "checks": {
+            "llm_provider": "✅ openai configured",
+            "embedding_provider": "✅ inbuilt",
+            "vector_provider": "✅ inbuilt"
+        }
+    }
+    ```
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Missing user_id in path"
+        )
+    
+    try:
+        manager = SettingsManager(user_id=user_id)
+        settings = manager.get_settings()
+        
+        checks = {}
+        valid = True
+        
+        # Validate LLM provider
+        llm_provider = settings.get("llm_provider", "inbuilt")
+        if llm_provider == "custom" and not settings.get("llm_api_key"):
+            checks["llm_provider"] = "⚠️ API key required for custom provider"
+            valid = False
+        else:
+            checks["llm_provider"] = f"✅ {llm_provider} configured"
+        
+        # Validate embedding provider
+        emb_provider = settings.get("embedding_provider", "inbuilt")
+        if emb_provider == "custom" and not settings.get("embedding_api_key"):
+            checks["embedding_provider"] = "⚠️ API key required for custom provider"
+            valid = False
+        else:
+            checks["embedding_provider"] = f"✅ {emb_provider} configured"
+        
+        # Validate vector provider
+        vec_provider = settings.get("vector_provider", "inbuilt")
+        if vec_provider == "custom" and not settings.get("vector_url"):
+            checks["vector_provider"] = "⚠️ URL required for custom provider"
+            valid = False
+        else:
+            checks["vector_provider"] = f"✅ {vec_provider} configured"
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "valid": valid,
+            "checks": checks
+        }
+    except Exception as e:
+        print(f"[Settings] Error validating settings for {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error validating settings: {str(e)}"
+        )
 
 
 @app.get("/api/label-email/summary")

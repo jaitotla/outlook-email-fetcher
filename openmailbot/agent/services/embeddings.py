@@ -59,12 +59,7 @@ class EmbeddingService:
         #self.embedding_api_url = settings.EMBEDDING_API_URL if hasattr(settings, 'EMBEDDING_API_URL') else None
         
         # Vector DB config
-        vector_db_provider = self.effective_settings.get("vector_provider") 
-        a=self.effective_settings.get("vector_provider")
-        logger.info(f" look at the userid {a} ")
-        logger.info(f" look at the userid {a} ")
-        logger.info(f" look at the userid {a} ")
-        logger.info(f" look at the userid {a} ")
+        vector_db_provider = self.effective_settings.get("vector_provider")
         
         
         # Initialize vector client via factory
@@ -142,7 +137,7 @@ class EmbeddingService:
             return await self._embed_gemini(text)
         elif provider == "sentence-transformers":
             return await self._embed_sentence_transformers(text)
-        elif provider == "inbuilt":
+        elif provider in ("inbuilt", "manotr"):
             return await self._embed_inbuilt(text)
         else:
             # Fallback to inbuilt

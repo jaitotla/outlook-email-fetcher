@@ -33,8 +33,8 @@ def get_vector_client(provider: str, settings: Optional[Dict[str, Any]] = None) 
     elif provider == "weaviate":
         from .weaviate_client import WeaviateClient
         return WeaviateClient(settings=settings)
-    elif provider == "inbuilt":
-        # Inbuilt mode uses tenant's Chroma instance
+    elif provider in ("inbuilt", "manotr"):
+        # Inbuilt/manotr mode uses tenant's Chroma instance
         return ChromaDBClient(settings=settings, inbuilt_mode=True)
     else:
         raise ValueError(f"Unsupported vector DB provider: {provider}. "

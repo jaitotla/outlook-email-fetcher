@@ -337,7 +337,7 @@ class LLMService:
             return await self._call_gemini(messages, model or "gemini-1.5-pro", temperature, max_tokens)
         elif provider == "ollama":
             return await self._call_ollama(messages, model, temperature)
-        elif provider == "inbuilt":
+        elif provider in ("inbuilt", "manotr"):
             return await self._call_inbuilt(messages, model, temperature)
         else:
             raise ProviderError(provider, f"Unsupported LLM provider: {provider}")

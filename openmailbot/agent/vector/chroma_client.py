@@ -44,12 +44,16 @@ class ChromaDBClient(BaseVectorStore):
             "..", "data", user_id, "vector_db"
         )
         os.makedirs(persistent_path, exist_ok=True)
+        self.persistent_path = persistent_path
+        self._fix_permissions()
 
         try:
             self.client = chromadb.PersistentClient(
                 path=persistent_path,
                 settings=ChromaSettings(anonymized_telemetry=False)
             )
+            # Fix permissions again to catch any files created during client init
+            self._fix_permissions()
             logger.info(f"Initialized local persistent ChromaDB at {persistent_path}")
         except Exception as e:
             raise ConnectionError(
@@ -60,6 +64,31 @@ class ChromaDBClient(BaseVectorStore):
         self._persistent = True
         self.user_id = user_id
     
+    def _fix_permissions(self) -> bool:
+        """Recursively ensure the chromadb directory and all its files are writable.
+
+        Returns True if all chmod calls succeeded.  Returns False when any call
+        fails, which usually means the files are owned by a different OS user and
+        require a ``chown`` fix at the OS level.
+        """
+        all_ok = True
+        for dirpath, _dirnames, filenames in os.walk(self.persistent_path):
+            try:
+                dir_mode = os.stat(dirpath).st_mode
+                os.chmod(dirpath, dir_mode | 0o700)
+            except OSError as e:
+                logger.warning(f"Could not chmod dir {dirpath}: {e}")
+                all_ok = False
+            for fname in filenames:
+                fpath = os.path.join(dirpath, fname)
+                try:
+                    file_mode = os.stat(fpath).st_mode
+                    os.chmod(fpath, file_mode | 0o600)
+                except OSError as e:
+                    logger.warning(f"Could not chmod file {fpath}: {e}")
+                    all_ok = False
+        return all_ok
+
     def _get_collection(self, namespace: str):
         """Get or create collection for namespace"""
         if namespace not in self.collections:
@@ -92,14 +121,31 @@ class ChromaDBClient(BaseVectorStore):
         
         # ChromaDB requires documents for text storage
         document = metadata.pop("text", "") if "text" in metadata else ""
-        
-        collection.upsert(
-            ids=[vector_id],
-            embeddings=[embedding],
-            metadatas=[metadata],
-            documents=[document] if document else None
-        )
-        
+
+        def _do_upsert() -> None:
+            collection.upsert(
+                ids=[vector_id],
+                embeddings=[embedding],
+                metadatas=[metadata],
+                documents=[document] if document else None
+            )
+
+        try:
+            _do_upsert()
+        except Exception as e:
+            if "readonly" in str(e).lower():
+                fixed = self._fix_permissions()
+                if not fixed:
+                    raise PermissionError(
+                        f"ChromaDB at '{self.persistent_path}' is read-only and permissions "
+                        f"could not be fixed automatically (files are likely owned by another "
+                        f"OS user). Fix with: "
+                        f"sudo chown -R $(whoami) {self.persistent_path}"
+                    ) from e
+                _do_upsert()
+            else:
+                raise
+
         return vector_id
     
     async def upsert_batch(
@@ -124,13 +170,30 @@ class ChromaDBClient(BaseVectorStore):
             documents.append(meta_copy.pop("text", ""))
             clean_metadatas.append(meta_copy)
         
-        collection.upsert(
-            ids=vector_ids,
-            embeddings=embeddings,
-            metadatas=clean_metadatas,
-            documents=documents if any(documents) else None
-        )
-        
+        def _do_upsert_batch() -> None:
+            collection.upsert(
+                ids=vector_ids,
+                embeddings=embeddings,
+                metadatas=clean_metadatas,
+                documents=documents if any(documents) else None
+            )
+
+        try:
+            _do_upsert_batch()
+        except Exception as e:
+            if "readonly" in str(e).lower():
+                fixed = self._fix_permissions()
+                if not fixed:
+                    raise PermissionError(
+                        f"ChromaDB at '{self.persistent_path}' is read-only and permissions "
+                        f"could not be fixed automatically (files are likely owned by another "
+                        f"OS user). Fix with: "
+                        f"sudo chown -R $(whoami) {self.persistent_path}"
+                    ) from e
+                _do_upsert_batch()
+            else:
+                raise
+
         return vector_ids
     
     async def query(
