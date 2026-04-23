@@ -1,0 +1,33 @@
+---
+title: "Process Flow: Vector Embedding & Storage"
+---
+flowchart TB
+    START["New email/attachment content"] --> PREP["Prepare text for embedding"]
+    
+    PREP --> EMBED_PROV{"Embedding<br/>provider?"}
+    
+    EMBED_PROV -->|openai| E1["openai.embeddings.create()"]
+    EMBED_PROV -->|nomic| E2["nomic SDK"]
+    EMBED_PROV -->|gemini| E3["genai.embed_content()"]
+    EMBED_PROV -->|sentence-transformers| E4["SentenceTransformer.encode()"]
+    EMBED_PROV -->|inbuilt| E5["POST {FLASK_URL}/embed"]
+    
+    E1 --> VECTOR["List[float] embedding"]
+    E2 --> VECTOR
+    E3 --> VECTOR
+    E4 --> VECTOR
+    E5 --> VECTOR
+    
+    VECTOR --> META["Prepare metadata<br/>{thread_id, message_id, type,<br/>subject, from, document}"]
+    
+    META --> VDB_PROV{"Vector DB<br/>provider?"}
+    
+    VDB_PROV -->|chroma| V1["ChromaDB<br/>Persistent per-user:<br/>data/{user_id}/vector_db/"]
+    VDB_PROV -->|pinecone| V2["Pinecone<br/>Cloud-hosted"]
+    VDB_PROV -->|weaviate| V3["Weaviate<br/>HTTP client"]
+    VDB_PROV -->|inbuilt| V4["ChromaDB<br/>(inbuilt mode)"]
+    
+    V1 --> TRACK["Mark as processed<br/>in per-user SQLite"]
+    V2 --> TRACK
+    V3 --> TRACK
+    V4 --> TRACK

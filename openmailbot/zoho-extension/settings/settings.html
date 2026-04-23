@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenMailBot Settings</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    h1 {
+      color: #1976D2;
+      margin-top: 0;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: #333;
+    }
+    
+    input, select {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    
+    input:focus, select:focus {
+      outline: none;
+      border-color: #2196F3;
+    }
+    
+    .help-text {
+      font-size: 12px;
+      color: #666;
+      margin-top: 5px;
+    }
+    
+    .save-btn {
+      background: #2196F3;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 500;
+      width: 100%;
+    }
+    
+    .save-btn:hover {
+      background: #1976D2;
+    }
+    
+    .status-message {
+      padding: 12px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+      display: none;
+    }
+    
+    .status-message.success {
+      background: #e8f5e9;
+      color: #2e7d32;
+      border: 1px solid #81c784;
+    }
+    
+    .status-message.error {
+      background: #ffebee;
+      color: #c62828;
+      border: 1px solid #ef5350;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🤖 OpenMailBot Settings</h1>
+    
+    <div id="statusMessage" class="status-message"></div>
+    
+    <form id="settingsForm">
+      <div class="form-group">
+        <label for="apiKey">API Key *</label>
+        <input type="password" id="apiKey" required>
+        <div class="help-text">Your OpenMailBot API key. Get one from the dashboard.</div>
+      </div>
+      
+      <div class="form-group">
+        <label for="userId">User ID</label>
+        <input type="text" id="userId">
+        <div class="help-text">Optional: Your user identifier for analytics</div>
+      </div>
+      
+      <div class="form-group">
+        <label for="llmProvider">LLM Provider</label>
+        <select id="llmProvider">
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic Claude</option>
+          <option value="ollama">Ollama (Local)</option>
+        </select>
+        <div class="help-text">Choose your preferred AI model provider</div>
+      </div>
+      
+      <div class="form-group">
+        <label for="tone">Reply Tone</label>
+        <select id="tone">
+          <option value="professional">Professional</option>
+          <option value="friendly">Friendly</option>
+          <option value="concise">Concise</option>
+          <option value="detailed">Detailed</option>
+        </select>
+        <div class="help-text">Default tone for AI-generated replies</div>
+      </div>
+      
+      <div class="form-group">
+        <label for="backendUrl">Backend URL</label>
+        <input type="url" id="backendUrl" value="https://api.openmailbot.com">
+        <div class="help-text">Advanced: Override default backend URL</div>
+      </div>
+      
+      <button type="submit" class="save-btn">💾 Save Settings</button>
+    </form>
+  </div>
+  
+  <script src="settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+---
+title: "Process Flow: End-to-End Email Processing"
+---
+flowchart LR
+    subgraph Phase1["Phase 1: Email Arrival"]
+        A1[Email received in Gmail] --> A2[Gmail Add-on triggers]
+        A2 --> A3["POST /api/log-email"]
+        A3 --> A4["Clean & store to disk"]
+    end
+    
+    subgraph Phase2["Phase 2: Label & Classify"]
+        B1["POST /api/label-email"] --> B2[Preprocess emails]
+        B2 --> B3["Embed → Vector DB"]
+        B3 --> B4{"Rule match?"}
+        B4 -->|Yes| B5[Rule label]
+        B4 -->|No| B6[LLM label]
+        B5 --> B7[Enrich metadata]
+        B6 --> B7
+        B7 --> B8["Store in Neo4j graph"]
+        B8 --> B9["Push label to Gmail"]
+    end
+    
+    subgraph Phase3["Phase 3: User Interaction"]
+        C1["User asks question<br/>or requests draft"] --> C2{"Chat or Draft?"}
+        C2 -->|Chat| C3["RAG: search emails<br/>+ attachments"]
+        C2 -->|Draft| C4["Retrieve attachment<br/>context"]
+        C3 --> C5["LLM generates answer"]
+        C4 --> C6["LLM generates draft"]
+    end
+    
+    Phase1 --> Phase2
+    Phase2 --> Phase3

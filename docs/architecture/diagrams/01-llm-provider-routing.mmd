@@ -1,0 +1,25 @@
+---
+title: LLM Service — Provider Routing
+---
+flowchart TD
+    A[LLMService.generate] --> B{provider?}
+    
+    B -->|openai| C{model starts with gpt-5?}
+    C -->|Yes| D["_call_openai_responses()<br/>POST /v1/responses"]
+    C -->|No| E["_call_openai()<br/>openai.chat.completions.create()"]
+    
+    B -->|anthropic| F["_call_anthropic()<br/>anthropic.messages.create()"]
+    
+    B -->|gemini| G["_call_gemini()<br/>genai.GenerativeModel()"]
+    
+    B -->|ollama| H["_call_ollama()<br/>POST localhost:11434/api/chat"]
+    
+    B -->|inbuilt| I["_call_inbuilt()<br/>→ utils.call_chat_api()"]
+    I --> J["POST {FLASK_URL}/chat"]
+    
+    D --> K[Return response text]
+    E --> K
+    F --> K
+    G --> K
+    H --> K
+    J --> K

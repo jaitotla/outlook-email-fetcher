@@ -1,0 +1,52 @@
+---
+title: "Process Flow: Hybrid Chat RAG (Detailed)"
+---
+sequenceDiagram
+    participant User
+    participant ChatPipeline
+    participant SQLite
+    participant EmbeddingService
+    participant ChromaDB
+    participant OpenAI_TC as OpenAI (Tool Calling)
+    participant LLM as LLM (Final Answer)
+    
+    User->>ChatPipeline: process_and_chat(user_id, thread_id, question)
+    
+    Note over ChatPipeline: Phase 1: Embed unprocessed data
+    ChatPipeline->>SQLite: Get processed message IDs
+    SQLite-->>ChatPipeline: Set of processed IDs
+    ChatPipeline->>ChatPipeline: Filter unprocessed messages
+    
+    loop For each unprocessed message
+        ChatPipeline->>EmbeddingService: generate_embedding(text)
+        EmbeddingService-->>ChatPipeline: embedding vector
+        ChatPipeline->>ChromaDB: Store (id, embedding, metadata)
+        ChatPipeline->>SQLite: Mark as processed
+    end
+    
+    loop For each unprocessed attachment
+        ChatPipeline->>ChatPipeline: Extract text (PDF/CSV/PPTX)
+        loop For each chunk
+            ChatPipeline->>EmbeddingService: generate_embedding(chunk)
+            EmbeddingService-->>ChatPipeline: embedding vector
+            ChatPipeline->>ChromaDB: Store (id, embedding, metadata)
+        end
+        ChatPipeline->>SQLite: Mark attachment processed
+    end
+    
+    Note over ChatPipeline: Phase 2: Tool calling
+    ChatPipeline->>OpenAI_TC: Bind tools + user question
+    OpenAI_TC-->>ChatPipeline: Tool calls [search_emails, search_attachments]
+    
+    Note over ChatPipeline: Phase 3: Semantic search
+    loop For each tool call
+        ChatPipeline->>EmbeddingService: generate_embedding(query)
+        EmbeddingService-->>ChatPipeline: query embedding
+        ChatPipeline->>ChromaDB: Query(embedding, filter, limit)
+        ChromaDB-->>ChatPipeline: Ranked results with metadata
+    end
+    
+    Note over ChatPipeline: Phase 4: Generate answer
+    ChatPipeline->>LLM: System prompt + user question + retrieved context
+    LLM-->>ChatPipeline: Final answer
+    ChatPipeline-->>User: {success, answer, processing_info}

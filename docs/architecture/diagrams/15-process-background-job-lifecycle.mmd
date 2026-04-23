@@ -1,0 +1,37 @@
+---
+title: "Process Flow: Background Job Lifecycle"
+---
+sequenceDiagram
+    participant Client
+    participant Backend
+    participant Agent
+    participant JobStore
+    participant Pipeline
+    
+    Client->>Backend: POST /api/chat/thread
+    Backend->>Agent: POST /api/chat-with-thread
+    Agent->>JobStore: Create job (status: pending)
+    Agent-->>Backend: {job_id, status: "pending"}
+    Backend-->>Client: {job_id, status: "pending"}
+    
+    Agent->>Pipeline: Start background task
+    Agent->>JobStore: Update (status: processing)
+    
+    loop Poll every 2-3 seconds
+        Client->>Backend: GET /api/chat/job-status/{job_id}
+        Backend->>Agent: GET /api/job-status/{job_id}
+        Agent->>JobStore: Check status
+        JobStore-->>Agent: {status: "processing"}
+        Agent-->>Backend: {status: "processing"}
+        Backend-->>Client: {status: "processing"}
+    end
+    
+    Pipeline-->>Agent: Processing complete
+    Agent->>JobStore: Update (status: done, result: {...})
+    
+    Client->>Backend: GET /api/chat/job-status/{job_id}
+    Backend->>Agent: GET /api/job-status/{job_id}
+    Agent->>JobStore: Check status
+    JobStore-->>Agent: {status: "done", result: {...}}
+    Agent-->>Backend: {status: "done", result: {...}}
+    Backend-->>Client: {status: "done", answer: "..."}

@@ -1,0 +1,51 @@
+Hotel Appointment Booking System – Technical Specification
+
+Introduction
+============
+This document describes the technical specification for an online hotel appointment booking system. The system is designed to allow hotel guests to book rooms and services through an intuitive web interface, while providing hotel staff with a powerful management dashboard.
+
+The system aims to reduce phone-based bookings, minimize scheduling conflicts, and improve the overall guest experience. It integrates with existing hotel management software through a REST API.
+
+Target Users
+============
+The primary users of the system fall into two categories. Hotel guests are individuals searching for accommodations who want a seamless digital booking experience. They may book from desktop browsers or mobile devices. Hotel administrators and staff need tools to manage calendars, confirm or reject reservations, and generate occupancy reports.
+
+Core Features
+=============
+The home page presents the hotel's available rooms, amenities, and location information. A prominent "Book Now" button initiates the appointment flow.
+
+The booking form collects the guest's full name, email address, phone number, preferred check-in date, check-out date, room type, number of guests, and any special requests. Validation ensures all required fields are filled before submission.
+
+After submitting the form, a confirmation email is sent to the guest with a unique booking reference number. The booking is also logged in the hotel's reservation database.
+
+The admin dashboard provides a calendar view of all upcoming reservations. Admins can filter by room type, date range, or guest name. They can also mark bookings as confirmed, pending, or cancelled.
+
+Room Management
+===============
+Each room is described by a room ID, floor number, capacity, type (single, double, suite), and price per night. Room availability is tracked in real time. If a room is already booked for a requested date range, the system prevents double-booking.
+
+Room photos and descriptions are stored in a media library and displayed on the booking page. Admins can update room details without developer assistance through a content management panel.
+
+Payment Handling
+================
+In the current version, payment is handled offline at check-in. Future versions will integrate with a payment gateway such as Stripe or PayPal to support online pre-payment and deposit collection.
+
+Refund policies and cancellation windows are configurable per room type. Guests receive automated reminders 48 hours before their arrival.
+
+Non-Functional Requirements
+============================
+The application must be responsive across mobile and desktop devices using a mobile-first CSS framework. Page load times should be under two seconds on a standard broadband connection.
+
+Security requirements include HTTPS enforcement, input sanitisation to prevent SQL injection and XSS attacks, and role-based access control separating guest and admin capabilities. Passwords are hashed using bcrypt.
+
+The system targets 99.9% uptime with automated health checks and alerting. Database backups run nightly and are stored in an off-site S3 bucket.
+
+Technology Stack
+================
+The frontend is built with React and Tailwind CSS. The backend is a Node.js Express API connected to a PostgreSQL database. Authentication uses JWT tokens stored in HTTP-only cookies. The application is deployed on AWS using Elastic Beanstalk with an RDS managed database.
+
+Logging is implemented with Winston and shipped to a centralised Elasticsearch cluster for monitoring and alerting.
+
+Success Criteria
+================
+The system is considered successful when guests can complete a booking in under three minutes, admin staff can locate any reservation within five seconds, and the booking confirmation email is delivered within 30 seconds of submission. Uptime must meet the 99.9% SLA target over any rolling 30-day window.

@@ -1,0 +1,17 @@
+---
+title: Embedding Provider Routing
+---
+flowchart TD
+    A[EmbeddingService.generate_embedding] --> B{provider?}
+    
+    B -->|openai| C["openai.embeddings.create()<br/>model: text-embedding-ada-002"]
+    B -->|nomic| D["nomic SDK<br/>model: nomic-embed-text-v1.5"]
+    B -->|gemini| E["genai.embed_content()<br/>model: embedding-001"]
+    B -->|sentence-transformers| F["SentenceTransformer.encode()<br/>model: all-MiniLM-L6-v2"]
+    B -->|inbuilt| G["utils.call_embed_api()<br/>POST {FLASK_URL}/embed"]
+    
+    C --> H["List[float] embedding"]
+    D --> H
+    E --> H
+    F --> H
+    G --> H

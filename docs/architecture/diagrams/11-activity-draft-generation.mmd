@@ -1,0 +1,32 @@
+---
+title: "Activity Diagram: Draft Generation"
+---
+flowchart TD
+    START((Start)) --> USER_REQ["User requests draft<br/>for email thread"]
+    
+    USER_REQ --> FE_SEND["Frontend sends<br/>POST /api/draft/with-attachments"]
+    
+    FE_SEND --> BE_FWD["Backend verifies user<br/>Forwards to Agent"]
+    
+    BE_FWD --> AG_JOB["Agent creates background job"]
+    AG_JOB --> LOAD["Load thread JSON data"]
+    
+    LOAD --> ATT_CHECK{"Attachments<br/>to process?"}
+    ATT_CHECK -->|Yes| ATT_PROC["Extract text from files<br/>(PDF, CSV, PPTX)<br/>Embed → ChromaDB"]
+    ATT_CHECK -->|No| TOOL_PHASE["Tool calling phase"]
+    ATT_PROC --> TOOL_PHASE
+    
+    TOOL_PHASE --> TOOL_DECIDE{"Inbuilt mode?"}
+    TOOL_DECIDE -->|Yes| OPENAI_TOOL["OpenAI decides which<br/>attachment tools to call"]
+    TOOL_DECIDE -->|No| LLM_TOOL["LLMService decides<br/>tool selection"]
+    
+    OPENAI_TOOL --> ATT_RETRIEVE["Retrieve relevant<br/>attachment context"]
+    LLM_TOOL --> ATT_RETRIEVE
+    
+    ATT_RETRIEVE --> COMBINE["Combine:<br/>- Email thread data<br/>- Attachment context<br/>- User preferences"]
+    
+    COMBINE --> GEN["LLMService generates draft<br/>Using system prompt with:<br/>name, position, tone,<br/>custom instructions"]
+    
+    GEN --> RESULT["Draft content ready"]
+    RESULT --> FE_RECV["Frontend receives draft"]
+    FE_RECV --> END((End))

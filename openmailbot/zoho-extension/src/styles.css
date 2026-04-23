@@ -1,0 +1,272 @@
+/**
+ * OpenMailBot - Zoho Mail Extension Styles
+ */
+
+/* Main Panel */
+#openmailbot-panel {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  padding: 20px;
+  background: #ffffff;
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* Header */
+.openmailbot-header {
+  border-bottom: 2px solid #2196F3;
+  padding-bottom: 10px;
+  margin-bottom: 20px;
+}
+
+.openmailbot-header h2 {
+  margin: 0;
+  color: #1976D2;
+  font-size: 20px;
+}
+
+/* Actions Section */
+.openmailbot-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+/* Buttons */
+.btn-primary {
+  background: #2196F3;
+  color: white;
+  border: none;
+  padding: 12px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s;
+  text-align: left;
+}
+
+.btn-primary:hover {
+  background: #1976D2;
+}
+
+.btn-secondary {
+  background: #f5f5f5;
+  color: #333;
+  border: 1px solid #ddd;
+  padding: 12px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s;
+  text-align: left;
+}
+
+.btn-secondary:hover {
+  background: #e0e0e0;
+}
+
+.btn-filled {
+  background: #2196F3;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.btn-filled:hover {
+  background: #1976D2;
+}
+
+/* Chat Section */
+.openmailbot-chat {
+  background: #f9f9f9;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.openmailbot-chat h3 {
+  margin-top: 0;
+  color: #333;
+  font-size: 16px;
+}
+
+.openmailbot-chat textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.openmailbot-chat textarea:focus {
+  outline: none;
+  border-color: #2196F3;
+}
+
+/* Results Section */
+.openmailbot-results {
+  margin-top: 20px;
+}
+
+.result-card {
+  background: #f9f9f9;
+  border-left: 4px solid #2196F3;
+  padding: 15px;
+  border-radius: 6px;
+  margin-bottom: 15px;
+}
+
+.result-card h3 {
+  margin-top: 0;
+  color: #1976D2;
+  font-size: 16px;
+}
+
+.result-content {
+  color: #333;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* Reply Preview */
+.reply-preview {
+  background: white;
+  border: 1px solid #ddd;
+  padding: 15px;
+  border-radius: 6px;
+  margin: 15px 0;
+  max-height: 300px;
+  overflow-y: auto;
+  line-height: 1.6;
+  color: #333;
+}
+
+.reply-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+  flex-wrap: wrap;
+}
+
+.reply-actions button {
+  flex: 1;
+  min-width: 150px;
+}
+
+.hint {
+  color: #666;
+  font-size: 13px;
+  margin-top: 10px;
+  font-style: italic;
+}
+
+/* Related Emails */
+.related-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.related-item {
+  background: white;
+  border: 1px solid #ddd;
+  padding: 12px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.related-item strong {
+  display: block;
+  color: #333;
+  margin-bottom: 5px;
+}
+
+.related-item small {
+  color: #666;
+  font-size: 12px;
+}
+
+/* Sentiment */
+.sentiment-result {
+  text-align: center;
+  padding: 20px;
+}
+
+.sentiment-emoji {
+  font-size: 64px;
+  margin-bottom: 10px;
+}
+
+.sentiment-label {
+  font-size: 20px;
+  font-weight: bold;
+  color: #333;
+  margin-bottom: 5px;
+}
+
+.sentiment-score {
+  color: #666;
+  font-size: 14px;
+}
+
+/* Loading State */
+.loading {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 15px;
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #2196F3;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.loading p {
+  color: #666;
+  font-size: 14px;
+}
+
+/* Error State */
+.error-card {
+  background: #ffebee;
+  border-left: 4px solid #f44336;
+  padding: 15px;
+  border-radius: 6px;
+  color: #c62828;
+}
+
+/* Onboarding */
+.onboarding {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.onboarding h2 {
+  color: #1976D2;
+  margin-bottom: 15px;
+}
+
+.onboarding p {
+  color: #666;
+  margin-bottom: 25px;
+}

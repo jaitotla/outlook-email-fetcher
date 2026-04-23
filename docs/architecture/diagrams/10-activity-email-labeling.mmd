@@ -1,0 +1,41 @@
+---
+title: "Activity Diagram: Email Labeling"
+---
+flowchart TD
+    START((Start)) --> RECV["Receive email thread<br/>(from Gmail Add-on / Background Monitor)"]
+    
+    RECV --> PREPROC["Preprocess emails<br/>Clean HTML, remove quotes,<br/>deduplicate content"]
+    
+    PREPROC --> STORE_JSON["Store preprocessed data<br/>to disk as JSON"]
+    
+    STORE_JSON --> PARALLEL{"Run in parallel"}
+    
+    PARALLEL --> EMBED_E["Embed emails → ChromaDB"]
+    PARALLEL --> EMBED_A["Embed attachments → ChromaDB"]
+    
+    EMBED_E --> WAIT["Wait for both"]
+    EMBED_A --> WAIT
+    
+    WAIT --> RULES{"Apply rule-based<br/>classification"}
+    
+    RULES -->|"Pattern matched<br/>(bank, airlines, hotel, etc.)"| RULE_HIT["Rule-based label found"]
+    RULES -->|"No pattern matched"| LLM_CLASS["LLM classification<br/>(gpt-5-mini structured output)"]
+    
+    RULE_HIT --> ENRICH["Enrich with LLM<br/>(category, topic, subtopic)"]
+    LLM_CLASS --> RESULT["Label result ready"]
+    ENRICH --> RESULT
+    
+    RESULT --> GRAPH{"Label in<br/>[response, FYI,<br/>Awaiting Reply]?"}
+    
+    GRAPH -->|Yes| NEO4J["Store in Neo4j graph<br/>Create/link nodes:<br/>Category → Topic → Thread"]
+    GRAPH -->|No| SKIP_G["Skip graph storage"]
+    
+    NEO4J --> LOG["Log metrics to LockBook"]
+    SKIP_G --> LOG
+    
+    LOG --> GMAIL{"Access token<br/>provided?"}
+    GMAIL -->|Yes| PUSH["Push label to Gmail<br/>via REST API"]
+    GMAIL -->|No| DONE["Return label result"]
+    PUSH --> DONE
+    
+    DONE --> END((End))

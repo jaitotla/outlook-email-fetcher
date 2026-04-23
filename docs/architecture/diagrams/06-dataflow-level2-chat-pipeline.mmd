@@ -1,0 +1,36 @@
+---
+title: "Data Flow: Level 2 — Chat Pipeline"
+---
+flowchart TB
+    REQ["POST /api/chat-with-thread<br/>{user_id, thread_id, question}"]
+    
+    REQ --> JOB["Create background job<br/>Return job_id immediately"]
+    JOB --> INIT["ChatWithThreadPipeline(user_id)<br/>Load settings, init LLM + Embedding"]
+    
+    INIT --> LOAD["Load thread from disk<br/>data/{user_id}/log_emails/{thread_id}/"]
+    LOAD --> UNPROC["Filter unprocessed messages<br/>(check per-user SQLite)"]
+    
+    UNPROC --> EMBED_EMAIL["For each unprocessed message:<br/>1. Generate embedding<br/>2. Store in ChromaDB<br/>3. Mark processed in SQLite"]
+    
+    UNPROC --> EMBED_ATT["For each unprocessed attachment:<br/>1. Extract text (PDF/CSV/PPTX)<br/>2. Chunk content<br/>3. Generate embeddings<br/>4. Store in ChromaDB"]
+    
+    EMBED_EMAIL --> HYBRID["Hybrid Chat"]
+    EMBED_ATT --> HYBRID
+    
+    HYBRID --> TOOL_CALL{"Provider?"}
+    TOOL_CALL -->|inbuilt| OPENAI_TC["OpenAI tool calling<br/>(gpt-5-mini)<br/>Decides: search_emails / search_attachments"]
+    TOOL_CALL -->|other| LLM_TC["LLMService tool selection<br/>(text-based prompt)"]
+    
+    OPENAI_TC --> SEARCH["Execute semantic search<br/>on ChromaDB"]
+    LLM_TC --> SEARCH
+    
+    SEARCH --> CONTEXT["Combine retrieved context<br/>(email results + attachment results)"]
+    
+    CONTEXT --> ANSWER{"Provider?"}
+    ANSWER -->|inbuilt| OLLAMA_ANS["Ollama generates final answer<br/>(via Flask /chat)"]
+    ANSWER -->|other| LLM_ANS["LLMService.generate()<br/>(configured provider)"]
+    
+    OLLAMA_ANS --> RESP["Return {success, answer, processing_info}"]
+    LLM_ANS --> RESP
+    
+    RESP --> POLL["Client polls /api/job-status/{job_id}"]

@@ -1,0 +1,15 @@
+---
+title: "Data Flow: Level 0 — Context Diagram"
+---
+flowchart LR
+    User((User)) -->|"Email actions<br/>(chat, draft, label)"| System[OpenMailBot System]
+    System -->|"Responses<br/>(answers, drafts, labels)"| User
+    
+    Gmail[Gmail API] -->|"Email data,<br/>thread data"| System
+    System -->|"Apply labels,<br/>send drafts"| Gmail
+    
+    LLM[LLM Providers] -->|"AI responses"| System
+    System -->|"Prompts & context"| LLM
+    
+    VectorDB[(Vector DB)] -->|"Similar documents"| System
+    System -->|"Embeddings"| VectorDB

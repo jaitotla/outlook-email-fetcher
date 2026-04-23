@@ -1,0 +1,33 @@
+---
+title: "Data Flow: Level 2 — Label Pipeline"
+---
+flowchart TB
+    REQ["POST /api/label-email<br/>{user_id, thread_id, messages[]}"]
+    
+    REQ --> PREPROC["EmailPreprocessingPipeline.process()<br/>- Strip HTML<br/>- Remove URLs/disclaimers<br/>- Extract new content<br/>- Deduplicate nested quotes"]
+    
+    PREPROC --> SAVE["Save preprocessed JSON<br/>data/{user_id}/log_emails/{thread_id}/"]
+    
+    SAVE --> EMBED_STORE{"Parallel: asyncio.gather"}
+    
+    EMBED_STORE --> STORE_EMAIL["CheckAndStoreEmailPipeline.run()<br/>Embed each message → ChromaDB"]
+    EMBED_STORE --> STORE_ATT["CheckAndStoreAttachmentsPipeline.run()<br/>Embed attachments → ChromaDB"]
+    
+    STORE_EMAIL --> LABEL_STEP["EmailLabelPipeline"]
+    STORE_ATT --> LABEL_STEP
+    
+    LABEL_STEP --> RULES{"Rule-based matching?"}
+    RULES -->|Match found| RULE_LABEL["Return rule-based label<br/>(bank, airlines, hotels, etc.)"]
+    RULES -->|No match| LLM_LABEL["LLM classification<br/>(OpenAI gpt-5-mini structured output)"]
+    
+    RULE_LABEL --> ENRICH["LLM enrichment<br/>(category, topic, subtopic, subject_matter)"]
+    LLM_LABEL --> ENRICH
+    
+    ENRICH --> GRAPH{"Label eligible for graph?<br/>(response, FYI, Awaiting Reply)"}
+    GRAPH -->|Yes| NEO4J["StoreGraphPipeline<br/>Create nodes: Category, Topic, Thread<br/>Create links in Neo4j"]
+    GRAPH -->|No| SKIP["Skip graph storage"]
+    
+    NEO4J --> LOCKBOOK["Log to LockBook<br/>(per-user + global metrics)"]
+    SKIP --> LOCKBOOK
+    
+    LOCKBOOK --> RESP["Return {success, label, category,<br/>topic, subtopic, graph_status}"]

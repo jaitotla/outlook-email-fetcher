@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # .gitignore for OpenMailBot
 
 # Environment files
@@ -71,7 +70,3 @@ openmailbot/agent/graph/chroma_db
 */*/chroma_db
 openmailbot/agent/config.json
 
-=======
-openmailbot/agent/config.json
-agent/config.json
->>>>>>> 52af765c2f5fb6910b9558c870983b23ac000507

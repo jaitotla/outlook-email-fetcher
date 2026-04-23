@@ -1,0 +1,29 @@
+Database Design and Optimization
+
+Schema Design Principles
+========================
+Databases follow Third Normal Form (3NF) to minimize data redundancy. Foreign keys enforce referential integrity. Indexes accelerate query performance on frequently searched columns. Unique constraints prevent duplicate entries. Check constraints validate data ranges and formats. Primary keys uniquely identify each row using surrogate keys or natural keys.
+
+Table Structure Examples
+=========================
+Users table stores id, email, username, password_hash, created_at, updated_at. Products table includes id, name, description, category_id, price, stock_quantity. Orders table maintains id, user_id, order_date, total_amount, status. Order_Items table links orders to products with id, order_id, product_id, quantity, unit_price. Categories table stores id, name, parent_category_id for hierarchical organization.
+
+Indexing Strategy
+=================
+Primary key indexes automatically exist on id columns. Foreign key indexes speed up joins on user_id and product_id. Composite indexes on frequently filtered column combinations: (category_id, price). Partial indexes on filtered queries: WHERE status = 'active'. Index maintenance includes periodic ANALYZE to update statistics and REINDEX to defragment. Unused indexes are identified and removed quarterly.
+
+Query Optimization
+==================
+Query plans are analyzed using EXPLAIN to identify bottlenecks. Join order is optimized to filter early. Subqueries are converted to JOINs when beneficial. Window functions replace complex self-joins. Aggregation queries use materialized views for common patterns. Query caching stores results of expensive computations.
+
+Partitioning and Sharding
+==========================
+Large tables are partitioned by date range: monthly partitions for orders. Range partitioning on order_date improves archive and purge operations. Horizontal sharding divides data by user_id across multiple database instances. Sharding key selection balances load across nodes. Cross-shard queries use fan-out patterns to aggregate results.
+
+Backup and Recovery
+===================
+Full backups run weekly and are stored in off-site S3. Incremental backups run daily to minimize storage. Point-in-time recovery is supported via transaction logs. Backup integrity is verified monthly through restore tests. Recovery procedures document step-by-step instructions. Failover to standby replicas is tested quarterly.
+
+Data Archival
+==============
+Historical data older than 2 years is moved to archive tables. Archive tables use compressed storage to reduce costs. Archive queries union live and archive tables transparently. Purge jobs delete data older than 7 years per retention policy. Audit tables retain all deletes for compliance and dispute resolution.

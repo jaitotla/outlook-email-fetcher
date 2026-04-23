@@ -1,0 +1,79 @@
+---
+title: "Data Flow: Level 1 — System Data Flow"
+---
+flowchart TB
+    subgraph Clients["Client Layer"]
+        FE[Frontend/Add-ons]
+    end
+    
+    subgraph Backend["Backend (Node.js :3000)"]
+        AUTH[Auth Middleware]
+        CTRL[Controllers]
+        MONGO[(MongoDB)]
+    end
+    
+    subgraph Agent["Agent (Python :8000)"]
+        EP[FastAPI Endpoints]
+        SETTINGS[Settings Manager]
+        
+        subgraph Pipelines
+            CHAT[Chat Pipeline]
+            DRAFT[Draft Pipeline]
+            LABEL[Label Pipeline]
+            STORE[Store Pipeline]
+            PREPROC[Preprocessing]
+        end
+        
+        subgraph Services
+            LLM_SVC[LLM Service]
+            EMBED_SVC[Embedding Service]
+            INBUILT[Inbuilt Service]
+        end
+        
+        subgraph Storage
+            SQLITE[(Per-user SQLite)]
+            CHROMA[(ChromaDB)]
+            NEO4J[(Neo4j)]
+            DISK[(Disk: JSON/files)]
+        end
+    end
+    
+    subgraph External["External Providers"]
+        OPENAI[OpenAI API]
+        ANTHROPIC[Anthropic API]
+        GEMINI[Google Gemini]
+        OLLAMA[Ollama Server]
+        FLASK_SVC[Inbuilt Flask Server]
+    end
+    
+    FE -->|HTTP| AUTH
+    AUTH --> CTRL
+    CTRL -->|Read/Write| MONGO
+    CTRL -->|axios HTTP| EP
+    
+    EP --> SETTINGS
+    EP --> CHAT
+    EP --> DRAFT
+    EP --> LABEL
+    EP --> STORE
+    EP --> PREPROC
+    
+    CHAT --> LLM_SVC
+    CHAT --> EMBED_SVC
+    DRAFT --> LLM_SVC
+    DRAFT --> EMBED_SVC
+    LABEL --> LLM_SVC
+    STORE --> EMBED_SVC
+    
+    LLM_SVC --> OPENAI
+    LLM_SVC --> ANTHROPIC
+    LLM_SVC --> GEMINI
+    LLM_SVC --> OLLAMA
+    LLM_SVC --> INBUILT
+    INBUILT --> FLASK_SVC
+    
+    EMBED_SVC --> CHROMA
+    SETTINGS --> SQLITE
+    CHAT --> SQLITE
+    LABEL --> NEO4J
+    PREPROC --> DISK

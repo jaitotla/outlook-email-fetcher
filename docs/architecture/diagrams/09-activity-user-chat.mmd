@@ -1,0 +1,35 @@
+---
+title: "Activity Diagram: User Chat"
+---
+flowchart TD
+    START((Start)) --> USER_Q["User asks question<br/>about email thread"]
+    
+    USER_Q --> FE_SEND["Frontend sends<br/>POST /api/chat/thread"]
+    FE_SEND --> BE_AUTH["Backend authenticates user"]
+    
+    BE_AUTH --> BE_VERIFY{"User exists<br/>in MongoDB?"}
+    BE_VERIFY -->|No| ERR_404["Return 404: User not found"]
+    BE_VERIFY -->|Yes| BE_FORWARD["Backend forwards to<br/>Agent /api/chat-with-thread"]
+    
+    BE_FORWARD --> AG_JOB["Agent creates background job"]
+    AG_JOB --> AG_RETURN["Return job_id to Backend"]
+    AG_RETURN --> FE_POLL["Frontend polls<br/>/api/job-status/{job_id}"]
+    
+    AG_JOB --> AG_LOAD["Load thread data from disk"]
+    AG_LOAD --> AG_CHECK{"Unprocessed<br/>messages exist?"}
+    
+    AG_CHECK -->|Yes| AG_EMBED["Generate embeddings<br/>Store in ChromaDB"]
+    AG_CHECK -->|No| AG_SKIP["Skip embedding step"]
+    AG_EMBED --> AG_CHAT["Hybrid chat pipeline"]
+    AG_SKIP --> AG_CHAT
+    
+    AG_CHAT --> AG_TOOL["LLM selects search tools"]
+    AG_TOOL --> AG_SEARCH["Semantic search<br/>emails + attachments"]
+    AG_SEARCH --> AG_ANSWER["Generate final answer<br/>with retrieved context"]
+    
+    AG_ANSWER --> AG_DONE["Job status → done"]
+    AG_DONE --> FE_RECV["Frontend receives answer"]
+    FE_RECV --> DISPLAY["Display answer to user"]
+    DISPLAY --> END((End))
+    
+    ERR_404 --> END

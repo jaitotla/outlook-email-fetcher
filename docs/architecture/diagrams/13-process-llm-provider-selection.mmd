@@ -1,0 +1,33 @@
+---
+title: "Process Flow: LLM Provider Selection"
+---
+flowchart TB
+    START["Incoming LLM request"] --> SETTINGS["Load user settings<br/>(SettingsManager)"]
+    
+    SETTINGS --> CHECK{"effective_settings<br/>has llm_provider?"}
+    CHECK -->|Yes| USER_PROV["Use user's provider"]
+    CHECK -->|No| ENV{"Environment<br/>variable set?"}
+    ENV -->|Yes| ENV_PROV["Use env provider"]
+    ENV -->|No| DEFAULT["Use default: 'inbuilt'"]
+    
+    USER_PROV --> ROUTE["Route to provider"]
+    ENV_PROV --> ROUTE
+    DEFAULT --> ROUTE
+    
+    ROUTE --> OPENAI_CHECK{"Provider == openai?"}
+    OPENAI_CHECK -->|Yes| MODEL_CHECK{"Model starts<br/>with gpt-5?"}
+    MODEL_CHECK -->|Yes| RESPONSES["Use Responses API<br/>/v1/responses"]
+    MODEL_CHECK -->|No| COMPLETIONS["Use Chat Completions<br/>/v1/chat/completions"]
+    
+    OPENAI_CHECK -->|No| OTHER{"Provider?"}
+    OTHER -->|anthropic| CLAUDE["Anthropic Claude API"]
+    OTHER -->|gemini| GEMINI_API["Google Gemini API"]
+    OTHER -->|ollama| OLLAMA_API["Ollama local API"]
+    OTHER -->|inbuilt| INBUILT_API["utils.call_chat_api()<br/>→ Flask /chat"]
+    
+    RESPONSES --> RESULT["Return response text"]
+    COMPLETIONS --> RESULT
+    CLAUDE --> RESULT
+    GEMINI_API --> RESULT
+    OLLAMA_API --> RESULT
+    INBUILT_API --> RESULT
