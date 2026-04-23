@@ -6,8 +6,12 @@ import os
 import json
 import logging
 import requests
+import asyncio
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+
+from services.llm import LLMService
+from services.settings_manager import SettingsManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,11 +32,30 @@ class SummarizationPipeline:
             user_id: User identifier for scoped operations
         """
         self.user_id = user_id
-        self.base_api_url = "https://lsdiedb39c.pagekite.me/chat"
-        self.timeout_seconds = 500
         
-        logger.info(f"✅ SummarizationPipeline initialized for user: {user_id}")
-        logger.info(f"   API Endpoint: {self.base_api_url}")
+        # Load user settings
+        try:
+            settings_manager = SettingsManager(user_id)
+            self.effective_settings = settings_manager.get_settings("general")
+            logger.info(f"Retrieved settings for user {user_id} (type: general)")
+            logger.info(f" these are setttings {self.effective_settings}")
+        except Exception as e:
+            logger.warning(f"Failed to load settings for user {user_id}: {e}. Using defaults.")
+            self.effective_settings = {}
+        
+        # Extract LLM provider info from settings
+        self.llm_provider = self.effective_settings.get('llm_provider', 'openai')
+        self.llm_model = self.effective_settings.get('llm_model', 'gpt-4o-mini')
+        
+        # Initialize LLM service with user settings
+        try:
+            self.llm_service = LLMService(self.effective_settings)
+            logger.info(f"✅ SummarizationPipeline initialized for user: {user_id}")
+            logger.info(f"   LLM Provider: {self.llm_provider}")
+            logger.info(f"   LLM Model: {self.llm_model}")
+        except Exception as e:
+            logger.error(f"Failed to initialize LLMService: {e}")
+            raise
     
     def get_thread_json_data(self, user_id: str, thread_id: str) -> Optional[Dict]:
         """
@@ -206,9 +229,9 @@ Please provide the structured summary following the exact format above.
         logger.info(f"✅ Created summarization prompt ({len(prompt)} chars)")
         return prompt
     
-    def call_llm_api(self, prompt: str) -> Optional[str]:
+    async def call_llm_api_async(self, prompt: str) -> Optional[str]:
         """
-        Call external LLM API with the summarization prompt
+        Call LLM service with the summarization prompt
         
         Args:
             prompt: Complete prompt for summarization
@@ -216,50 +239,35 @@ Please provide the structured summary following the exact format above.
         Returns:
             LLM response text or None on failure
         """
-        logger.info(f"🚀 Calling LLM API: {self.base_api_url}")
+        logger.info(f"🚀 Calling LLM via {self.llm_provider}")
+        logger.info(f"   Model: {self.llm_model}")
         logger.info(f"   Prompt size: {len(prompt)} characters")
-        logger.info(f"   Timeout: {self.timeout_seconds} seconds")
         
         try:
-            payload = {
-                "prompt": prompt
-            }
+            # Build messages for LLM
+            messages = [
+                {"role": "system", "content": "You are an expert enterprise communication analyst specializing in email summarization."},
+                {"role": "user", "content": prompt}
+            ]
             
-            response = requests.post(
-                self.base_api_url,
-                json=payload,
-                timeout=self.timeout_seconds
+            # Call LLM service
+            summary_text = await self.llm_service.generate(
+                messages,
+                provider=self.llm_provider,
+                model=self.llm_model,
+                temperature=0.7,
+                max_tokens=4000
             )
             
-            # Raise exception for HTTP errors
-            response.raise_for_status()
-            
-            # Parse response
-            data = response.json()
-            logger.info(f"✅ LLM API call successful")
-            logger.info(f"   Response status: {response.status_code}")
-            
-            # Extract summary from response
-            summary_text = data.get('response') or data.get('summary') or data.get('text') or str(data)
+            logger.info(f"✅ LLM call successful")
             logger.info(f"✅ Summary generated: {len(summary_text)} characters")
             
             return summary_text
             
-        except requests.exceptions.Timeout:
-            logger.error(f"❌ LLM API call timed out after {self.timeout_seconds}s")
-            return None
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"❌ LLM API HTTP error: {e}")
-            logger.error(f"   Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
-            return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ LLM API request error: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Failed to parse LLM API response: {e}")
-            return None
         except Exception as e:
-            logger.error(f"❌ Unexpected error calling LLM API: {e}")
+            logger.error(f"❌ LLM call failed: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def process_and_summarize(self, user_id: str, thread_id: str) -> Dict[str, Any]:
@@ -318,7 +326,7 @@ Please provide the structured summary following the exact format above.
             # Step 4: Call LLM API
             logger.info("\n🤖 STEP 4: Calling LLM API...")
             start_time = datetime.utcnow()
-            summary = self.call_llm_api(prompt)
+            summary = asyncio.run(self.call_llm_api_async(prompt))
             end_time = datetime.utcnow()
             
             api_call_time = (end_time - start_time).total_seconds()

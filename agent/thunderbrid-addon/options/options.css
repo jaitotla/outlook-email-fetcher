@@ -213,7 +213,58 @@ body {
   color: #1e7e34;
 }
 
-/* ── Rest-of-settings divider ───────────────────────── */
+/* ── Connect row (button + inline status) ───────────── */
+.connect-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.btn-connect {
+  background-color: #1a73e8;
+  color: white;
+  padding: 8px 18px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.2s;
+}
+
+.btn-connect:hover:not(:disabled) {
+  background-color: #1557b0;
+}
+
+.btn-connect:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.connect-status {
+  font-size: 13px;
+  color: #555;
+}
+
+.connect-status--success {
+  color: #1e7e34;
+  font-weight: 500;
+}
+
+.connect-status--error {
+  color: #c0392b;
+}
+
+/* ── Page 2 hidden by default ───────────────────────── */
+#page-2 {
+  border-top: 2px dashed #e0e0e0;
+  padding-top: 24px;
+  margin-top: 8px;
+}
+
+/* ── Rest-of-settings divider (legacy, kept for compat) */
 #rest-of-settings {
   border-top: 2px dashed #e0e0e0;
   padding-top: 24px;

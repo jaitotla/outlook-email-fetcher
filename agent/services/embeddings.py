@@ -6,6 +6,7 @@ Supports multiple embedding providers: OpenAI, Nomic, Gemini, Sentence-Transform
 from typing import List, Dict, Any, Optional
 import numpy as np
 import requests
+import httpx
 import os
 import logging
 import json
@@ -113,6 +114,20 @@ class EmbeddingService:
                 self._gemini_available = False
             self.embedding_model = self.embedding_model or "models/embedding-001"
         
+        # Ollama embeddings
+        elif self.embedding_provider == "ollama":
+            self._ollama_base_url = (
+                self.effective_settings.get("ollama_base_url")
+                or self.effective_settings.get("embedding_base_url")
+                or "http://localhost:11434"
+            ).rstrip("/")
+            self._ollama_api_key = (
+                self.effective_settings.get("ollama_api_key")
+                or self.effective_settings.get("embedding_api_key")
+                or ""
+            ).strip()
+            self.embedding_model = self.embedding_model or "nomic-embed-text"
+
         # Sentence-transformers (local)
         elif self.embedding_provider == "sentence-transformers":
             try:
@@ -135,6 +150,8 @@ class EmbeddingService:
             return await self._embed_nomic(text)
         elif provider == "gemini":
             return await self._embed_gemini(text)
+        elif provider == "ollama":
+            return await self._embed_ollama(text)
         elif provider == "sentence-transformers":
             return await self._embed_sentence_transformers(text)
         elif provider in ("inbuilt", "manotr"):
@@ -199,7 +216,47 @@ class EmbeddingService:
             return embedding.tolist()
         except Exception as e:
             raise ProviderError("sentence-transformers", f"Embedding error: {str(e)}", e)
-    
+
+    async def _embed_ollama(self, text: str) -> List[float]:
+        """Generate embedding using Ollama (local or self-hosted remote).
+
+        Uses the Ollama /api/embed endpoint (v0.6+) with fallback to
+        the older /api/embeddings endpoint for backwards compatibility.
+
+        Supports optional Bearer token auth for secured self-hosted instances.
+        """
+        ollama_url = getattr(self, "_ollama_base_url", "http://localhost:11434")
+        ollama_api_key = getattr(self, "_ollama_api_key", "")
+        model = self.embedding_model or "nomic-embed-text"
+
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if ollama_api_key:
+            headers["Authorization"] = f"Bearer {ollama_api_key}"
+
+        payload = {"model": model, "input": text}
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # Try modern /api/embed first (Ollama ≥ 0.6)
+                resp = await client.post(f"{ollama_url}/api/embed", headers=headers, json=payload)
+                if resp.status_code == 404:
+                    # Fallback to legacy /api/embeddings
+                    resp = await client.post(
+                        f"{ollama_url}/api/embeddings",
+                        headers=headers,
+                        json={"model": model, "prompt": text}
+                    )
+                resp.raise_for_status()
+                data = resp.json()
+                # /api/embed returns {"embeddings": [[...]]}
+                # /api/embeddings returns {"embedding": [...]}
+                if "embeddings" in data:
+                    return data["embeddings"][0]
+                return data["embedding"]
+        except Exception as e:
+            raise ProviderError("ollama", f"Embedding error: {str(e)}", e)
+
+
     async def _embed_inbuilt(self, text: str) -> List[float]:
         """Generate embedding using inbuilt service (utils.py)"""
         try:

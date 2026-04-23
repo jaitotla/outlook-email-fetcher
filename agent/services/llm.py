@@ -56,12 +56,18 @@ class LLMService:
         # OpenAI
         openai_key = self.effective_settings.get("llm_api_key") or settings.OPENAI_API_KEY
         if openai_key:
-            openai.api_key = openai_key
+            sanitized_key = str(openai_key).strip()
+            if sanitized_key != openai_key:
+                logger.warning("⚠️  Detected whitespace in OpenAI API key - automatically stripped")
+            openai.api_key = sanitized_key
         
         # Anthropic
         anthropic_key = self.effective_settings.get("llm_api_key") or settings.ANTHROPIC_API_KEY
         if anthropic_key:
-            self.anthropic_client = Anthropic(api_key=anthropic_key)
+            sanitized_key = str(anthropic_key).strip()
+            if sanitized_key != anthropic_key:
+                logger.warning("⚠️  Detected whitespace in Anthropic API key - automatically stripped")
+            self.anthropic_client = Anthropic(api_key=sanitized_key)
         else:
             self.anthropic_client = None
         
@@ -115,6 +121,7 @@ class LLMService:
         """
         try:
             api_key = self.effective_settings.get("llm_api_key") or settings.OPENAI_API_KEY
+            api_key = str(api_key).strip() if api_key else ""
             
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -246,16 +253,39 @@ class LLMService:
         model: Optional[str] = None,
         temperature: Optional[float] = None
     ) -> str:
-        """Call Ollama local LLM"""
-        
-        ollama_url ="http://localhost:11434"
-        
+        """Call Ollama LLM — supports local, self-hosted remote, and API-key-secured instances.
+
+        Settings keys read from effective_settings:
+          - ollama_base_url / llm_base_url : URL of the Ollama server
+            (defaults to http://localhost:11434)
+          - ollama_api_key                 : optional Bearer token for authenticated
+            self-hosted instances (e.g. exposed via nginx with auth)
+        """
+        # Resolve the Ollama base URL: prefer dedicated key, fall back to legacy llm_base_url
+        ollama_url = (
+            self.effective_settings.get("ollama_base_url")
+            or self.effective_settings.get("llm_base_url")
+            or "http://localhost:11434"
+        ).rstrip("/")
+
+        # Optional API key for secured remote Ollama instances
+        ollama_api_key = (
+            self.effective_settings.get("ollama_api_key")
+            or self.effective_settings.get("llm_api_key")  # fallback if user stored it there
+            or ""
+        ).strip()
+
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if ollama_api_key:
+            headers["Authorization"] = f"Bearer {ollama_api_key}"
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{ollama_url}/api/chat",
+                    headers=headers,
                     json={
-                        "model": model or settings.OLLAMA_MODEL,
+                        "model": model or self.effective_settings.get("llm_model") or settings.OLLAMA_MODEL,
                         "messages": messages,
                         "stream": False,
                         "options": {
@@ -267,7 +297,7 @@ class LLMService:
                 response.raise_for_status()
                 data = response.json()
                 return data["message"]["content"]
-                
+
         except Exception as e:
             raise ProviderError("ollama", str(e), e)
     

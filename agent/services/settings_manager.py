@@ -28,6 +28,43 @@ logger = logging.getLogger(__name__)
 # Use abspath so the path is always absolute regardless of working directory
 BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
+
+def sanitize_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Sanitize settings by stripping whitespace from sensitive fields like API keys.
+    
+    Args:
+        settings: Raw settings dictionary
+        
+    Returns:
+        Sanitized settings dictionary
+    """
+    # Fields that should have whitespace stripped
+    SANITIZE_FIELDS = [
+        'llm_api_key',
+        'anthropic_api_key', 
+        'openai_api_key',
+        'gemini_api_key',
+        'ollama_api_key',
+        'embedding_api_key',
+        'pinecone_api_key',
+        'mongodb_uri',
+        'neo4j_uri',
+        'slack_bot_token',
+        'slack_app_token',
+    ]
+    
+    sanitized = settings.copy()
+    for field in SANITIZE_FIELDS:
+        if field in sanitized and isinstance(sanitized[field], str):
+            original = sanitized[field]
+            sanitized[field] = original.strip()
+            if original != sanitized[field]:
+                logger.warning(f"⚠️  Detected whitespace in '{field}' - automatically stripped")
+    
+    return sanitized
+
+
 # Encryption key - in production, this should come from environment variable
 # For now, using a default that should be changed
 ENCRYPTION_KEY_SALT = b"openmailbot_settings_salt_v1"  # Should be stored securely
@@ -171,8 +208,11 @@ class SettingsManager:
             conn = sqlite3.connect(user_db)
             cursor = conn.cursor()
             
+            # Sanitize settings (strip whitespace from API keys, etc.)
+            sanitized_settings = sanitize_settings(settings)
+            
             # Encrypt the entire settings dict
-            encrypted_data = encrypt_settings(settings, user_id)
+            encrypted_data = encrypt_settings(sanitized_settings, user_id)
             
             # Store with a composite key (e.g., "all_settings" for general, or specific keys)
             cursor.execute('''

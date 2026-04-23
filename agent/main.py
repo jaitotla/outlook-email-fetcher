@@ -598,6 +598,165 @@ async def favicon():
     return None
 
 
+# ==================== Provider Validation Endpoint ====================
+
+class ValidateProviderRequest(BaseModel):
+    provider_type: str          # "llm" | "embedding" | "vector"
+    provider: str               # "openai" | "anthropic" | "groq" | "ollama" | "pinecone" | "qdrant"
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None  # Ollama URL or vector DB URL
+    model: Optional[str] = None     # optional model to verify
+
+
+@app.post("/api/validate-provider")
+async def validate_provider(request: ValidateProviderRequest):
+    """
+    Validate a provider's API key / connectivity without consuming tokens.
+
+    Uses each provider's lightweight listing / health endpoint:
+      - OpenAI / Groq     → GET /v1/models          (returns model list, 0 tokens)
+      - Anthropic          → GET /v1/models          (same, 0 tokens)
+      - Ollama             → GET {base_url}/api/tags (lists installed models)
+      - Pinecone           → GET /indexes            (lists indexes)
+      - Qdrant (self-host) → GET /healthz            (health probe)
+
+    Returns:
+      { "valid": bool, "message": str, "models": [...] }
+    """
+    import httpx as _httpx
+
+    provider = request.provider.lower()
+    api_key  = (request.api_key or "").strip()
+    base_url = (request.base_url or "").rstrip("/")
+    models: List[str] = []
+
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as client:
+
+            # ── OpenAI ──────────────────────────────────────────────────────
+            if provider == "openai":
+                if not api_key:
+                    return {"valid": False, "message": "OpenAI API key is required.", "models": []}
+                resp = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = sorted([m["id"] for m in data.get("data", [])
+                                     if not any(x in m["id"] for x in
+                                                ["whisper", "tts", "dall-e", "babbage", "davinci",
+                                                 "text-moderation", "embedding", "realtime", "transcribe"])])
+                    return {"valid": True, "message": "OpenAI API key is valid.", "models": models}
+                elif resp.status_code == 401:
+                    return {"valid": False, "message": "Invalid OpenAI API key.", "models": []}
+                else:
+                    return {"valid": False, "message": f"OpenAI returned HTTP {resp.status_code}.", "models": []}
+
+            # ── Anthropic ───────────────────────────────────────────────────
+            elif provider == "anthropic":
+                if not api_key:
+                    return {"valid": False, "message": "Anthropic API key is required.", "models": []}
+                resp = await client.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01"
+                    }
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m["id"] for m in data.get("data", [])]
+                    return {"valid": True, "message": "Anthropic API key is valid.", "models": models}
+                elif resp.status_code == 401:
+                    return {"valid": False, "message": "Invalid Anthropic API key.", "models": []}
+                else:
+                    return {"valid": False, "message": f"Anthropic returned HTTP {resp.status_code}.", "models": []}
+
+            # ── Groq ────────────────────────────────────────────────────────
+            elif provider == "groq":
+                if not api_key:
+                    return {"valid": False, "message": "Groq API key is required.", "models": []}
+                resp = await client.get(
+                    "https://api.groq.com/openai/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = sorted([m["id"] for m in data.get("data", [])])
+                    return {"valid": True, "message": "Groq API key is valid.", "models": models}
+                elif resp.status_code == 401:
+                    return {"valid": False, "message": "Invalid Groq API key.", "models": []}
+                else:
+                    return {"valid": False, "message": f"Groq returned HTTP {resp.status_code}.", "models": []}
+
+            # ── Ollama ──────────────────────────────────────────────────────
+            elif provider == "ollama":
+                ollama_url = base_url or "http://localhost:11434"
+                headers = {}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                try:
+                    resp = await client.get(f"{ollama_url}/api/tags", headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        models = [m["name"] for m in data.get("models", [])]
+                        if not models:
+                            return {"valid": True,
+                                    "message": "Ollama is reachable but no models are installed. Run 'ollama pull <model>' first.",
+                                    "models": []}
+                        return {"valid": True,
+                                "message": f"Ollama is reachable. Found {len(models)} model(s).",
+                                "models": sorted(models)}
+                    elif resp.status_code == 401:
+                        return {"valid": False, "message": "Ollama requires authentication — check your API key.", "models": []}
+                    else:
+                        return {"valid": False, "message": f"Ollama returned HTTP {resp.status_code}.", "models": []}
+                except _httpx.ConnectError:
+                    return {"valid": False, "message": f"Cannot connect to Ollama at {ollama_url}. Is it running?", "models": []}
+
+            # ── Pinecone ────────────────────────────────────────────────────
+            elif provider == "pinecone":
+                if not api_key:
+                    return {"valid": False, "message": "Pinecone API key is required.", "models": []}
+                resp = await client.get(
+                    "https://api.pinecone.io/indexes",
+                    headers={"Api-Key": api_key}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    indexes = [idx.get("name", "") for idx in data.get("indexes", [])]
+                    return {"valid": True,
+                            "message": f"Pinecone API key is valid. Found {len(indexes)} index(es).",
+                            "models": indexes}
+                elif resp.status_code == 401:
+                    return {"valid": False, "message": "Invalid Pinecone API key.", "models": []}
+                else:
+                    return {"valid": False, "message": f"Pinecone returned HTTP {resp.status_code}.", "models": []}
+
+            # ── Qdrant ──────────────────────────────────────────────────────
+            elif provider == "qdrant":
+                qdrant_url = base_url or "http://localhost:6333"
+                headers = {}
+                if api_key:
+                    headers["api-key"] = api_key
+                # Try /healthz first, fallback to root
+                for probe in [f"{qdrant_url}/healthz", f"{qdrant_url}/"]:
+                    try:
+                        resp = await client.get(probe, headers=headers)
+                        if resp.status_code in (200, 204):
+                            return {"valid": True, "message": "Qdrant is reachable and responding.", "models": []}
+                    except _httpx.ConnectError:
+                        pass
+                return {"valid": False, "message": f"Cannot connect to Qdrant at {qdrant_url}.", "models": []}
+
+            else:
+                return {"valid": False, "message": f"Unknown provider: {provider}", "models": []}
+
+    except Exception as e:
+        return {"valid": False, "message": f"Validation error: {str(e)}", "models": []}
+
+
 # Health check
 @app.get("/health")
 async def health_check():
@@ -606,6 +765,22 @@ async def health_check():
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "openmailbot-agent"
+    }
+
+
+# Handshake — used by client onboarding to verify this agent is reachable
+@app.get("/handshake")
+async def handshake():
+    """
+    Lightweight connectivity probe for client onboarding.
+    Returns a fixed response so the Thunderbird add-on can confirm the
+    custom agent URL points to a live OpenMailBot agent before saving it.
+    """
+    return {
+        "status": "ok",
+        "handshake": True,
+        "service": "openmailbot-agent",
+        "timestamp": datetime.utcnow().isoformat(),
     }
 
 
@@ -698,105 +873,53 @@ async def detailed_health_check(user_id: Optional[str] = None, tenant_id: Option
 
 
 # Generate Embeddings
-@app.post("/api/embed")
-async def generate_embeddings(request: Dict[str, Any]):
-    """Generate embeddings for email content"""
-    try:
-        text = request.get("text")
-        user_id = request.get("userId")
-        tenant_id = request.get("tenantId")
-        
-        if not text or not user_id or not tenant_id:
-            raise HTTPException(status_code=400, detail="Missing required fields")
-        
-        embedding = await embedding_service.generate_embedding(text)
-        
-        # Store in vector DB
-        await embedding_service.store_embedding(
-            embedding=embedding,
-            metadata={
-                "userId": user_id,
-                "tenantId": tenant_id,
-                "text": text[:500]  # Store preview
-            },
-            namespace=f"{tenant_id}_{user_id}"
-        )
-        
-        return {"embedding": embedding, "dimension": len(embedding)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# NOTE: embedding_service, llm_service, and rag_service are per-user services
+# initialized inside pipelines (ChatWithThreadPipeline, DraftPipeline, etc.).
+# These legacy singleton endpoints are disabled to prevent NameError at runtime.
+# @app.post("/api/embed")
+# async def generate_embeddings(request: Dict[str, Any]):
+#     """Generate embeddings for email content"""
+#     try:
+#         text = request.get("text")
+#         user_id = request.get("userId")
+#         tenant_id = request.get("tenantId")
+#
+#         if not text or not user_id or not tenant_id:
+#             raise HTTPException(status_code=400, detail="Missing required fields")
+#
+#         embedding = await embedding_service.generate_embedding(text)
+#
+#         await embedding_service.store_embedding(
+#             embedding=embedding,
+#             metadata={"userId": user_id, "tenantId": tenant_id, "text": text[:500]},
+#             namespace=f"{tenant_id}_{user_id}"
+#         )
+#
+#         return {"embedding": embedding, "dimension": len(embedding)}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Summarize Thread
-@app.post("/api/summarize")
-async def summarize_thread(request: SummarizeRequest):
-    """Summarize an email thread"""
-    try:
-        # Prepare thread content
-        thread_text = "\n\n---\n\n".join([
-            f"From: {email.from_address}\nTo: {', '.join(email.to)}\n"
-            f"Subject: {email.subject}\nDate: {email.timestamp}\n\n{email.content}"
-            for email in request.emails
-        ])
-        
-        # Generate summary using LLM
-        summary = await llm_service.summarize(
-            content=thread_text,
-            user_id=request.userId,
-            tenant_id=request.tenantId
-        )
-        
-        return {"summary": summary}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Summarize Thread — use /api/summarize-thread (SummarizationPipeline) instead.
+# @app.post("/api/summarize")
+# async def summarize_thread(request: SummarizeRequest):
+#     thread_text = "\n\n---\n\n".join([...])
+#     summary = await llm_service.summarize(...)  # llm_service is not instantiated globally
+#     return {"summary": summary}
 
 
-# Generate Reply
-@app.post("/api/generate-reply")
-async def generate_reply(request: GenerateReplyRequest):
-    """Generate a context-aware reply"""
-    try:
-        # Prepare context
-        thread_context = "\n\n---\n\n".join([
-            f"From: {email.from_address}\nTo: {', '.join(email.to)}\n"
-            f"Subject: {email.subject}\n\n{email.content}"
-            for email in request.threadContext
-        ])
-        
-        # Generate reply
-        reply = await llm_service.generate_reply(
-            email_content=request.email.content,
-            from_address=request.email.from_address,
-            thread_context=thread_context,
-            tone=request.tone,
-            additional_context=request.additionalContext,
-            user_id=request.userId,
-            tenant_id=request.tenantId
-        )
-        
-        return {"reply": reply}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Generate Reply — use /api/draft or /api/draft-with-attachments (DraftPipeline) instead.
+# @app.post("/api/generate-reply")
+# async def generate_reply(request: GenerateReplyRequest):
+#     reply = await llm_service.generate_reply(...)  # llm_service is not instantiated globally
+#     return {"reply": reply}
 
 
-# RAG Query
-@app.post("/api/rag")
-async def rag_query(request: RAGQueryRequest):
-    """Handle RAG query over email history"""
-    try:
-        result = await rag_service.query(
-            query=request.query,
-            user_id=request.userId,
-            tenant_id=request.tenantId,
-            email_context=request.emailContext.dict() if request.emailContext else None
-        )
-        
-        return {
-            "answer": result["answer"],
-            "sources": result.get("sources", [])
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# RAG Query — use /api/chat-with-thread (ChatWithThreadPipeline) instead.
+# @app.post("/api/rag")
+# async def rag_query(request: RAGQueryRequest):
+#     result = await rag_service.query(...)  # rag_service is not instantiated globally
+#     return {"answer": result["answer"], "sources": result.get("sources", [])}
 
 
 # # Related Threads
@@ -837,21 +960,11 @@ async def rag_query(request: RAGQueryRequest):
 #         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Analytics endpoint for sentiment analysis
-@app.post("/api/analyze-sentiment")
-async def analyze_sentiment(request: Dict[str, Any]):
-    """Analyze sentiment of email content"""
-    try:
-        text = request.get("text")
-        
-        if not text:
-            raise HTTPException(status_code=400, detail="Text is required")
-        
-        sentiment = await llm_service.analyze_sentiment(text)
-        
-        return {"sentiment": sentiment}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Analytics endpoint for sentiment analysis — disabled (llm_service not instantiated globally).
+# @app.post("/api/analyze-sentiment")
+# async def analyze_sentiment(request: Dict[str, Any]):
+#     sentiment = await llm_service.analyze_sentiment(text)
+#     return {"sentiment": sentiment}
 
 
 # Slack Integration Endpoints

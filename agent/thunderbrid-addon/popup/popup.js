@@ -5,6 +5,9 @@
 
 "use strict";
 
+// ── CONSTANTS ──────────────────────────────────────────
+const MANOTR_AGENT_URL = "http://omb.manotr.com";
+
 // ── STATE ──────────────────────────────────────────────
 let currentMessageId = null;
 let currentAccountId = null;       // Track current account for bulk processing
@@ -40,10 +43,14 @@ function updateModeVisibility(prefix) {
   // ── Agent URL: always visible, behaviour driven by mode ──
   const agentInput = document.getElementById(`${prefix}-agent-url`);
   const agentHint  = document.getElementById(`${prefix}-agent-url-hint`);
+  
+  console.log(`[updateModeVisibility] prefix=${prefix}, mode=${mode}, agentInput=`, agentInput);
+  
   if (mode === "manotr") {
     if (agentInput) {
       agentInput.value = MANOTR_AGENT_URL;
       agentInput.readOnly = false;
+      agentInput.removeAttribute("readonly");
       agentInput.style.background = "#f0f7ff";
       agentInput.style.color = "#1a73e8";
       agentInput.placeholder = MANOTR_AGENT_URL;
@@ -54,9 +61,11 @@ function updateModeVisibility(prefix) {
     if (agentInput) {
       if (agentInput.value === MANOTR_AGENT_URL) agentInput.value = "";
       agentInput.readOnly = false;
-      agentInput.style.background = "";
-      agentInput.style.color = "";
+      agentInput.removeAttribute("readonly");  // Explicitly remove the readonly attribute
+      agentInput.style.background = "#ffffff";  // Set to white
+      agentInput.style.color = "#000000";       // Set to black
       agentInput.placeholder = "http://your-server:5050";
+      console.log(`[updateModeVisibility] Agent input should now be editable. readonly=${agentInput.readOnly}`);
     }
     if (agentHint) agentHint.textContent = "Enter the URL where your agent server is running.";
     _hideEl(`${prefix}-manotr-url-info`);
@@ -64,6 +73,7 @@ function updateModeVisibility(prefix) {
     if (agentInput) {
       agentInput.value = "";
       agentInput.readOnly = true;
+      agentInput.setAttribute("readonly", "readonly");
       agentInput.style.background = "#f5f5f5";
       agentInput.style.color = "#aaa";
       agentInput.placeholder = "Choose a mode first…";
@@ -242,6 +252,18 @@ async function initOnboarding() {
     onboardingIndex = 0;
     renderOnboardingPage();
     showView("onboarding-view");
+    
+    // Force initial state update and add debugging
+    setTimeout(() => {
+      const modeSelect = document.getElementById("ob-mode");
+      const agentInput = document.getElementById("ob-agent-url");
+      console.log("[initOnboarding] After 100ms - Mode:", modeSelect ? modeSelect.value : "N/A");
+      if (agentInput) {
+        console.log("[initOnboarding] Agent input readonly:", agentInput.readOnly);
+        console.log("[initOnboarding] Agent input readonly attr:", agentInput.getAttribute("readonly"));
+        console.log("[initOnboarding] Agent input value:", agentInput.value);
+      }
+    }, 100);
   } catch (e) {
     showError("Failed to load accounts: " + e.message);
   }
@@ -310,7 +332,14 @@ function renderOnboardingPage() {
   backendSettingsLoaded = false;
   backendSettings = null;
   
-  // Apply mode visibility
+  // Ensure agent URL field starts as readonly since mode is empty
+  const agentInput = document.getElementById("ob-agent-url");
+  if (agentInput) {
+    agentInput.readOnly = true;
+    agentInput.setAttribute("readonly", "readonly");
+  }
+  
+  // Apply mode visibility (this will handle all field states)
   updateModeVisibility("ob");
 }
 
@@ -350,7 +379,14 @@ function bindEvents() {
   on("ob-ignore-backend-btn", "click", handleIgnoreBackendSettings);
   on("ob-save-btn",           "click", handleOnboardingSave);
   on("ob-skip-btn",           "click", handleOnboardingSkip);
-  on("ob-mode",               "change", () => updateModeVisibility("ob"));
+  on("ob-mode",               "change", () => {
+    console.log("[Popup] Mode changed to:", getVal("ob-mode"));
+    updateModeVisibility("ob");
+  });
+  on("ob-mode",               "input", () => {
+    console.log("[Popup] Mode input to:", getVal("ob-mode"));
+    updateModeVisibility("ob");
+  });
   on("ob-llm-provider",       "change", () => updateProviderVisibility("ob"));
   on("ob-emb-provider",       "change", () => updateProviderVisibility("ob"));
   on("ob-vec-provider",       "change", () => updateProviderVisibility("ob"));

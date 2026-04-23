@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Email Thread Assistant - Settings</title>
+  <title>OpenMailBot - Settings</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
@@ -12,179 +12,293 @@
       <p class="subtitle">Configure your AI providers and preferences</p>
     </div>
 
-    <form id="settings-form">
-      <!-- Step 1: Email Account -->
-      <section class="settings-section">
-        <h2>📧 Email Account</h2>
-        <div class="form-group">
-          <label>Email ID</label>
-          <div id="detected-email" class="readonly-field">Detecting account…</div>
-        </div>
-      </section>
+    <!-- ═══════════════ PAGE 1: Mode + Agent URL ═══════════════ -->
+    <div id="page-1">
+      <form id="page1-form" novalidate>
 
-      <!-- Step 2: Mode (mandatory) -->
-      <section class="settings-section mode-section">
-        <h2>🔧 Mode <span class="required-star">*</span></h2>
-        <div class="form-group">
-          <label for="mode">Select Mode <span class="required-star">*</span></label>
-          <select id="mode" name="mode" required>
-            <option value="">— Choose a mode —</option>
-            <option value="manotr">Manotr (no API keys needed)</option>
-            <option value="local">Local (local URLs like Ollama)</option>
-            <option value="external">External API (your own API keys)</option>
-          </select>
-          <p class="help-text">
-            <em>Manotr: Uses built-in AI hosted at omb.manotr.com — no configuration needed.<br>
-            Local: Uses locally hosted services like Ollama.<br>
-            External API: Use your own API keys for each provider.</em>
-          </p>
-        </div>
+        <!-- Email Account -->
+        <section class="settings-section">
+          <h2>📧 Email Account</h2>
+          <div class="form-group">
+            <label>Email ID</label>
+            <div id="detected-email" class="readonly-field">Detecting account…</div>
+          </div>
+        </section>
 
-        <!-- Agent URL — always visible; read-only for Manotr, editable for others -->
-        <div class="form-group" id="agent-url-group">
-          <label for="agent_url">🌐 Agent URL</label>
-          <input type="url" id="agent_url" name="agent_url" placeholder="http://your-server:5050">
-          <p class="help-text" id="agent-url-hint"><em>Select a mode first.</em></p>
-        </div>
+        <!-- Mode (mandatory) -->
+        <section class="settings-section mode-section">
+          <h2>🔧 Mode <span class="required-star">*</span></h2>
+          <div class="form-group">
+            <label for="mode">Select Mode <span class="required-star">*</span></label>
+            <select id="mode" name="mode" required>
+              <option value="">— Choose a mode —</option>
+              <option value="manotr">Manotr (no API keys needed)</option>
+              <option value="local">Local (local URLs like Ollama)</option>
+              <option value="external">External API (your own API keys)</option>
+            </select>
+            <p class="help-text">
+              <em>Manotr: Uses built-in AI hosted at omb.manotr.com — no configuration needed.<br>
+              Local: Uses locally hosted services like Ollama.<br>
+              External API: Use your own API keys for each provider.</em>
+            </p>
+          </div>
 
-        <!-- Manotr info badge -->
-        <div class="manotr-info-box hidden" id="manotr-url-info">
-          ✅ Auto-set to <strong>http://omb.manotr.com</strong> — you can edit if needed
-        </div>
-      </section>
+          <!-- Agent URL — read-only display for Manotr, required input for others -->
+          <div class="form-group hidden" id="agent-url-group">
+            <label>🌐 Agent URL <span class="required-star" id="agent-url-star">*</span></label>
 
-      <!-- Rest of settings — revealed after mode is chosen -->
-      <div id="rest-of-settings" class="hidden">
+            <!-- Manotr: display only, no editing -->
+            <div id="agent-url-display" class="readonly-field readonly-field-ok hidden">
+              http://omb.manotr.com
+            </div>
 
-      <!-- LLM Provider -->
-      <section class="settings-section">
-        <h2>🤖 LLM Provider</h2>
-        <div class="form-group">
-          <label for="llm_provider">Provider</label>
-          <select id="llm_provider" name="llm_provider">
-            <option value="manotr">Manotr</option>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="groq">Groq</option>
-            <option value="ollama">Ollama (Self-hosted)</option>
-          </select>
-        </div>
-        <div class="form-group" id="llm-api-key-group">
-          <label for="llm_api_key">API Key</label>
-          <input type="password" id="llm_api_key" name="llm_api_key" placeholder="Your API key">
-        </div>
-        <div class="form-group" id="llm-model-group">
-          <label for="llm_model">Model Name</label>
-          <input type="text" id="llm_model" name="llm_model" placeholder="e.g., gpt-4o-mini, claude-3-sonnet">
-        </div>
-        <div class="form-group" id="llm-base-url-group">
-          <label for="llm_base_url">Base URL</label>
-          <input type="text" id="llm_base_url" name="llm_base_url" placeholder="e.g., http://localhost:11434">
-        </div>
-      </section>
+            <!-- Non-Manotr: editable input -->
+            <input type="url" id="agent_url" name="agent_url"
+                   placeholder="http://your-server:5050"
+                   class="hidden"
+                   required>
+            <p class="help-text" id="agent-url-hint"></p>
 
-      <!-- Embedding Provider -->
-      <section class="settings-section">
-        <h2>📊 Embedding Provider</h2>
-        <div class="form-group">
-          <label for="embedding_provider">Provider</label>
-          <select id="embedding_provider" name="embedding_provider">
-            <option value="manotr">Manotr</option>
-            <option value="openai">OpenAI</option>
-            <option value="ollama">Ollama</option>
-          </select>
-        </div>
-        <div class="form-group" id="embedding-api-key-group">
-          <label for="embedding_api_key">API Key</label>
-          <input type="password" id="embedding_api_key" name="embedding_api_key" placeholder="Your API key">
-        </div>
-        <div class="form-group" id="embedding-model-group">
-          <label for="embedding_model">Model Name</label>
-          <input type="text" id="embedding_model" name="embedding_model" placeholder="e.g., text-embedding-3-small, nomic-embed-text-v1.5">
-        </div>
-      </section>
+            <!-- Connect button + status (non-Manotr only) -->
+            <div id="connect-row" class="connect-row hidden">
+              <button type="button" id="connect-btn" class="btn btn-connect">
+                🔗 Connect
+              </button>
+              <span id="connect-status" class="connect-status"></span>
+            </div>
+          </div>
+        </section>
 
-      <!-- Vector Database -->
-      <section class="settings-section">
-        <h2>🗄️ Vector Database</h2>
-        <div class="form-group">
-          <label for="vector_provider">Provider</label>
-          <select id="vector_provider" name="vector_provider">
-            <option value="manotr">Manotr</option>
-            <option value="pinecone">Pinecone</option>
-            <option value="qdrant">Qdrant</option>
-          </select>
-        </div>
-        <div class="form-group" id="vector-url-group">
-          <label for="vector_url">Server URL</label>
-          <input type="text" id="vector_url" name="vector_url" placeholder="e.g., https://your-index.pinecone.io">
-        </div>
-        <div class="form-group" id="vector-api-key-group">
-          <label for="vector_api_key">API Key</label>
-          <input type="password" id="vector_api_key" name="vector_api_key" placeholder="Your API key">
-        </div>
-      </section>
-
-      <!-- User Profile -->
-      <section class="settings-section">
-        <h2>👤 User Profile (for drafts) <span style="color:#d93025;font-size:14px;">— Required</span></h2>
-        <div class="form-group">
-          <label for="user_name">Your Name <span style="color:#d93025;">*</span></label>
-          <input type="text" id="user_name" name="user_name" placeholder="Used in email signatures" required>
-        </div>
-        <div class="form-group">
-          <label for="user_position">Your Position/Title <span style="color:#d93025;">*</span></label>
-          <input type="text" id="user_position" name="user_position" placeholder="e.g., Product Manager, Developer" required>
-        </div>
-        <div class="form-group">
-          <label for="user_tone">Preferred Tone</label>
-          <select id="user_tone" name="user_tone">
-            <option value="professional">Professional</option>
-            <option value="friendly">Friendly</option>
-            <option value="formal">Formal</option>
-            <option value="casual">Casual</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="system_prompt">Custom System Prompt</label>
-          <textarea id="system_prompt" name="system_prompt" rows="4" placeholder="Optional: Override default AI behavior"></textarea>
-        </div>
-      </section>
-
-      <!-- Advanced Settings -->
-      <section class="settings-section">
-        <h2>🔧 Advanced Settings</h2>
-
-        <div class="form-group">
-          <label>Domain / Email Filters</label>
-          <p class="help-text"><em>Emails from these domains/addresses are excluded from bulk indexing (one per line).</em></p>
-          <textarea id="domain_filters" name="domain_filters" rows="4" placeholder="example.com&#10;user@example.com"></textarea>
+        <!-- Page-1 nav -->
+        <div class="button-group">
+          <button type="button" id="next-btn" class="btn btn-primary" disabled>
+            Next →
+          </button>
         </div>
 
-        <div class="form-group">
-          <label for="process_months">Historical Email Indexing — Process last</label>
-          <select id="process_months" name="process_months">
-            <option value="10days">Last 10 days</option>
-            <option value="1">1 month</option>
-            <option value="3" selected>3 months</option>
-            <option value="6">6 months</option>
-            <option value="12">1 year</option>
-            <option value="24">2 years</option>
-          </select>
+        <div id="page1-status" class="status-message hidden"></div>
+      </form>
+    </div><!-- /#page-1 -->
+
+
+    <!-- ═══════════════ PAGE 2: Rest of Settings ═══════════════ -->
+    <div id="page-2" class="hidden">
+      <form id="settings-form">
+
+        <!-- LLM Provider -->
+        <section class="settings-section">
+          <h2>🤖 LLM Provider</h2>
+          <div class="form-group">
+            <label for="llm_provider">Provider</label>
+            <select id="llm_provider" name="llm_provider">
+              <option value="manotr">Manotr</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="groq">Groq</option>
+              <option value="ollama">Ollama (Self-hosted)</option>
+            </select>
+          </div>
+
+          <!-- API key — shown for cloud providers -->
+          <div class="form-group hidden" id="llm-api-key-group">
+            <label for="llm_api_key">API Key</label>
+            <input type="password" id="llm_api_key" name="llm_api_key" placeholder="Your API key">
+          </div>
+
+          <!-- Model dropdown — populated dynamically per provider -->
+          <div class="form-group hidden" id="llm-model-group">
+            <label for="llm_model">Model</label>
+            <select id="llm_model" name="llm_model">
+              <option value="">— Select a model —</option>
+            </select>
+          </div>
+
+          <!-- Ollama: base URL (local or self-hosted remote) -->
+          <div class="form-group hidden" id="llm-base-url-group">
+            <label for="llm_base_url">Ollama URL</label>
+            <input type="url" id="llm_base_url" name="llm_base_url"
+                   placeholder="http://localhost:11434">
+            <p class="help-text"><em>Local default: <code>http://localhost:11434</code>.
+              For a remote server enter its public URL, e.g.
+              <code>https://ollama.myserver.com</code></em></p>
+          </div>
+
+          <!-- Ollama: optional API key for secured/remote instances -->
+          <div class="form-group hidden" id="llm-ollama-api-key-group">
+            <label for="llm_ollama_api_key">Ollama API Key <span style="font-weight:400;color:#666;">(optional)</span></label>
+            <input type="password" id="llm_ollama_api_key" name="llm_ollama_api_key"
+                   placeholder="Bearer token if your Ollama instance requires auth">
+            <p class="help-text"><em>Leave blank for local/unauthenticated instances.</em></p>
+          </div>
+
+          <!-- Ollama: fetch models button + status -->
+          <div class="form-group hidden" id="llm-ollama-fetch-group">
+            <button type="button" id="llm-fetch-models-btn" class="btn btn-connect">
+              🔄 Fetch Ollama Models
+            </button>
+            <span id="llm-fetch-status" class="connect-status"></span>
+          </div>
+
+          <!-- Test / validate button (all providers except manotr) -->
+          <div class="form-group hidden" id="llm-test-group">
+            <button type="button" id="llm-test-btn" class="btn btn-connect">
+              🔍 Test LLM Connection
+            </button>
+            <span id="llm-test-status" class="connect-status"></span>
+          </div>
+        </section>
+
+        <!-- Embedding Provider -->
+        <section class="settings-section">
+          <h2>📊 Embedding Provider</h2>
+          <div class="form-group">
+            <label for="embedding_provider">Provider</label>
+            <select id="embedding_provider" name="embedding_provider">
+              <option value="manotr">Manotr</option>
+              <option value="openai">OpenAI</option>
+              <option value="ollama">Ollama</option>
+            </select>
+          </div>
+
+          <!-- API key — cloud providers -->
+          <div class="form-group hidden" id="embedding-api-key-group">
+            <label for="embedding_api_key">API Key</label>
+            <input type="password" id="embedding_api_key" name="embedding_api_key" placeholder="Your API key">
+          </div>
+
+          <!-- Model dropdown — populated dynamically -->
+          <div class="form-group hidden" id="embedding-model-group">
+            <label for="embedding_model">Embedding Model</label>
+            <select id="embedding_model" name="embedding_model">
+              <option value="">— Select a model —</option>
+            </select>
+          </div>
+
+          <!-- Ollama: base URL -->
+          <div class="form-group hidden" id="embedding-ollama-url-group">
+            <label for="embedding_base_url">Ollama URL</label>
+            <input type="url" id="embedding_base_url" name="embedding_base_url"
+                   placeholder="http://localhost:11434">
+            <p class="help-text"><em>Local: <code>http://localhost:11434</code> — or your remote Ollama URL.</em></p>
+          </div>
+
+          <!-- Ollama: optional API key -->
+          <div class="form-group hidden" id="embedding-ollama-api-key-group">
+            <label for="embedding_ollama_api_key">Ollama API Key <span style="font-weight:400;color:#666;">(optional)</span></label>
+            <input type="password" id="embedding_ollama_api_key" name="embedding_ollama_api_key"
+                   placeholder="Bearer token for secured Ollama instances">
+          </div>
+
+          <!-- Fetch Ollama embedding models -->
+          <div class="form-group hidden" id="embedding-ollama-fetch-group">
+            <button type="button" id="embedding-fetch-models-btn" class="btn btn-connect">
+              🔄 Fetch Ollama Models
+            </button>
+            <span id="embedding-fetch-status" class="connect-status"></span>
+          </div>
+
+          <!-- Test embedding connection -->
+          <div class="form-group hidden" id="embedding-test-group">
+            <button type="button" id="embedding-test-btn" class="btn btn-connect">
+              🔍 Test Embedding Connection
+            </button>
+            <span id="embedding-test-status" class="connect-status"></span>
+          </div>
+        </section>
+
+        <!-- Vector Database -->
+        <section class="settings-section">
+          <h2>🗄️ Vector Database</h2>
+          <div class="form-group">
+            <label for="vector_provider">Provider</label>
+            <select id="vector_provider" name="vector_provider">
+              <option value="manotr">Manotr</option>
+              <option value="pinecone">Pinecone</option>
+              <option value="qdrant">Qdrant</option>
+            </select>
+          </div>
+          <div class="form-group hidden" id="vector-url-group">
+            <label for="vector_url">Server URL</label>
+            <input type="text" id="vector_url" name="vector_url"
+                   placeholder="e.g., https://your-index.pinecone.io  or  http://localhost:6333">
+          </div>
+          <div class="form-group hidden" id="vector-api-key-group">
+            <label for="vector_api_key">API Key</label>
+            <input type="password" id="vector_api_key" name="vector_api_key" placeholder="Your API key">
+          </div>
+          <!-- Test vector DB connection -->
+          <div class="form-group hidden" id="vector-test-group">
+            <button type="button" id="vector-test-btn" class="btn btn-connect">
+              🔍 Test Vector DB Connection
+            </button>
+            <span id="vector-test-status" class="connect-status"></span>
+          </div>
+        </section>
+
+        <!-- User Profile -->
+        <section class="settings-section">
+          <h2>👤 User Profile (for drafts) <span style="color:#d93025;font-size:14px;">— Required</span></h2>
+          <div class="form-group">
+            <label for="user_name">Your Name <span style="color:#d93025;">*</span></label>
+            <input type="text" id="user_name" name="user_name"
+                   placeholder="Used in email signatures" required>
+          </div>
+          <div class="form-group">
+            <label for="user_position">Your Position/Title <span style="color:#d93025;">*</span></label>
+            <input type="text" id="user_position" name="user_position"
+                   placeholder="e.g., Product Manager, Developer" required>
+          </div>
+          <div class="form-group">
+            <label for="user_tone">Preferred Tone</label>
+            <select id="user_tone" name="user_tone">
+              <option value="professional">Professional</option>
+              <option value="friendly">Friendly</option>
+              <option value="formal">Formal</option>
+              <option value="casual">Casual</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="system_prompt">Custom System Prompt</label>
+            <textarea id="system_prompt" name="system_prompt" rows="4"
+                      placeholder="Optional: Override default AI behavior"></textarea>
+          </div>
+        </section>
+
+        <!-- Advanced Settings -->
+        <section class="settings-section">
+          <h2>🔧 Advanced Settings</h2>
+          <div class="form-group">
+            <label>Domain / Email Filters</label>
+            <p class="help-text"><em>Emails from these domains/addresses are excluded from bulk
+              indexing (one per line).</em></p>
+            <textarea id="domain_filters" name="domain_filters" rows="4"
+                      placeholder="example.com&#10;user@example.com"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="process_months">Historical Email Indexing — Process last</label>
+            <select id="process_months" name="process_months">
+              <option value="10days">Last 10 days</option>
+              <option value="1">1 month</option>
+              <option value="3" selected>3 months</option>
+              <option value="6">6 months</option>
+              <option value="12">1 year</option>
+              <option value="24">2 years</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- Action Buttons -->
+        <div class="button-group">
+          <button type="button" id="back-btn" class="btn btn-default">← Back</button>
+          <button type="submit" class="btn btn-primary" id="save-btn">💾 Save &amp; Verify</button>
+          <button type="button" id="reset-btn" class="btn btn-default">🔄 Reset to Defaults</button>
         </div>
-      </section>
 
-      <!-- Action Buttons -->
-      <div class="button-group">
-        <button type="submit" class="btn btn-primary">💾 Save Settings</button>
-        <button type="button" id="reset-btn" class="btn btn-default">🔄 Reset to Defaults</button>
-      </div>
+        <div id="status-message" class="status-message hidden"></div>
+      </form>
+    </div><!-- /#page-2 -->
 
-      </div><!-- /#rest-of-settings -->
-
-      <div id="status-message" class="status-message hidden"></div>
-    </form>
-  </div>
+  </div><!-- /.container -->
 
   <script src="options.js"></script>
 </body>
