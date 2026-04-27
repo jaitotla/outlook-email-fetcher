@@ -15,25 +15,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _load_config() -> dict:
-    """Load config from relative path, fall back to empty dict gracefully."""
-    candidates = [
-        os.path.join(os.path.dirname(__file__), "..", "config.json"),
-        os.path.join(os.path.dirname(__file__), "config.json"),
-        os.getenv("OPENMAILBOT_CONFIG_PATH", ""),
-    ]
-    for path in candidates:
-        path = os.path.abspath(path)
-        if os.path.exists(path):
-            try:
-                with open(path, "r") as f:
-                    return json.load(f)
-            except Exception:
-                pass
-    return {}
+# def _load_config() -> dict:
+#     """Load config from relative path, fall back to empty dict gracefully."""
+#     candidates = [
+#         os.path.join(os.path.dirname(__file__), "..", "config.json"),
+#         os.path.join(os.path.dirname(__file__), "config.json"),
+#         os.getenv("OPENMAILBOT_CONFIG_PATH", ""),
+#     ]
+#     for path in candidates:
+#         path = os.path.abspath(path)
+#         if os.path.exists(path):
+#             try:
+#                 with open(path, "r") as f:
+#                     return json.load(f)
+#             except Exception:
+#                 pass
+#     return {}
 
 
-CONFIG = _load_config()
+# CONFIG = _load_config()
 
 # Base data directory: agent/data/{user_id}/...
 BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
@@ -113,22 +113,20 @@ class DraftPipeline:
             self.effective_settings = effective_settings
         elif user_id:
             settings_manager = SettingsManager(user_id)
-            retrieved = settings_manager.get_settings(user_id, "general")
+            retrieved = settings_manager.get_settings(setting_type="general")
             self.effective_settings = retrieved if retrieved else {}
         else:
             self.effective_settings = {}
 
-        self.llm_provider = self.effective_settings.get("llm_provider", "inbuilt")
-        self.llm_model = self.effective_settings.get("llm_model", "gpt-4o-mini")
+        self.llm_provider = self.effective_settings.get("llm_provider")
+        self.llm_model = self.effective_settings.get("llm_model")
 
         try:
-            self.llm_service = LLMService()
-            if self.effective_settings:
-                self.llm_service.effective_settings = self.effective_settings
-                self.llm_service.default_provider = self.llm_provider
-                self.llm_service.default_model = self.llm_model
-                self.llm_service._init_clients()
+            # Pass effective_settings to LLMService constructor
+            self.llm_service = LLMService(effective_settings=self.effective_settings)
             logger.info("✅ LLMService initialized successfully")
+            logger.info(f"   LLM Provider: {self.llm_provider}")
+            logger.info(f"   LLM Model: {self.llm_model}")
         except Exception as e:
             logger.error(f"Failed to initialize LLMService: {e}")
             raise

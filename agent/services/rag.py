@@ -3,15 +3,57 @@ RAG (Retrieval-Augmented Generation) Service
 Combines vector search with LLM generation
 """
 from typing import Optional, Dict, Any, List
+import logging
 
 from services.embeddings import EmbeddingService
 from services.llm import LLMService
+from services.settings_manager import SettingsManager
+
+logger = logging.getLogger(__name__)
 
 
 class RAGService:
-    def __init__(self):
-        self.embedding_service = EmbeddingService()
-        self.llm_service = LLMService()
+    def __init__(self, user_id: Optional[str] = None, effective_settings: Optional[Dict] = None):
+        """
+        Initialize RAG service.
+        
+        Args:
+            user_id: User identifier for settings retrieval
+            effective_settings: Pre-loaded user settings (optional)
+        """
+        self.user_id = user_id
+        
+        # Load or use provided settings
+        if effective_settings:
+            self.effective_settings = effective_settings
+        elif user_id:
+            settings_manager = SettingsManager(user_id)
+            retrieved = settings_manager.get_settings(setting_type="general")
+            self.effective_settings = retrieved if retrieved else {}
+            logger.info(f"Loaded RAG settings for user {user_id}")
+        else:
+            logger.warning("RAGService initialized without user_id or settings - using defaults")
+            self.effective_settings = {}
+        
+        # Initialize services with user settings
+        try:
+            self.embedding_service = EmbeddingService(
+                effective_settings={
+                    **(self.effective_settings or {}),
+                    "user_id": user_id or "anonymous"
+                }
+            )
+            logger.info("✅ EmbeddingService initialized in RAGService")
+        except Exception as e:
+            logger.error(f"Failed to initialize EmbeddingService in RAGService: {e}")
+            raise
+        
+        try:
+            self.llm_service = LLMService(effective_settings=self.effective_settings)
+            logger.info("✅ LLMService initialized in RAGService")
+        except Exception as e:
+            logger.error(f"Failed to initialize LLMService in RAGService: {e}")
+            raise
     
     async def query(
         self,

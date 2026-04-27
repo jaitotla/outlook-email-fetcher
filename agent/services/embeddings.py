@@ -16,10 +16,10 @@ from services.llm import ProviderError
 
 logger = logging.getLogger(__name__)
 
-# Load configuration
-CONFIG_PATH = "/home/manotr/openmailbot/openmailbot/agent/config.json"
-with open(CONFIG_PATH, 'r') as f:
-    CONFIG = json.load(f)
+# # Load configuration
+# CONFIG_PATH = "/home/manotr/openmailbot/openmailbot/agent/config.json"
+# with open(CONFIG_PATH, 'r') as f:
+#     CONFIG = json.load(f)
 
 class EmbeddingService:
     """

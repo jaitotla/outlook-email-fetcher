@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # Default providers - "inbuilt" uses central servers defined in utils.py
     LLM_PROVIDER: str = "inbuilt"  # openai, anthropic, gemini, ollama, inbuilt
     EMBEDDING_PROVIDER: str = "inbuilt"  # openai, nomic, gemini, sentence-transformers, inbuilt
-    VECTOR_PROVIDER: str = "inbuilt"  # pinecone, chroma, weaviate, inbuilt
+    VECTOR_PROVIDER: str = "inbuilt"  # pinecone, chroma, local, weaviate, inbuilt
     
     # OpenAI
     OPENAI_API_KEY: Optional[str] = None

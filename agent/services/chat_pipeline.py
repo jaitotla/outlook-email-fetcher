@@ -125,7 +125,7 @@ class ChatWithThreadPipeline:
         elif user_id:
             # Load from encrypted DB storage
             settings_manager = SettingsManager(user_id)
-            retrieved_settings = settings_manager.get_settings(user_id, "general")
+            retrieved_settings = settings_manager.get_settings(setting_type="general")
             logger.info(f" these are setttings {retrieved_settings}")
             self.effective_settings = retrieved_settings if retrieved_settings else {}
         else:
@@ -152,14 +152,11 @@ class ChatWithThreadPipeline:
         
         # Initialize LLMService for all LLM operations
         try:
-            self.llm_service = LLMService()
-            # Override with user-specific settings if available
-            if self.effective_settings:
-                self.llm_service.effective_settings = self.effective_settings
-                self.llm_service.default_provider = self.llm_provider
-                self.llm_service.default_model = self.llm_model
-                self.llm_service._init_clients()
+            # Pass effective_settings to LLMService constructor
+            self.llm_service = LLMService(effective_settings=self.effective_settings)
             logger.info("✅ LLMService initialized successfully")
+            logger.info(f"   LLM Provider: {self.llm_provider}")
+            logger.info(f"   LLM Model: {self.llm_model}")
         except Exception as e:
             logger.error(f"Failed to initialize LLMService: {e}")
             raise
@@ -1087,52 +1084,81 @@ Remember: ALWAYS use tools. Do not answer without searching first."""
         return retrieved_context
     
     def _tool_calling_with_llm_service(self, user_id: str, thread_id: str, user_question: str) -> List[str]:
-        """Handle tool calling using LLMService (for non-inbuilt providers)"""
+        """
+        Handle tool calling using LLMService (for non-inbuilt providers)
+        
+        Note: This uses a text-based tool selection approach since not all models 
+        support native function/tool calling:
+        - OpenAI GPT-4/GPT-3.5: ✅ Full tool calling support
+        - Anthropic Claude 3+: ✅ Full tool calling support  
+        - Groq (Llama, Mixtral): ⚠️  Limited/experimental support
+        - Ollama (most models): ❌ No native tool calling (uses text fallback)
+        
+        If tool selection fails (model unavailable, doesn't support tool calling, etc.),
+        automatically falls back to searching both emails and attachments.
+        """
         logger.info(f"🔧 Using LLMService ({self.llm_provider}) for tool calling")
         
-        # For non-inbuilt providers, we'll execute a simpler tool selection prompt
-        # since not all providers support tool calling natively
-        system_prompt = """You are an email assistant. Based on the user's question, decide which tools to use:
+        retrieved_context = []
+        
+        try:
+            # For non-inbuilt providers, we'll execute a simpler tool selection prompt
+            # since not all providers support tool calling natively
+            system_prompt = """You are an email assistant. Based on the user's question, decide which tools to use:
 1. search_thread_emails - to find specific information in emails
 2. search_attachments - to find information in document attachments
 3. both - if you need to search both
 
 Respond with ONLY the tool name(s), one per line."""
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_question}
+            ]
+            
+            # Get tool selection from LLM with timeout
+            tool_selection = self._run_async_task(self.llm_service.generate(
+                messages,
+                provider=self.llm_provider,
+                model=self.llm_model,
+                temperature=0
+            ))
+            
+            logger.info(f"🛠 Tool selection: {tool_selection}")
+            
+            tool_selection_lower = tool_selection.lower()
+            
+            # Execute tools based on selection
+            if "search_thread_emails" in tool_selection_lower or "both" in tool_selection_lower:
+                email_results = self._search_thread_emails_internal(
+                    user_id, thread_id, user_question, 5
+                )
+                retrieved_context.append(f"=== EMAIL SEARCH RESULTS ===\n{email_results}")
+            
+            if "search_attachments" in tool_selection_lower or "both" in tool_selection_lower:
+                attachment_results = self._search_attachments_internal(
+                    user_id, thread_id, user_question, 3
+                )
+                retrieved_context.append(f"=== ATTACHMENT SEARCH RESULTS ===\n{attachment_results}")
+            
+            # Fallback to both if nothing matched
+            if not retrieved_context:
+                logger.warning("⚠️ Tool selection unclear — fallback search activated")
+                email_results = self._search_thread_emails_internal(
+                    user_id, thread_id, user_question, 5
+                )
+                attachment_results = self._search_thread_emails_internal(
+                    user_id, thread_id, user_question, 3
+                )
+                retrieved_context.append(f"=== EMAIL SEARCH RESULTS ===\n{email_results}")
+                retrieved_context.append(f"=== ATTACHMENT SEARCH RESULTS ===\n{attachment_results}")
         
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_question}
-        ]
-        
-        # Get tool selection from LLM
-        tool_selection = self._run_async_task(self.llm_service.generate(
-            messages,
-            provider=self.llm_provider,
-            model=self.llm_model,
-            temperature=0
-        ))
-        
-        logger.info(f"🛠 Tool selection: {tool_selection}")
-        
-        retrieved_context = []
-        tool_selection_lower = tool_selection.lower()
-        
-        # Execute tools based on selection
-        if "search_thread_emails" in tool_selection_lower or "both" in tool_selection_lower:
-            email_results = self._search_thread_emails_internal(
-                user_id, thread_id, user_question, 5
-            )
-            retrieved_context.append(f"=== EMAIL SEARCH RESULTS ===\n{email_results}")
-        
-        if "search_attachments" in tool_selection_lower or "both" in tool_selection_lower:
-            attachment_results = self._search_attachments_internal(
-                user_id, thread_id, user_question, 3
-            )
-            retrieved_context.append(f"=== ATTACHMENT SEARCH RESULTS ===\n{attachment_results}")
-        
-        # Fallback to both if nothing matched
-        if not retrieved_context:
-            logger.warning("⚠️ Tool selection unclear — fallback search activated")
+        except Exception as e:
+            # If tool calling fails (model unavailable, connection error, etc.),
+            # fall back to searching both sources automatically
+            logger.error(f"❌ Tool calling failed: {e}")
+            logger.warning("⚠️ Falling back to searching both emails and attachments")
+            
             email_results = self._search_thread_emails_internal(
                 user_id, thread_id, user_question, 5
             )
@@ -1145,47 +1171,93 @@ Respond with ONLY the tool name(s), one per line."""
         return retrieved_context
     
     def _generate_response(self, system_prompt: str, user_prompt: str) -> str:
-        """Generate final response using configured LLM"""
-        if self.llm_provider == "inbuilt":
-            # Use Ollama for inbuilt mode
-            logger.info("🦙 Using Ollama for response generation (inbuilt mode)")
-            logger.info(f"\n{'='*80}\n🦙 OLLAMA REQUEST DETAILS:\n{'='*80}")
-            logger.info(f"Model: {OLLAMA_MODEL}")
-            logger.info(f"Temperature: {OLLAMA_TEMP}")
-            logger.info(f"System Prompt:\n{system_prompt}")
-            logger.info(f"User Prompt:\n{user_prompt}")
-            logger.info(f"{'='*80}\n")
+        """
+        Generate final response using configured LLM
+        
+        Handles errors gracefully and provides informative fallback messages.
+        """
+        try:
+            if self.llm_provider == "inbuilt":
+                # Use Ollama for inbuilt mode
+                logger.info("🦙 Using Ollama for response generation (inbuilt mode)")
+                logger.info(f"\n{'='*80}\n🦙 OLLAMA REQUEST DETAILS:\n{'='*80}")
+                logger.info(f"Model: {OLLAMA_MODEL}")
+                logger.info(f"Temperature: {OLLAMA_TEMP}")
+                logger.info(f"System Prompt:\n{system_prompt}")
+                logger.info(f"User Prompt:\n{user_prompt}")
+                logger.info(f"{'='*80}\n")
+                
+                ollama_response = call_ollama_chat_params(
+                    modelName=OLLAMA_MODEL,
+                    sysPrompt=system_prompt,
+                    usrPrompt=user_prompt,
+                    temp=OLLAMA_TEMP
+                )
+                return ollama_response["message"]["content"]
+            else:
+                # Use LLMService for other providers
+                logger.info(f"🤖 Using LLMService ({self.llm_provider}) for response generation")
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+                
+                logger.info(f"\n{'='*80}\n🤖 LLM SERVICE REQUEST DETAILS:\n{'='*80}")
+                logger.info(f"Provider: {self.llm_provider}")
+                logger.info(f"Model: {self.llm_model}")
+                logger.info(f"Messages:")
+                for msg in messages:
+                    logger.info(f"  Role: {msg['role']}")
+                    logger.info(f"  Content:\n{msg['content']}\n")
+                logger.info(f"{'='*80}\n")
+                
+                response = self._run_async_task(self.llm_service.generate(
+                    messages,
+                    provider=self.llm_provider,
+                    model=self.llm_model
+                ))
+                return response
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"❌ Response generation failed: {error_msg}")
             
-            ollama_response = call_ollama_chat_params(
-                modelName=OLLAMA_MODEL,
-                sysPrompt=system_prompt,
-                usrPrompt=user_prompt,
-                temp=OLLAMA_TEMP
-            )
-            return ollama_response["message"]["content"]
-        else:
-            # Use LLMService for other providers
-            logger.info(f"🤖 Using LLMService ({self.llm_provider}) for response generation")
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-            
-            logger.info(f"\n{'='*80}\n🤖 LLM SERVICE REQUEST DETAILS:\n{'='*80}")
-            logger.info(f"Provider: {self.llm_provider}")
-            logger.info(f"Model: {self.llm_model}")
-            logger.info(f"Messages:")
-            for msg in messages:
-                logger.info(f"  Role: {msg['role']}")
-                logger.info(f"  Content:\n{msg['content']}\n")
-            logger.info(f"{'='*80}\n")
-            
-            response = self._run_async_task(self.llm_service.generate(
-                messages,
-                provider=self.llm_provider,
-                model=self.llm_model
-            ))
-            return response
+            # Provide helpful error messages based on the error type
+            if "connection" in error_msg.lower() or "timeout" in error_msg.lower():
+                if self.llm_provider == "ollama" or self.llm_provider == "inbuilt":
+                    return (
+                        "⚠️ Unable to connect to the LLM service (Ollama). "
+                        "Please ensure:\n"
+                        "1. Ollama is running locally (ollama serve)\n"
+                        "2. The correct URL is configured in settings\n"
+                        "3. The model is pulled (ollama pull llama3.3)\n\n"
+                        f"Error: {error_msg}"
+                    )
+                else:
+                    return (
+                        f"⚠️ Unable to connect to {self.llm_provider}. "
+                        f"Please check your API key and network connection.\n\n"
+                        f"Error: {error_msg}"
+                    )
+            elif "401" in error_msg or "403" in error_msg or "unauthorized" in error_msg.lower():
+                return (
+                    f"⚠️ Authentication failed for {self.llm_provider}. "
+                    "Please check your API key in settings.\n\n"
+                    f"Error: {error_msg}"
+                )
+            elif "404" in error_msg:
+                return (
+                    f"⚠️ Model or endpoint not found for {self.llm_provider}. "
+                    f"Please verify:\n"
+                    f"1. Model name: {self.llm_model}\n"
+                    f"2. Provider URL in settings\n\n"
+                    f"Error: {error_msg}"
+                )
+            else:
+                return (
+                    f"⚠️ Failed to generate response using {self.llm_provider}.\n\n"
+                    f"Error: {error_msg}"
+                )
     
     def process_and_chat(self, user_id: str, thread_id: str, 
                         user_question: str) -> Dict:

@@ -36,16 +36,17 @@ class SummarizationPipeline:
         # Load user settings
         try:
             settings_manager = SettingsManager(user_id)
-            self.effective_settings = settings_manager.get_settings("general")
+            # Fixed: Pass setting_type as keyword argument, not positional
+            self.effective_settings = settings_manager.get_settings(setting_type="general")
             logger.info(f"Retrieved settings for user {user_id} (type: general)")
             logger.info(f" these are setttings {self.effective_settings}")
         except Exception as e:
             logger.warning(f"Failed to load settings for user {user_id}: {e}. Using defaults.")
             self.effective_settings = {}
         
-        # Extract LLM provider info from settings
-        self.llm_provider = self.effective_settings.get('llm_provider', 'openai')
-        self.llm_model = self.effective_settings.get('llm_model', 'gpt-4o-mini')
+        # Extract LLM provider info from settings with safe defaults
+        self.llm_provider = self.effective_settings.get('llm_provider') 
+        self.llm_model = self.effective_settings.get('llm_model') 
         
         # Initialize LLM service with user settings
         try:

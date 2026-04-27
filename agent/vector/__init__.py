@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 from .base import BaseVectorStore
 from .pinecone_client import PineconeClient
 from .chroma_client import ChromaDBClient
-from .noop_client import NoOpVectorClient
+
 import logging
 
 
@@ -14,7 +14,7 @@ def get_vector_client(provider: str, settings: Optional[Dict[str, Any]] = None) 
     Factory function to get the appropriate vector client based on provider.
     
     Args:
-        provider: One of 'pinecone', 'chroma', 'weaviate', 'inbuilt'
+        provider: One of 'pinecone', 'chroma', 'local', 'weaviate', 'inbuilt'
         settings: Optional settings dict with provider-specific config
     
     Returns:
@@ -27,8 +27,9 @@ def get_vector_client(provider: str, settings: Optional[Dict[str, Any]] = None) 
             return PineconeClient(settings_dict=settings)
         except Exception as e:
             logging.getLogger(__name__).warning(f"Pinecone init failed, falling back to NoOpVectorClient: {e}")
-            return NoOpVectorClient()
-    elif provider == "chroma":
+            return PineconeClient(settings_dict=settings)
+    elif provider in ("chroma", "local"):
+        # "local" is an alias for "chroma" - local persistent storage
         return ChromaDBClient(settings=settings)
     elif provider == "weaviate":
         from .weaviate_client import WeaviateClient
@@ -38,7 +39,7 @@ def get_vector_client(provider: str, settings: Optional[Dict[str, Any]] = None) 
         return ChromaDBClient(settings=settings, inbuilt_mode=True)
     else:
         raise ValueError(f"Unsupported vector DB provider: {provider}. "
-                        f"Supported: pinecone, chroma, weaviate, inbuilt")
+                        f"Supported: pinecone, chroma, local, weaviate, inbuilt")
 
 
 __all__ = ['BaseVectorStore', 'PineconeClient', 'ChromaDBClient', 'get_vector_client']

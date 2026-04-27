@@ -13,11 +13,11 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Load configuration
-CONFIG_PATH = "/home/manotr/openmailbot/openmailbot/agent/config.json"
-# openmailbot/openmailbot/agent/config.json
-with open(CONFIG_PATH, 'r') as f:
-    CONFIG = json.load(f)
+# # Load configuration
+# CONFIG_PATH = "/home/manotr/openmailbot/openmailbot/agent/config.json"
+# # openmailbot/openmailbot/agent/config.json
+# with open(CONFIG_PATH, 'r') as f:
+#     CONFIG = json.load(f)
 
 class ProviderError(Exception):
     """Exception raised when an LLM provider fails"""
@@ -42,7 +42,7 @@ class LLMService:
                 If not provided, uses CONFIG as fallback
         """
         # Use provided settings or fall back to global CONFIG
-        self.effective_settings = effective_settings if effective_settings else (CONFIG or {})
+        self.effective_settings = effective_settings or {}
         
         # Use effective settings if provided, otherwise fall back to global config
         self.default_provider = self.effective_settings.get("llm_provider") or settings.DEFAULT_LLM_PROVIDER

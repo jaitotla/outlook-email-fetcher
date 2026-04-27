@@ -256,6 +256,7 @@ app.add_middleware(
         settings.BACKEND_API_URL,
         "http://localhost:3001",
         "http://localhost:3000",
+        "http://omb.manotr.com",  # Production frontend
         "moz-extension://*",  # Thunderbird add-on origin
         "*"  # Allow all origins as fallback
     ],
@@ -643,11 +644,24 @@ async def validate_provider(request: ValidateProviderRequest):
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    models = sorted([m["id"] for m in data.get("data", [])
-                                     if not any(x in m["id"] for x in
-                                                ["whisper", "tts", "dall-e", "babbage", "davinci",
-                                                 "text-moderation", "embedding", "realtime", "transcribe"])])
-                    return {"valid": True, "message": "OpenAI API key is valid.", "models": models}
+                    # Filter models based on provider type
+                    if request.provider_type == "llm":
+                        # Only include chat/completion models, exclude embeddings, audio, moderation, etc.
+                        models = sorted([m["id"] for m in data.get("data", [])
+                                         if not any(x in m["id"] for x in
+                                                    ["whisper", "tts", "dall-e", "babbage", "davinci",
+                                                     "text-moderation", "embedding", "realtime", "transcribe",
+                                                     "ada", "curie", "babbage-002", "davinci-002"])])
+                    elif request.provider_type == "embedding":
+                        # Only include embedding models
+                        models = sorted([m["id"] for m in data.get("data", [])
+                                         if "embedding" in m["id"]])
+                    else:
+                        models = sorted([m["id"] for m in data.get("data", [])])
+                    
+                    if not models:
+                        return {"valid": True, "message": f"OpenAI API key is valid but no {request.provider_type} models found.", "models": []}
+                    return {"valid": True, "message": f"OpenAI API key is valid. Found {len(models)} model(s).", "models": models}
                 elif resp.status_code == 401:
                     return {"valid": False, "message": "Invalid OpenAI API key.", "models": []}
                 else:
@@ -696,24 +710,49 @@ async def validate_provider(request: ValidateProviderRequest):
                 headers = {}
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
+                
+                # Determine deployment type for better messaging
+                is_local = "localhost" in ollama_url or "127.0.0.1" in ollama_url
+                is_secured = bool(api_key)
+                
                 try:
-                    resp = await client.get(f"{ollama_url}/api/tags", headers=headers)
+                    resp = await client.get(f"{ollama_url}/api/tags", headers=headers, timeout=10.0)
                     if resp.status_code == 200:
                         data = resp.json()
                         models = [m["name"] for m in data.get("models", [])]
+                        
+                        # Filter models based on provider type for Ollama
+                        if request.provider_type == "embedding":
+                            # Prioritize embedding-specific models
+                            embedding_keywords = ["embed", "bge", "minilm", "arctic", "mxbai", "nomic"]
+                            embedding_models = [m for m in models if any(kw in m.lower() for kw in embedding_keywords)]
+                            if embedding_models:
+                                models = embedding_models
+                        
                         if not models:
+                            deployment_info = "Local Ollama" if is_local else "Remote Ollama"
                             return {"valid": True,
-                                    "message": "Ollama is reachable but no models are installed. Run 'ollama pull <model>' first.",
+                                    "message": f"{deployment_info} is reachable but no models are installed. Run 'ollama pull <model>' first.",
                                     "models": []}
+                        
+                        deployment_type = ""
+                        if is_local:
+                            deployment_type = "Local Ollama"
+                        elif is_secured:
+                            deployment_type = "Remote Ollama (secured)"
+                        else:
+                            deployment_type = "Remote Ollama"
+                        
                         return {"valid": True,
-                                "message": f"Ollama is reachable. Found {len(models)} model(s).",
+                                "message": f"{deployment_type} is reachable. Found {len(models)} model(s).",
                                 "models": sorted(models)}
                     elif resp.status_code == 401:
                         return {"valid": False, "message": "Ollama requires authentication — check your API key.", "models": []}
                     else:
                         return {"valid": False, "message": f"Ollama returned HTTP {resp.status_code}.", "models": []}
                 except _httpx.ConnectError:
-                    return {"valid": False, "message": f"Cannot connect to Ollama at {ollama_url}. Is it running?", "models": []}
+                    suggestion = "Is Ollama running?" if is_local else "Check the URL and ensure it's publicly accessible."
+                    return {"valid": False, "message": f"Cannot connect to Ollama at {ollama_url}. {suggestion}", "models": []}
 
             # ── Pinecone ────────────────────────────────────────────────────
             elif provider == "pinecone":

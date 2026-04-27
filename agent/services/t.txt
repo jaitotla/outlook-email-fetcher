@@ -1,0 +1,46 @@
+look into
+/agent/main.py and 
+/thunderbrid-addon 
+
+
+if i chose manotr as mode agent url outo fill with omb.manotr.com
+And user does not have access to edited just show it
+
+If user choose other mode than Manotr 
+It should compulsory to put an agent url and then only its move to the next page so move this as an onboarding pages so on the first page there is a mode and agent url rest of the things are on next page 
+Aren't agent url after the user put an agent url get a option of the connect and write one route on back end so its authenticate that the server is already it should be anything like health check or handshake route so we know that user put his custom agent url and it is running
+
+now go one-by-one in depth .
+in llm configration 
+if i chose open ai i shoud get and show an modesl name of open ai . same for other providers . show respective models by company provider .
+and saved button. these saved button is saved setting and make handsheek and check api key 
+Buy industry standard methods like getting api dot models we get a bunch of the models so like this find out the way that's the very quick and widely used in production to verify the api without sending an any message or burnout or tokens
+
+if provider is ollama show ollama models name. 
+In case of the Olama Olama should work for three cases first case olama is running on local so it should accept the local url like localhout something something and port so olamide's running local should be
+Second case olama is running on some other server and that exports via public url I just give a public url of my pole let's assume I'm running an olama on my server and I expose my local host by some page kite or some other providers I expose and my local host with an url so I give an url it should be work with that also
+3rd case Olama url that provided by the Olama company
+
+these ollama changes application where ollama is being used .
+like embedding and llm 
+
+For a building configuration the same changes made authenticate the api that api and models are correct or api is working if it is Olama I already told the watts we need to change
+
+Foreign vector database configuration also authenticate the end api .
+
+plane out step  by step and implement
+use web for feach lates model .
+
+I get the structure how to call an api and make sure that there is no mistake the agent will work with the permutation combination with the every seconds so do that.
+
+
+
+
+summarization not pictup the seettings 
+
+
+summarization not pictup ollama 
+vector db saving db by its own location inside the /agent
+button to veryfy the seettings 
+background process shoud be run after save settings 
+lables give llm from settings 

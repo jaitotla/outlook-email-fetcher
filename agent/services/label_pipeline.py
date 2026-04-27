@@ -6,15 +6,29 @@ Integrates with graph database storage pipeline for category/topic organization
 import re
 import os
 import sys
+import logging
 from typing import Dict, Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_groq import ChatGroq
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+
+# Import Ollama for native structured output
+try:
+    from ollama import chat as ollama_chat
+except ImportError:
+    ollama_chat = None
+
+# Import settings manager
+from services.settings_manager import SettingsManager
 
 # Import from the same services directory
 # from .store_graph_pipeline import StoreGraphPipeline, ThreadGraphData  # Removed: label storage
 from .ollama_lable_pipline import EmailLabelPipeline as OllamaEmailLabelPipeline
+
+logger = logging.getLogger(__name__)
 
 # Define allowed labels using Literal
 EmailLabel = Literal[
@@ -48,51 +62,105 @@ class EmailLabelOutput(BaseModel):
 class EmailLabelPipeline:
     """
     Pipeline for labeling emails using rule-based system and LLM fallback
+    Supports multiple LLM providers with structured output
     """
     
-    def __init__(self, openai_api_key: str = None):
+    def __init__(self, user_id: Optional[str] = None, effective_settings: Optional[Dict] = None):
         """
         Initialize the label pipeline
         
         Args:
-            openai_api_key: OpenAI API key (if None, uses rule-based only)
+            user_id: User identifier for loading settings
+            effective_settings: Optional pre-loaded settings dict
 
         """
-        import json
+        self.user_id = user_id
         
-        # Try to get API key from parameter, environment, or config file
-        if openai_api_key is None:
-            openai_api_key = os.getenv("OPENAI_API_KEY")
-            
-        if openai_api_key is None:
-            try:
-                config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
-                with open(config_path, "r") as f:
-                    config = json.load(f)
-                openai_api_key = config.get("OPENAI_KEY")
-            except (FileNotFoundError, json.JSONDecodeError):
-                openai_api_key = None
+        # Load user settings
+        if effective_settings:
+            self.effective_settings = effective_settings
+        elif user_id:
+            settings_manager = SettingsManager(user_id)
+            retrieved = settings_manager.get_settings(setting_type="general")
+            self.effective_settings = retrieved if retrieved else {}
+        else:
+            self.effective_settings = {}
         
-        self.openai_api_key = openai_api_key
+        # Extract LLM configuration from settings
+        self.llm_provider = self.effective_settings.get("llm_provider", "manotr")
+        self.llm_model = self.effective_settings.get("llm_model", "gpt-4o-mini")
+        self.llm_api_key = self.effective_settings.get("llm_api_key", "")
+        self.llm_base_url = self.effective_settings.get("llm_base_url", "http://localhost:11434")
+        
         self.llm = None
         self.parser = None
+        self.use_ollama_native = False
         
-        # Only initialize LLM if API key is available
-        if self.openai_api_key:
+        # Initialize LLM based on provider
+        if self.llm_provider != "manotr":
             try:
-                # Initialize LLM with structured output
-                self.llm = ChatOpenAI(
-                    model="gpt-5-mini",
-                    temperature=0,
-                    api_key=self.openai_api_key
-                )
-                
-                # Setup output parser
-                self.parser = PydanticOutputParser(pydantic_object=EmailLabelOutput)
+                self._init_llm()
+                logger.info(f"✅ Label pipeline initialized with {self.llm_provider} / {self.llm_model}")
             except Exception as e:
-                print(f"⚠️  Warning: Failed to initialize LLM: {str(e)}")
+                logger.warning(f"⚠️  Failed to initialize LLM: {str(e)}")
                 self.llm = None
                 self.parser = None
+    
+    def _init_llm(self):
+        """Initialize LLM client based on provider settings"""
+        
+        if self.llm_provider == "ollama":
+            # Use Ollama native structured output if available
+            if ollama_chat is not None:
+                self.use_ollama_native = True
+                logger.info(f"Using Ollama native structured output at {self.llm_base_url}")
+            else:
+                logger.warning("Ollama library not installed. Install with: pip install ollama")
+                self.llm = None
+                
+        elif self.llm_provider == "openai":
+            if not self.llm_api_key:
+                raise ValueError("OpenAI API key required")
+            
+            # Sanitize API key
+            api_key = str(self.llm_api_key).strip()
+            
+            self.llm = ChatOpenAI(
+                model=self.llm_model or "gpt-4o-mini",
+                temperature=0,
+                api_key=api_key
+            )
+            self.parser = PydanticOutputParser(pydantic_object=EmailLabelOutput)
+            
+        elif self.llm_provider == "anthropic":
+            if not self.llm_api_key:
+                raise ValueError("Anthropic API key required")
+            
+            api_key = str(self.llm_api_key).strip()
+            
+            self.llm = ChatAnthropic(
+                model=self.llm_model or "claude-3-5-sonnet-20241022",
+                temperature=0,
+                api_key=api_key
+            )
+            self.parser = PydanticOutputParser(pydantic_object=EmailLabelOutput)
+            
+        elif self.llm_provider == "groq":
+            if not self.llm_api_key:
+                raise ValueError("Groq API key required")
+            
+            api_key = str(self.llm_api_key).strip()
+            
+            self.llm = ChatGroq(
+                model=self.llm_model or "llama-3.3-70b-versatile",
+                temperature=0,
+                api_key=api_key
+            )
+            self.parser = PydanticOutputParser(pydantic_object=EmailLabelOutput)
+        
+        else:
+            logger.warning(f"Unsupported LLM provider: {self.llm_provider}")
+            self.llm = None
         
         # Create prompt template
         self.prompt = ChatPromptTemplate.from_messages([
@@ -322,6 +390,7 @@ Provide the label, category, topic, and subtopic for this email based on the use
     def classify_with_llm(self, email_data: Dict[str, Any]) -> EmailLabelOutput:
         """
         Classify email using LLM with structured output
+        Supports both Ollama native format and PydanticOutputParser for other providers
         
         Args:
             email_data: Dictionary with email fields
@@ -330,8 +399,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
             EmailLabelOutput with label, category, topic, subtopic
         """
         # Check if LLM is available
-        if not self.llm or not self.parser:
-            print("⚠️  LLM not available, cannot classify with LLM")
+        if not self.use_ollama_native and (not self.llm or not self.parser):
+            logger.warning("⚠️  LLM not available, cannot classify with LLM")
             return EmailLabelOutput(
                 label="response",
                 category="General",
@@ -352,26 +421,113 @@ Provide the label, category, topic, and subtopic for this email based on the use
             if len(body) > 1000:
                 body = body[:1000] + "..."
             
-            # Create formatted prompt
-            formatted_prompt = self.prompt.format_messages(
-                format_instructions=self.parser.get_format_instructions(),
-                user_id=user_id,
-                from_address=from_address,
-                to_addresses=to_addresses,
-                subject=subject,
-                body=body
-            )
+            # Handle Ollama native structured output
+            if self.use_ollama_native:
+                logger.info(f"Using Ollama native structured output with {self.llm_model}")
+                
+                # Build system prompt without format_instructions
+                system_content = """
+You are a precise email classification and analysis assistant.
+
+Your task is to analyze an email and extract:
+1. LABEL - EXACTLY ONE labels from the allowed labels
+2. CATEGORY - Select ONE from: Issue, Update, Discussion, Request, Question, Confirmation, Complaint, Approval. If it doesn't fit any of these, choose "General"
+3. TOPIC - Primary topic being discussed
+4. SUBTOPIC - Subtopic if applicable (optional)
+5. SUBJECT_MATTER - A simple, concise one-line summary (10-15 words max) describing the main subject of the email
+
+Choose the label that BEST represents the MAIN intent of the email with respect to the user.
+Consider the user's context and priorities when selecting the label.
+If multiple labels seem possible, select the most dominant purpose.
+
+----------------------
+EMAIL LABEL DEFINITIONS
+----------------------
+
+Response
+- Direct answers to questions asked in previous emails
+- Confirmations of requests or actions
+- Provides information that was specifically requested
+- Examples: "Yes, I can attend the meeting", "Here's the report you asked for", "The answer to your question is..."
+
+FYI (For Your Information)
+- Informational updates with no action or reply needed
+- Announcements, notifications, or status updates
+- Sharing knowledge, articles, or resources
+- Examples: "Just keeping you in the loop", "FYI - the office will be closed", "Sharing this article for your awareness"
+
+Escalation
+- Raises unresolved issues to management or higher authority
+- Expresses urgency, complaints, or critical problems
+- Indicates failures, delays, or blocked progress requiring intervention
+- Contains phrases like "need immediate attention", "this is urgent", "not resolved yet"
+- Examples: "This has been pending for 3 weeks", "Escalating to your manager", "Critical issue needs executive approval"
+
+Notification — Automated/system-generated update or alert  
+meeting — Scheduling or discussing a meeting  
+hotels — Hotel-related communication  
+airlines — Flight-related communication  
+travel — General travel discussion  
+restaurant — Restaurant reservations or inquiries  
+booking — Non-travel reservations or appointments  
+bank — Banking or financial matters  
+recruitment — Hiring, interviews, or job applications
+Other - other types of emails that don't fit the above categories
+"""
+                
+                user_content = f"""Classify and analyze this email for User: {user_id}
+
+From: {from_address}
+To: {to_addresses}
+Subject: {subject}
+Body: {body}
+
+Provide the label, category, topic, and subtopic for this email based on the user's context and priorities."""
+                
+                # Call Ollama with structured output
+                response = ollama_chat(
+                    model=self.llm_model,
+                    messages=[
+                        {'role': 'system', 'content': system_content},
+                        {'role': 'user', 'content': user_content}
+                    ],
+                    format=EmailLabelOutput.model_json_schema(),
+                    options={
+                        'temperature': 0,
+                    }
+                )
+                
+                # Parse the response using Pydantic
+                result = EmailLabelOutput.model_validate_json(response.message.content)
+                logger.info(f"✅ Ollama classification: {result.label}")
+                return result
             
-            # Get LLM response
-            response = self.llm.invoke(formatted_prompt)
-            
-            # Parse structured output
-            result = self.parser.parse(response.content)
-            
-            return result
+            else:
+                # Use PydanticOutputParser for OpenAI, Anthropic, Groq
+                logger.info(f"Using PydanticOutputParser with {self.llm_provider}")
+                
+                # Create formatted prompt with format_instructions
+                formatted_prompt = self.prompt.format_messages(
+                    format_instructions=self.parser.get_format_instructions(),
+                    user_id=user_id,
+                    from_address=from_address,
+                    to_addresses=to_addresses,
+                    subject=subject,
+                    body=body
+                )
+                
+                # Get LLM response
+                response = self.llm.invoke(formatted_prompt)
+                
+                # Parse structured output
+                result = self.parser.parse(response.content)
+                logger.info(f"✅ {self.llm_provider} classification: {result.label}")
+                return result
             
         except Exception as e:
-            print(f"Error in LLM classification: {str(e)}")
+            logger.error(f"Error in LLM classification: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             # Fallback to general label
             return EmailLabelOutput(
                 label="response",

@@ -50,7 +50,7 @@ class SimpleDraftPipeline:
             self.effective_settings = effective_settings
         elif user_id:
             settings_manager = SettingsManager(user_id)
-            retrieved = settings_manager.get_settings(user_id, "general")
+            retrieved = settings_manager.get_settings(setting_type="general")
             self.effective_settings = retrieved if retrieved else {}
         else:
             self.effective_settings = {}
@@ -59,13 +59,11 @@ class SimpleDraftPipeline:
         self.llm_model = self.effective_settings.get("llm_model", "gpt-4o-mini")
 
         try:
-            self.llm_service = LLMService()
-            if self.effective_settings:
-                self.llm_service.effective_settings = self.effective_settings
-                self.llm_service.default_provider = self.llm_provider
-                self.llm_service.default_model = self.llm_model
-                self.llm_service._init_clients()
+            # Pass effective_settings to LLMService constructor
+            self.llm_service = LLMService(effective_settings=self.effective_settings)
             logger.info("✅ LLMService initialized successfully")
+            logger.info(f"   LLM Provider: {self.llm_provider}")
+            logger.info(f"   LLM Model: {self.llm_model}")
         except Exception as e:
             logger.error(f"Failed to initialize LLMService: {e}")
             raise
