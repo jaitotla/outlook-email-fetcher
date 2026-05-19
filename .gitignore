@@ -1,77 +1,165 @@
-<<<<<<< HEAD
-# .gitignore for OpenMailBot
-
+# ==================== ENVIRONMENT & CREDENTIALS ====================
 # Environment files
 .env
 .env.local
 .env.*.local
+.env.prod
+.env.production
+.env.test
+.env.*.test
 agent/.env
-agent/config.json
+agent/.env.local
+backend/.env
+backend/.env.local
+!.env.example
+!.env.sample
 
+# Config files with sensitive data
+config.json
+agent/config.json
+backend/config.json
+config.py
+agent/config.py
+backend/config.py
+settings.py
+agent/settings.py
+backend/settings.py
+local_settings.py
+agent/local_settings.py
+backend/local_settings.py
+
+# Google/Gmail credentials and tokens
+client_secrets.json
+gmail_token.pickle
+*_token.pickle
+*_credentials.json
+credentials.json
+
+# Ollama/Vector DB local data
+agent/graph/chroma_db/
+**/chroma_db/
+agent/vector/chroma_db/
+chromadb.db
+
+# ==================== JUPYTER & TESTING ====================
 # Jupyter checkpoints
 **/.ipynb_checkpoints/
+*.ipynb
 
-# Dependencies
+# Test artifacts
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+test-results/
+
+# ==================== DEPENDENCIES ====================
+# Node.js
 node_modules/
-venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+package-lock.json
+yarn.lock
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Build outputs
+# Python
+venv/
+env/
+ENV/
+.venv
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+.installed.cfg
+
+# ==================== BUILD OUTPUTS ====================
 .next/
 out/
 build/
 dist/
+*.js.map
+*.css.map
 
+# ==================== LOGS & TEMPORARY ====================
 # Logs
 *.log
+logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-logs/
 
-# Database
+# Temporary files
+.cache/
+temp/
+tmp/
+*.tmp
+local_test/
+test_local/
+
+# ==================== DATABASE FILES ====================
 *.sqlite
+*.sqlite3
 *.db
 data/
+**/sql_data/
+sql_data/
+databases/
 
-# IDE
+# ==================== IDE & EDITOR ====================
+# VS Code
 .vscode/
+.vscode-settings.json
+launch.json
+
+# JetBrains
 .idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Other editors
 *.swp
 *.swo
 *~
 .DS_Store
 
-# Testing
-coverage/
-.pytest_cache/
+# ==================== OS ====================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# FAISS indices
+# ==================== VECTOR DB & FAISS ====================
 *.index
 *.faiss
+*.annoy
 
-# Misc
+# ==================== DOCKER ====================
+docker-compose.override.yml
+.env.docker
+docker/.env
+docker/.env.local
+
+# ==================== MISC ====================
 .cache/
-temp/
-tmp/
-
-openmailbot/__pycache__/
-openmailbot/agent/__pycache__/
-openmailbot/agent/*/__pycache__/
-openmailbot/agent/*/*/__pycache__/
-openmailbot/agent/graph/chroma_db/
-openmailbot/agent/graph/chroma_db
-*/__pycache__/
-*.log
-*/*/chroma_db/
-*/*/chroma_db
-openmailbot/agent/config.json
-
-=======
-openmailbot/agent/config.json
-agent/config.json
->>>>>>> 52af765c2f5fb6910b9558c870983b23ac000507
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+*.pem
+*.key
+*.pkcs12
+*.p12
+private/
+secrets/

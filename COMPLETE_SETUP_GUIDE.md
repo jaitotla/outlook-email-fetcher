@@ -1,23 +1,3 @@
-<div align="center">
-
-# 📨 OpenMailBot - AI-Powered Email Assistant
-
-<img width="454" height="156" alt="image" src="https://github.com/user-attachments/assets/8d5de857-3f17-4545-9d5e-83cd395b6baf" />
-<br><br>
-
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-Latest-green.svg)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/ankitgoel2004/openmailbot?style=social)](https://github.com/ankitgoel2004/openmailbot)
-
-**OpenMailBot** is an AI-powered email assistant that helps you summarize, draft, search, and organize emails with ease. Transform your email workflows with automated intelligence and privacy-first design.
-
-[Features](#-1-product-overview) • [Installation](#-3-installation-steps) • [Usage](#-6-local-development--running-locally) • [Documentation](#-4-google-gmail-add-on-setup) • [Support](#-9-troubleshooting)
-
----
-  <br><br>
-</div>
-
 # 📨 OpenMailBot - Complete Setup & Installation Guide
 
 **Version:** 1.0  

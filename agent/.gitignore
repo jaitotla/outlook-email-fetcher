@@ -1,0 +1,70 @@
+# ==================== ENVIRONMENT & CREDENTIALS ====================
+.env
+.env.local
+.env.*.local
+config.json
+config.py
+settings.py
+local_settings.py
+client_secrets.json
+gmail_token.pickle
+*_credentials.json
+credentials.json
+api_keys.json
+api_keys.py
+
+# ==================== PYTHON ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+build/
+develop-eggs/
+dist/
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-log.txt
+
+# ==================== TESTING ====================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+test-results/
+
+# ==================== DATABASES & DATA ====================
+*.db
+*.sqlite
+*.sqlite3
+sql_data/
+data/
+chroma_db/
+
+# ==================== LOGS & TEMPORARY ====================
+*.log
+logs/
+temp/
+tmp/
+*.tmp
+.cache/
+
+# ==================== IDE ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ==================== VECTOR DB ====================
+*.index
+*.faiss
+*.annoy
