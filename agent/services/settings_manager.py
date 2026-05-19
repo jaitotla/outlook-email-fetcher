@@ -24,9 +24,15 @@ except ImportError as e:
 
 logger = logging.getLogger(__name__)
 
-# Base data directory under the agent package: agent/data/{user_id}/...
+# Base data directory - point to backend/data (not agent/data)
+# From: openmailbot/agent/services/settings_manager.py
+# To: openmailbot/backend/data
 # Use abspath so the path is always absolute regardless of working directory
-BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+BASE_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),  # openmailbot/
+    "backend",
+    "data"
+)
 
 
 def sanitize_settings(settings: Dict[str, Any]) -> Dict[str, Any]:

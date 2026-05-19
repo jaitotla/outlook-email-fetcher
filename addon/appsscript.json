@@ -1,32 +1,60 @@
 {
-  "timeZone": "America/New_York",
-  "dependencies": {},
-  "exceptionLogging": "STACKDRIVER",
-  "runtimeVersion": "V8",
+  "timeZone": "Asia/Kolkata",
   "oauthScopes": [
+    "https://www.googleapis.com/auth/gmail.addons.execute",
+    "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
+    "https://www.googleapis.com/auth/gmail.addons.current.message.metadata",
+    "https://www.googleapis.com/auth/gmail.addons.current.action.compose",
     "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/script.scriptapp",
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/script.external_request",
     "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/script.external_request"
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.google.com/calendar/feeds"
+
+
   ],
-  "gmail": {
-    "name": "OpenMailBot",
-    "logoUrl": "https://openmailbot.com/logo.png",
-    "contextualTriggers": [
-      {
-        "unconditional": {},
-        "onTriggerFunction": "onGmailMessageOpen"
-      }
-    ],
-    "openLinkUrlPrefixes": [
-      "https://openmailbot.com",
-      "https://api.openmailbot.com"
-    ],
-    "universalActions": [
-      {
-        "label": "OpenMailBot Settings",
-        "openLink": "https://openmailbot.com/settings"
-      }
-    ]
+  "addOns": {
+    "common": {
+      "name": "AI Thread Summarizer",
+      "logoUrl": "https://www.gstatic.com/images/branding/product/1x/apps_script_48dp.png",
+      "layoutProperties": {
+        "primaryColor": "#4285f4"
+      },
+      "openLinkUrlPrefixes": [
+        "https://mail.google.com/"
+      ]
+    },
+    "gmail": {
+      "contextualTriggers": [
+        {
+          "unconditional": {},
+          "onTriggerFunction": "onGmailMessageOpen"
+        }
+      ],
+      "homepageTrigger": {
+        "runFunction": "onGmailHomepage",
+        "enabled": true
+      },
+      "composeTrigger": {
+        "selectActions": [
+          {
+            "text": "AI Assistant",
+            "runFunction": "buildAddOn"
+          }
+        ],
+        "draftAccess": "METADATA"
+      },
+      "universalActions": [
+        {
+          "text": "Open AI Assistant"
+        }
+      ]
+    }
   }
 }

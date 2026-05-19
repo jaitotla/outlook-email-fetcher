@@ -1782,7 +1782,34 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
  */
 async function getThreadMessages(messageId) {
   try {
-    const msg    = await browser.messages.get(messageId);
+    const msg = await browser.messages.get(messageId);
+
+    // ── Fast path: use native threadId query (Thunderbird 121+) ──────────
+    // Avoids listing the entire folder (O(n) messages) and filtering by subject.
+    if (msg.threadId && typeof browser.messages.query === "function") {
+      try {
+        const t0 = performance.now();
+        const page = await browser.messages.query({ threadId: msg.threadId });
+        const threadMsgs = (page && page.messages && page.messages.length > 0)
+          ? page.messages : null;
+        if (threadMsgs) {
+          const sorted = threadMsgs
+            .sort((a, b) => new Date(a.date) - new Date(b.date))
+            .slice(0, 30);
+          const results = await Promise.all(sorted.map(async m => {
+            try { return { meta: m, full: await browser.messages.getFull(m.id) }; }
+            catch (e) { console.warn("getFull failed:", m.id, e.message); return null; }
+          }));
+          const filtered = results.filter(Boolean);
+          console.log(`[getThreadMessages] fast-path: ${filtered.length} msgs in ${(performance.now()-t0).toFixed(0)}ms`);
+          return filtered;
+        }
+      } catch (e) {
+        console.warn("[getThreadMessages] threadId query failed, falling back to folder scan:", e.message);
+      }
+    }
+
+    // ── Slow path: scan folder and match by subject ───────────────────────
     const folder = msg.folder;
     if (!folder) {
       return [{ meta: msg, full: await browser.messages.getFull(messageId) }];
@@ -1844,32 +1871,43 @@ function extractPlainText(messagePart) {
 // ─── FEATURE HANDLERS ─────────────────────────────────────────────────────────────
 
 async function handleSummarizeThread({ messageId, accountId, userEmail }) {
-  // FIX: Extract account email from message context (multi-account support)
-  let userId = userEmail;
-  if (!userId) {
-    userId = await getAccountEmailFromMessage(messageId);
-    console.log(`[SummarizeThread] Extracted account email from message: ${userId}`);
-  }
-  if (!userId) {
-    userId = await getUserId(messageId);
-    console.warn("[SummarizeThread] No userEmail passed, falling back to default getUserId()");
-  }
-  console.log(`[SummarizeThread] Using account email: ${userId} (messageId: ${messageId})`);
-  const backendUrl = await getBackendUrl();
-  const items      = await getThreadMessages(messageId);
+  const _t0 = performance.now();
+
+  // ── Resolve userId, backendUrl and thread messages IN PARALLEL ───────────
+  // Previously these ran sequentially (userId → backendUrl → getThreadMessages)
+  // costing 1-3 s before any data was sent.
+  const [resolvedEmail, backendUrl, items] = await Promise.all([
+    // 1. User email resolution
+    userEmail
+      ? Promise.resolve(userEmail)
+      : getAccountEmailFromMessage(messageId)
+          .then(e => e || getUserId(messageId)),
+    // 2. Backend URL (storage read)
+    getBackendUrl(),
+    // 3. Fetch thread messages (may use fast threadId path)
+    getThreadMessages(messageId),
+  ]);
+
+  const userId = resolvedEmail;
+  console.log(`[SummarizeThread] ⚡ Init in ${(performance.now()-_t0).toFixed(0)}ms — user=${userId}`);
+
   const threadText = buildThreadText(items);
   const firstMeta  = items[0].meta;
   const threadId   = _getCanonicalThreadId(firstMeta, items[0].full);
 
-  // 1. Log all thread emails to server (so vector store is up-to-date)
+  // 1. Log all thread emails to server (so vector store is up-to-date) — MUST finish before summarize
   try { await _logEmailsToServer(backendUrl, userId, threadId, items.map(({meta,full})=>_fmtMsg(meta,full))); }
   catch(e) { console.warn("logEmail:", e.message); }
 
-  // 2. Store attachments
-  for (const {meta} of items) {
-    try { const a=await _getAttachments(meta.id); if(a.length) await _storeAtts(backendUrl,userId,threadId,String(meta.id),a); }
-    catch(e) { console.warn("storeAtts:",e.message); }
-  }
+  console.log(`[SummarizeThread] ⚡ Logged in ${(performance.now()-_t0).toFixed(0)}ms — firing summarize`);
+
+  // 2. Store attachments in BACKGROUND — does NOT block the summarize request
+  (async () => {
+    for (const {meta} of items) {
+      try { const a=await _getAttachments(meta.id); if(a.length) await _storeAtts(backendUrl,userId,threadId,String(meta.id),a); }
+      catch(e) { console.warn("storeAtts:",e.message); }
+    }
+  })();
 
   // 3. Try server-side RAG summarization (/api/summarize-thread uses indexed content)
   let summary;
@@ -1883,7 +1921,7 @@ async function handleSummarizeThread({ messageId, accountId, userEmail }) {
       const data = await resp.json();
       const result = data.job_id ? await _pollJobStatus(data.job_id) : data;
       summary = result.summary || result.response || result.answer;
-      if (summary) console.log("[Summarize] ✅ Used /api/summarize-thread (server-side RAG)");
+      if (summary) console.log(`[Summarize] ✅ RAG summary in ${(performance.now()-_t0).toFixed(0)}ms`);
     }
   } catch(e) {
     console.warn("[Summarize] /api/summarize-thread unavailable, falling back to /chat:", e.message);
@@ -1922,45 +1960,49 @@ async function handleCreateDraft({ messageId, summary, accountId, userEmail }) {
 }
 
 async function handleDraftWithAttachments({ messageId, accountId, userEmail }) {
-  // FIX: Extract account email from message context (multi-account support)
-  let userId = userEmail;
-  if (!userId) {
-    userId = await getAccountEmailFromMessage(messageId);
-    console.log(`[DraftWithAttachments] Extracted account email from message: ${userId}`);
-  }
-  if (!userId) {
-    userId = await getUserId(messageId);
-    console.warn("[DraftWithAttachments] No userEmail passed, falling back to default getUserId()");
-  }
-  console.log(`[DraftWithAttachments] Using account email: ${userId} (messageId: ${messageId})`);
-  const backendUrl = await getBackendUrl();
-  const items      = await getThreadMessages(messageId);
-  const firstMeta  = items[0].meta;
-  const threadId   = _getCanonicalThreadId(firstMeta, items[0].full);
+  const _t0 = performance.now();
 
-  try { await _logEmailsToServer(backendUrl,userId,threadId,items.map(({meta,full})=>_fmtMsg(meta,full))); }
-  catch(e) { console.warn("logEmail:",e.message); }
+  // ── Parallel init: userId + backendUrl + thread messages ─────────────────
+  const [resolvedEmail, backendUrl, items] = await Promise.all([
+    userEmail
+      ? Promise.resolve(userEmail)
+      : getAccountEmailFromMessage(messageId).then(e => e || getUserId(messageId)),
+    getBackendUrl(),
+    getThreadMessages(messageId),
+  ]);
+  const userId   = resolvedEmail;
+  const firstMeta = items[0].meta;
+  const threadId  = _getCanonicalThreadId(firstMeta, items[0].full);
+  console.log(`[DraftWithAttachments] ⚡ Init in ${(performance.now()-_t0).toFixed(0)}ms — user=${userId}`);
 
+  // Log thread + fetch prefs in parallel
+  const [, prefs] = await Promise.all([
+    _logEmailsToServer(backendUrl, userId, threadId, items.map(({meta,full})=>_fmtMsg(meta,full)))
+      .catch(e => console.warn("logEmail:", e.message)),
+    getUserPreferences(userId),
+  ]);
+
+  // Store attachments in parallel with the draft API call
+  // (server pipeline reads from vector DB which may already have them from previous sessions)
   let totalAtts = 0;
-  for (const {meta} of items) {
-    try {
-      console.log(`[OpenMailBot][DraftAtts] Checking attachments for msg ${meta.id}`);
-      const a = await _getAttachments(meta.id);
-      console.log(`[OpenMailBot][DraftAtts] Found ${a.length} attachment(s) for msg ${meta.id}`);
-      if (a.length) {
-        console.log(`[OpenMailBot][DraftAtts] 📎 Storing attachments: ${a.map(att => att.filename).join(", ")}`);
-        totalAtts += a.length;
-        await _storeAtts(backendUrl, userId, threadId, String(meta.id), a);
-        console.log(`[OpenMailBot][DraftAtts] ✓ Attachments stored successfully`);
-      } else {
-        console.log(`[OpenMailBot][DraftAtts] ℹ️ No attachments to store for msg ${meta.id}`);
-      }
+  const attStorePromise = (async () => {
+    for (const {meta} of items) {
+      try {
+        const a = await _getAttachments(meta.id);
+        if (a.length) {
+          totalAtts += a.length;
+          await _storeAtts(backendUrl, userId, threadId, String(meta.id), a);
+          console.log(`[DraftAtts] ✅ Stored ${a.length} att(s) for msg ${meta.id}`);
+        }
+      } catch(e) { console.warn("[DraftAtts] storeAtts:", e.message); }
     }
-    catch(e) { console.error("[OpenMailBot][DraftAtts] ❌ Error storing attachments:", e.message); }
-  }
+  })();
 
-  const prefs  = await getUserPreferences(userId);
-  const result = await callPipelineAPI({ user_id:userId, thread_id:threadId, message_id:String(messageId), user_preferences:prefs });
+  console.log(`[DraftWithAttachments] ⚡ Firing pipeline at ${(performance.now()-_t0).toFixed(0)}ms`);
+  const [result] = await Promise.all([
+    callPipelineAPI({ user_id:userId, thread_id:threadId, message_id:String(messageId), user_preferences:prefs }),
+    attStorePromise,
+  ]);
 
   const draftContent   = result.draft_content || result.response || "No draft content received";
   const processingInfo = result.processing_info || {};
@@ -1972,28 +2014,30 @@ async function handleDraftWithAttachments({ messageId, accountId, userEmail }) {
 }
 
 async function handleSimpleDraft({ messageId, accountId, userEmail }) {
-  // FIX: Extract account email from message context (multi-account support)
-  let userId = userEmail;
-  if (!userId) {
-    userId = await getAccountEmailFromMessage(messageId);
-    console.log(`[SimpleDraft] Extracted account email from message: ${userId}`);
-  }
-  if (!userId) {
-    userId = await getUserId(messageId);
-    console.warn("[SimpleDraft] No userEmail passed, falling back to default getUserId()");
-  }
-  console.log(`[SimpleDraft] Using account email: ${userId} (messageId: ${messageId})`);
-  const backendUrl = await getBackendUrl();
-  const items      = await getThreadMessages(messageId);
-  const firstMeta  = items[0].meta;
-  const threadId   = _getCanonicalThreadId(firstMeta, items[0].full);
+  const _t0 = performance.now();
 
-  // 1. Log thread emails to server so they are indexed
-  try { await _logEmailsToServer(backendUrl, userId, threadId, items.map(({meta, full}) => _fmtMsg(meta, full))); }
-  catch(e) { console.warn("[SimpleDraft] logEmail:", e.message); }
+  // ── Parallel init ────────────────────────────────────────────────────────
+  const [resolvedEmail, backendUrl, items] = await Promise.all([
+    userEmail
+      ? Promise.resolve(userEmail)
+      : getAccountEmailFromMessage(messageId).then(e => e || getUserId(messageId)),
+    getBackendUrl(),
+    getThreadMessages(messageId),
+  ]);
+  const userId    = resolvedEmail;
+  const firstMeta = items[0].meta;
+  const threadId  = _getCanonicalThreadId(firstMeta, items[0].full);
+  console.log(`[SimpleDraft] ⚡ Init in ${(performance.now()-_t0).toFixed(0)}ms — user=${userId}`);
 
-  // 2. Call /api/draft (simple draft, no attachment context)
-  const prefs = await getUserPreferences(userId);
+  // Log emails + fetch prefs in parallel, then call draft API
+  const [, prefs] = await Promise.all([
+    _logEmailsToServer(backendUrl, userId, threadId, items.map(({meta, full}) => _fmtMsg(meta, full)))
+      .catch(e => console.warn("[SimpleDraft] logEmail:", e.message)),
+    getUserPreferences(userId),
+  ]);
+
+  console.log(`[SimpleDraft] ⚡ Firing draft API at ${(performance.now()-_t0).toFixed(0)}ms`);
+  // Call /api/draft (simple draft, no attachment context)
   const resp = await fetch(`${backendUrl}/api/draft`, {
     method : "POST",
     headers: { "Content-Type": "application/json" },
@@ -2011,29 +2055,34 @@ async function handleSimpleDraft({ messageId, accountId, userEmail }) {
 }
 
 async function handleChatWithThread({ messageId, question, accountId, userEmail }) {
-  // FIX: Extract account email from message context (multi-account support)
-  let userId = userEmail;
-  if (!userId) {
-    userId = await getAccountEmailFromMessage(messageId);
-    console.log(`[ChatWithThread] Extracted account email from message: ${userId}`);
-  }
-  if (!userId) {
-    userId = await getUserId(messageId);
-    console.warn("[ChatWithThread] No userEmail passed, falling back to default getUserId()");
-  }
-  console.log(`[ChatWithThread] Using account email: ${userId} (messageId: ${messageId})`);
-  const backendUrl = await getBackendUrl();
-  const items      = await getThreadMessages(messageId);
-  const firstMeta  = items[0].meta;
-  const threadId   = _getCanonicalThreadId(firstMeta, items[0].full);
+  const _t0 = performance.now();
 
+  // ── Parallel init ────────────────────────────────────────────────────────
+  const [resolvedEmail, backendUrl, items] = await Promise.all([
+    userEmail
+      ? Promise.resolve(userEmail)
+      : getAccountEmailFromMessage(messageId).then(e => e || getUserId(messageId)),
+    getBackendUrl(),
+    getThreadMessages(messageId),
+  ]);
+  const userId    = resolvedEmail;
+  const firstMeta = items[0].meta;
+  const threadId  = _getCanonicalThreadId(firstMeta, items[0].full);
+  console.log(`[ChatWithThread] ⚡ Init in ${(performance.now()-_t0).toFixed(0)}ms — user=${userId}`);
+
+  // Log emails to server (must complete before chat so context is indexed)
   try { await _logEmailsToServer(backendUrl,userId,threadId,items.map(({meta,full})=>_fmtMsg(meta,full))); }
   catch(e) { console.warn("logEmail:",e.message); }
-  for (const {meta} of items) {
-    try { const a=await _getAttachments(meta.id); if(a.length) await _storeAtts(backendUrl,userId,threadId,String(meta.id),a); }
-    catch(e) { console.warn("storeAtts:",e.message); }
-  }
 
+  // Store attachments in BACKGROUND — chat API will use whatever is already indexed
+  (async () => {
+    for (const {meta} of items) {
+      try { const a=await _getAttachments(meta.id); if(a.length) await _storeAtts(backendUrl,userId,threadId,String(meta.id),a); }
+      catch(e) { console.warn("storeAtts:",e.message); }
+    }
+  })();
+
+  console.log(`[ChatWithThread] ⚡ Firing chat API at ${(performance.now()-_t0).toFixed(0)}ms`);
   const resp = await fetch(`${backendUrl}/api/chat-with-thread`, {
     method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({ user_id:userId, thread_id:threadId, question })

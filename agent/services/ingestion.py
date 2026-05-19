@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 from msal import ConfidentialClientApplication
 import httpx
 
-from config import settings
+from agent.config import settings
 
 
 class EmailIngestionService:

@@ -28,6 +28,7 @@ EmailLabel = Literal[
     "restaurant",
     "booking",
     "bank",
+    "Recruitment",
     "Other"
 
 ]
@@ -298,13 +299,8 @@ Other - other types of emails that don't fit the above categories"""
         # Check if Ollama is available
         if not self.ollama_available:
             print("⚠️  Ollama not available, cannot classify with LLM")
-            return EmailLabelOutput(
-                label="response",
-                category="General",
-                topic="General Communication",
-                subtopic=None,
-                subject_matter="General email communication"
-            )
+            print("ℹ️  Falling back to 'Other' label for unclassified email")
+            return self._fallback_output(email_data)
         
         try:
             # Prepare email data
@@ -358,19 +354,22 @@ Provide the label, category, topic, and subtopic for this email based on the use
             
         except requests.exceptions.RequestException as e:
             print(f"Error in Ollama API request: {str(e)}")
-            return self._fallback_output()
+            print(f"ℹ️  Falling back to 'Other' label for unclassified email")
+            return self._fallback_output(email_data)
         except Exception as e:
             print(f"Error in Ollama classification: {str(e)}")
-            return self._fallback_output()
+            print(f"ℹ️  Falling back to 'Other' label for unclassified email")
+            return self._fallback_output(email_data)
     
-    def _fallback_output(self) -> EmailLabelOutput:
+    def _fallback_output(self, email_data: Dict[str, Any] = None) -> EmailLabelOutput:
         """Return fallback output when classification fails"""
+        subject = email_data.get('subject', 'Unclassified Email') if email_data else 'Unclassified Email'
         return EmailLabelOutput(
-            label="response",
-            category="General",
-            topic="General Communication",
+            label="Other",
+            category="Unclassified",
+            topic="Review Needed",
             subtopic=None,
-            subject_matter="General email communication"
+            subject_matter=f"Please review: {subject[:40]}"
         )
     
     def label_email(self, email_data: Dict[str, Any]) -> EmailLabelOutput:
@@ -424,13 +423,7 @@ Provide the label, category, topic, and subtopic for this email based on the use
             EmailLabelOutput with label, category, topic, subtopic for the thread
         """
         if not messages:
-            return EmailLabelOutput(
-                label="response",
-                category="Empty",
-                topic="No messages",
-                subtopic=None,
-                subject_matter="No messages in thread"
-            )
+            return self._fallback_output({'subject': 'Empty thread'})
         
         # Get the last message (most recent) as it's most important
         last_message = messages[-1]

@@ -25,7 +25,7 @@ class InbuiltLLMService:
         # Import utils lazily to avoid circular imports
         self._utils_available = False
         try:
-            from utils import call_chat_api, ollama_generate_chat
+            from agent.utils import call_chat_api, ollama_generate_chat
             self._call_chat_api = call_chat_api
             self._ollama_generate_chat = ollama_generate_chat
             self._utils_available = True
@@ -111,7 +111,7 @@ class InbuiltEmbeddingService:
         """Initialize inbuilt embedding service"""
         self._utils_available = False
         try:
-            from utils import call_embed_api
+            from agent.utils import call_embed_api
             self._call_embed_api = call_embed_api
             self._utils_available = True
         except ImportError:

@@ -6,8 +6,8 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.documents import Document
 from langchain_cohere import CohereRerank
 from dotenv import load_dotenv
-sys.path.insert(0, '/home/ubuntu/openmailbot/openmailbot/agent')
-from utils import call_embed_api
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+from agent.utils import call_embed_api
 
 
 load_dotenv()

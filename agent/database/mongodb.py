@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 
-from config import settings
+from agent.config import settings
 
 
 class MongoDBClient:

@@ -11,8 +11,8 @@ import os
 import logging
 import json
 #from config import settings
-from vector import get_vector_client
-from services.llm import ProviderError
+from agent.vector import get_vector_client
+from agent.services.llm import ProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +260,7 @@ class EmbeddingService:
     async def _embed_inbuilt(self, text: str) -> List[float]:
         """Generate embedding using inbuilt service (utils.py)"""
         try:
-            from utils import call_embed_api
+            from agent.utils import call_embed_api
             import asyncio
             
             loop = asyncio.get_event_loop()

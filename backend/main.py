@@ -9,6 +9,7 @@ from typing import List, Optional, Dict, Any
 import uvicorn
 from datetime import datetime
 import os
+import sys
 import json
 import base64
 import re
@@ -19,13 +20,17 @@ import uuid
 import threading
 from functools import partial
 
+# Add parent directory to sys.path so we can import agent module
+# This allows running 'python main.py' from the backend directory
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from agent.config import settings
-#from services.ingestion import EmailIngestionService
-# from services.embeddings import EmbeddingService
-# from services.rag import RAGService
-# from services.llm import LLMService
-#from services.slack_ingestion import SlackIngestionService
-#from services.file_processor import FileProcessor
+#from agent.services.ingestion import EmailIngestionService
+# from agent.services.embeddings import EmbeddingService
+# from agent.services.rag import RAGService
+# from agent.services.llm import LLMService
+#from agent.services.slack_ingestion import SlackIngestionService
+#from agent.services.file_processor import FileProcessor
 from agent.services.chat_pipeline import ChatWithThreadPipeline
 from agent.services.draft_pipeline import DraftPipeline
 from agent.services.settings_manager import SettingsManager
@@ -34,10 +39,9 @@ from agent.services.label_pipeline import EmailLabelPipeline
 from agent.services.label_email_lockbook import get_user_lockbook, get_global_lockbook
 from agent.services.store_pipeline import CheckAndStoreEmailPipeline, CheckAndStoreAttachmentsPipeline
 from agent.services.summarization_pipeline import SummarizationPipeline
-#from database.mongodb import MongoDBClient
+#from agent.database.mongodb import MongoDBClient
 from agent.services.simple_draft_pipeline import SimpleDraftPipeline
 
-import sys
 import logging
 
 # # ── Startup diagnostic logger ──────────────────────────────────────────────
@@ -125,6 +129,17 @@ except:
     def log_request(*args, **kwargs):
         pass  # Fallback if logger not available
 
+# Import backend IMAP services
+try:
+    from backend.services.imap_database import IMAPDatabaseManager
+    from backend.services.imap_fetcher import IMAPFetcherService
+    _imap_available = True
+except ImportError as e:
+    print(f"⚠️  IMAP services not available: {e}")
+    _imap_available = False
+    IMAPDatabaseManager = None
+    IMAPFetcherService = None
+
 
 def _load_config() -> dict:
     """Load config from relative path, fall back to empty dict gracefully."""
@@ -169,6 +184,151 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# ──────────────────────────────────────────────────────────────────────────────
+# REQUEST LOGGING MIDDLEWARE - Log all incoming requests
+# ──────────────────────────────────────────────────────────────────────────────
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+import time
+import sys
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Log incoming request
+        start_time = time.time()
+        method = request.method
+        path = request.url.path
+        query_string = request.url.query
+        
+        print(f"\n📨 [{method}] {path}", flush=True)
+        if query_string:
+            print(f"   Query: {query_string}", flush=True)
+        
+        # For POST/PUT/PATCH, try to log body info without consuming it
+        if method in ["POST", "PUT", "PATCH"] and "/api/settings" in path:
+            try:
+                # Get body without consuming the stream
+                body = await request.body()
+                if body:
+                    body_data = json.loads(body)
+                    user_id = body_data.get("user_id", "unknown")
+                    settings_count = len(body_data.get("settings", {})) if isinstance(body_data.get("settings"), dict) else 0
+                    print(f"   📋 User: {user_id}, Settings: {settings_count}", flush=True)
+                    
+                    # Important: Receive the body again for the endpoint handler
+                    # We need to create a new receive callable that returns the cached body
+                    async def receive():
+                        return {"type": "http.request", "body": body}
+                    request._receive = receive
+            except Exception as e:
+                print(f"   ⚠️  Could not parse body: {e}", flush=True)
+        
+        # Call the actual route handler
+        response = await call_next(request)
+        
+        # Log response
+        process_time = time.time() - start_time
+        status = response.status_code
+        status_emoji = "✅" if status == 200 else "⚠️ " if status >= 400 else "ℹ️ "
+        print(f"   {status_emoji} Status {status} ({process_time:.3f}s)", flush=True)
+        
+        return response
+
+# Add the middleware to the app
+app.add_middleware(RequestLoggingMiddleware)
+
+# Initialize IMAP fetcher service
+_imap_fetcher = None
+if _imap_available:
+    try:
+        _imap_fetcher = IMAPFetcherService(
+            db_manager=IMAPDatabaseManager(),
+            agent_url=os.getenv("AGENT_URL", "http://localhost:5051"),
+            enable_label_classification=os.getenv("ENABLE_LABEL_CLASSIFICATION", "true").lower() == "true"
+        )
+        print("✅ IMAP Fetcher Service initialized")
+    except Exception as e:
+        print(f"⚠️  Failed to initialize IMAP Fetcher Service: {e}")
+        _imap_fetcher = None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONTINUOUS IMAP MONITORING BACKGROUND THREAD
+# ──────────────────────────────────────────────────────────────────────────────
+
+_imap_monitoring_active = False
+_imap_monitoring_thread = None
+
+def _start_continuous_imap_monitoring():
+    """
+    Start a background thread that monitors and fetches emails continuously.
+    Runs every 60 seconds for all enabled users.
+    """
+    global _imap_monitoring_active, _imap_monitoring_thread
+    
+    if not _imap_available or _imap_fetcher is None:
+        print("⚠️  IMAP monitoring not started: IMAP service not available")
+        return
+    
+    def imap_monitor_loop():
+        """Continuous monitoring loop - runs every 60 seconds"""
+        import time
+        
+        print("🔄 IMAP Background Monitor Started (runs every 60 seconds)")
+        _imap_monitoring_active = True
+        
+        while _imap_monitoring_active:
+            try:
+                # Get all enabled IMAP users
+                enabled_users = _imap_fetcher.db.get_all_enabled_users()
+                
+                if enabled_users:
+                    print(f"\n📧 [IMAP MONITOR] Checking {len(enabled_users)} enabled user(s)")
+                    
+                    for user_record in enabled_users:
+                        try:
+                            # user_record could be a dict or tuple
+                            if isinstance(user_record, dict):
+                                user_id = user_record.get('user_id') or user_record.get('email')
+                            elif isinstance(user_record, (tuple, list)):
+                                user_id = user_record[0] if len(user_record) > 0 else None
+                            else:
+                                user_id = str(user_record)
+                            
+                            if not user_id:
+                                print(f"   ⚠️  Could not extract user_id from: {user_record}")
+                                continue
+                            
+                            count, error = _imap_fetcher.fetch_and_process_for_user(user_id)
+                            if error:
+                                print(f"   ⚠️  {user_id}: {error}")
+                            else:
+                                print(f"   ✅ {user_id}: {count} email(s)")
+                        except Exception as e:
+                            print(f"   ❌ Error processing user: {str(e)}")
+                
+                # Sleep for 60 seconds before next check
+                for i in range(60):
+                    if not _imap_monitoring_active:
+                        break
+                    time.sleep(1)
+                    
+            except Exception as e:
+                print(f"❌ IMAP Monitor Error: {str(e)}")
+                time.sleep(5)  # Wait 5 seconds before retrying
+    
+    # Start monitoring in a daemon thread
+    _imap_monitoring_thread = threading.Thread(
+        target=imap_monitor_loop,
+        daemon=True,
+        name="IMAPMonitor"
+    )
+    _imap_monitoring_thread.start()
+    print("✅ IMAP Continuous Monitor Thread Started")
+
+
+# Start continuous IMAP monitoring on app startup
+_start_continuous_imap_monitoring()
 
 
 # Data Storage Pipeline Configuration
@@ -1069,12 +1229,14 @@ class SyncSettingsRequest(BaseModel):
 
 
 @app.post("/api/settings")
-async def sync_settings(request: SyncSettingsRequest):
+async def sync_settings(request: SyncSettingsRequest, background_tasks: BackgroundTasks):
     """
     Sync user settings from Gmail Add-on to backend.
     
     This endpoint receives settings configured in the Gmail Add-on
     and saves them to encrypted SQLite database.
+    
+    If IMAP is enabled, triggers background email fetching asynchronously.
     
     Request:
     {
@@ -1084,7 +1246,10 @@ async def sync_settings(request: SyncSettingsRequest):
             "llm_provider": "openai",
             "llm_api_key": "sk-...",
             "embedding_provider": "openai",
-            "user_tone": "professional"
+            "user_tone": "professional",
+            "run_imap_server": true,
+            "imap_email": "user@gmail.com",
+            "imap_app_password": "xxxx xxxx xxxx xxxx"
         }
     }
     
@@ -1097,9 +1262,13 @@ async def sync_settings(request: SyncSettingsRequest):
         "encrypted": true
     }
     """
-    print("🔧 /api/settings endpoint called")
-    print(f"   User: {request.user_id}")
-    print(f"   Settings received: {list(request.settings.keys())}")
+    print("\n" + "="*70, flush=True)
+    print("🔧 [REQUEST] POST /api/settings endpoint called", flush=True)
+    print(f"   👤 User ID: {request.user_id}", flush=True)
+    print(f"   📋 Settings: {list(request.settings.keys())}", flush=True)
+    print(f"   📦 Total fields: {len(request.settings)}", flush=True)
+    print("="*70, flush=True)
+    sys.stdout.flush()
     
     try:
         # Initialize settings manager for the user
@@ -1115,10 +1284,55 @@ async def sync_settings(request: SyncSettingsRequest):
         if not success:
             raise Exception("Failed to save settings to database")
         
-        print(f"✅ Settings saved to encrypted database")
-        print(f"   User: {request.user_id}")
-        print(f"   Settings count: {len(request.settings)}")
-        print(f"   Storage: data/{request.user_id}/sql_data/chat_thread_processing.db")
+        print(f"✅ [SAVED] Settings encrypted and stored successfully", flush=True)
+        print(f"   📁 Database: data/{request.user_id}/sql_data/chat_thread_processing.db", flush=True)
+        print(f"   🔐 Encryption: Enabled (Fernet)", flush=True)
+        sys.stdout.flush()
+        
+        # Check if IMAP server should be enabled
+        run_imap = request.settings.get("run_imap_server", False)
+        print(f"🔍 [IMAP CHECK] run_imap={run_imap}, _imap_fetcher={'available' if _imap_fetcher else 'None'}", flush=True)
+        sys.stdout.flush()
+        
+        if run_imap and _imap_fetcher is not None:
+            # Extract IMAP credentials from settings
+            imap_email = request.settings.get("imap_email") or request.user_id
+            imap_app_password = request.settings.get("imap_app_password")
+            imap_host = request.settings.get("imap_host", "imap.gmail.com")
+            imap_port = request.settings.get("imap_port", 993)
+            
+            if imap_app_password:
+                # Add or update user in IMAP database
+                db_success = _imap_fetcher.db.add_or_update_user(
+                    user_id=request.user_id,
+                    email=imap_email,
+                    app_password=imap_app_password,
+                    imap_host=imap_host,
+                    imap_port=imap_port,
+                    enabled=True
+                )
+                
+                if db_success:
+                    print(f"✅ IMAP enabled for user: {request.user_id}", flush=True)
+                    print(f"   📧 Email: {imap_email}", flush=True)
+                    print(f"   🌐 Host: {imap_host}:{imap_port}", flush=True)
+                    print(f"   🔄 Scheduling background email fetch...", flush=True)
+                    
+                    # Schedule IMAP email fetch to run in the background (non-blocking)
+                    background_tasks.add_task(
+                        _imap_fetcher.fetch_and_process_for_user,
+                        request.user_id
+                    )
+                    
+                    print(f"✅ Background task queued for IMAP fetch", flush=True)
+                else:
+                    print(f"❌ Failed to enable IMAP for user: {request.user_id}", flush=True)
+            else:
+                print(f"⚠️  IMAP enabled but no app_password provided for {request.user_id}", flush=True)
+        elif run_imap and _imap_fetcher is None:
+            print(f"⚠️  IMAP requested but service not available for {request.user_id}", flush=True)
+        
+        sys.stdout.flush()
         
         return {
             "success": True,
@@ -1129,9 +1343,11 @@ async def sync_settings(request: SyncSettingsRequest):
             "storage": f"data/{request.user_id}/sql_data/chat_thread_processing.db"
         }
     except Exception as e:
-        print(f"❌ Error syncing settings: {str(e)}")
+        print(f"\n❌ [ERROR] Failed to sync settings for {request.user_id}", flush=True)
+        print(f"   Error: {str(e)}", flush=True)
         import traceback
         traceback.print_exc()
+        sys.stdout.flush()
         raise HTTPException(
             status_code=500,
             detail=f"Failed to sync settings: {str(e)}"
@@ -2390,19 +2606,6 @@ async def get_label_stats(user_id: Optional[str] = None, label: Optional[str] = 
 # SETTINGS MANAGEMENT ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class SettingsRequest(BaseModel):
-    """Request model for settings operations"""
-    user_id: str = Field(..., description="User email or ID")
-    settings: Optional[Dict[str, Any]] = Field(None, description="Settings object to save")
-
-class SettingsResponse(BaseModel):
-    """Response model for settings operations"""
-    success: bool
-    user_id: str
-    settings: Optional[Dict[str, Any]] = None
-    source: Optional[str] = None  # 'database', 'defaults', 'encrypted'
-    message: Optional[str] = None
-
 @app.get("/api/settings")
 async def get_settings_by_email(user_id: str = None):
     """
@@ -2457,72 +2660,6 @@ async def get_settings_by_email(user_id: str = None):
             detail=f"Error fetching settings: {str(e)}"
         )
 
-@app.post("/api/settings")
-async def save_settings(request: SettingsRequest):
-    """
-    Save or update user settings
-    
-    **Request Body:**
-    ```json
-    {
-        "user_id": "ankitgoel2004@gmail.com",
-        "settings": {
-            "mode": "inbuilt",
-            "llm_provider": "openai",
-            "llm_api_key": "sk-...",
-            "llm_model": "gpt-4o-mini",
-            "user_name": "Ankit Goel",
-            "user_tone": "professional",
-            ...
-        }
-    }
-    ```
-    
-    **Returns:**
-    - Updated settings object
-    - Confirmation message
-    
-    **Example Response:**
-    ```json
-    {
-        "success": true,
-        "user_id": "ankitgoel2004@gmail.com",
-        "settings": { ... },
-        "source": "encrypted",
-        "message": "Settings saved successfully"
-    }
-    ```
-    """
-    if not request.user_id:
-        raise HTTPException(
-            status_code=400, 
-            detail="Missing required field: user_id"
-        )
-    
-    if not request.settings:
-        raise HTTPException(
-            status_code=400, 
-            detail="Missing required field: settings"
-        )
-    
-    try:
-        manager = SettingsManager(user_id=request.user_id)
-        saved_settings = manager.save_settings(request.settings)
-        
-        return {
-            "success": True,
-            "user_id": request.user_id,
-            "settings": saved_settings,
-            "source": "encrypted",
-            "message": "Settings saved successfully"
-        }
-    except Exception as e:
-        print(f"[Settings] Error saving settings for {request.user_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Error saving settings: {str(e)}"
-        )
-
 @app.get("/api/settings/{user_id}")
 async def get_settings_by_path(user_id: str):
     """
@@ -2547,9 +2684,17 @@ async def get_settings_by_path(user_id: str):
             detail="Missing user_id in path"
         )
     
+    print(f"\n📖 [REQUEST] GET /api/settings endpoint", flush=True)
+    print(f"   👤 User ID: {user_id}", flush=True)
+    sys.stdout.flush()
+    
     try:
         manager = SettingsManager(user_id=user_id)
         settings = manager.get_settings()
+        
+        print(f"✅ [RETRIEVED] Settings loaded for {user_id}", flush=True)
+        print(f"   📊 Fields: {len(settings) if settings else 0}", flush=True)
+        sys.stdout.flush()
         
         return {
             "success": True,
@@ -2559,7 +2704,9 @@ async def get_settings_by_path(user_id: str):
             "message": "Settings retrieved successfully"
         }
     except Exception as e:
-        print(f"[Settings] Error fetching settings for {user_id}: {str(e)}")
+        print(f"\n❌ [ERROR] Failed to retrieve settings for {user_id}", flush=True)
+        print(f"   Error: {str(e)}", flush=True)
+        sys.stdout.flush()
         raise HTTPException(
             status_code=500, 
             detail=f"Error fetching settings: {str(e)}"
@@ -2683,6 +2830,198 @@ async def validate_settings(user_id: str):
         )
 
 
+# ============================================================================
+# IMAP EMAIL FETCHING ENDPOINTS
+# ============================================================================
+
+@app.post("/api/imap/fetch")
+async def trigger_imap_fetch(user_id: Optional[str] = None):
+    """
+    Trigger IMAP email fetching manually
+    
+    **Query Parameters:**
+    - user_id: Optional. If provided, fetch only for this user. 
+               If omitted, fetch for all enabled users.
+    
+    **Returns:**
+    - Number of emails fetched
+    - Status for each user
+    
+    **Example:**
+    ```
+    POST /api/imap/fetch?user_id=user@example.com
+    POST /api/imap/fetch  (fetch for all users)
+    
+    Response:
+    {
+        "success": true,
+        "total_users": 3,
+        "total_emails": 15,
+        "results": [
+            {
+                "user_id": "user1@example.com",
+                "emails_fetched": 5,
+                "success": true,
+                "error": null
+            },
+            ...
+        ]
+    }
+    ```
+    """
+    if _imap_fetcher is None:
+        raise HTTPException(
+            status_code=503,
+            detail="IMAP service not available"
+        )
+    
+    try:
+        if user_id:
+            # Fetch for specific user
+            count, error = _imap_fetcher.fetch_and_process_for_user(user_id)
+            return {
+                "success": error is None,
+                "total_users": 1,
+                "total_emails": count,
+                "results": [{
+                    "user_id": user_id,
+                    "emails_fetched": count,
+                    "success": error is None,
+                    "error": error
+                }]
+            }
+        else:
+            # Fetch for all users
+            result = _imap_fetcher.fetch_and_process_all_users()
+            return {
+                "success": True,
+                **result
+            }
+    except Exception as e:
+        print(f"[IMAP] Error triggering fetch: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error triggering IMAP fetch: {str(e)}"
+        )
+
+
+@app.get("/api/imap/status")
+async def get_imap_status(user_id: Optional[str] = None):
+    """
+    Get IMAP configuration status
+    
+    **Query Parameters:**
+    - user_id: Optional. If provided, get status for this user.
+               If omitted, get status for all users.
+    
+    **Returns:**
+    - IMAP configuration for user(s)
+    - Last check timestamps
+    
+    **Example:**
+    ```
+    GET /api/imap/status?user_id=user@example.com
+    GET /api/imap/status  (all users)
+    
+    Response:
+    {
+        "success": true,
+        "service_available": true,
+        "users": [
+            {
+                "user_id": "user@example.com",
+                "email": "user@gmail.com",
+                "enabled": true,
+                "last_check": "2026-05-05T10:30:00",
+                "imap_host": "imap.gmail.com",
+                "imap_port": 993
+            },
+            ...
+        ]
+    }
+    ```
+    """
+    if _imap_fetcher is None:
+        return {
+            "success": False,
+            "service_available": False,
+            "users": [],
+            "message": "IMAP service not available"
+        }
+    
+    try:
+        if user_id:
+            # Get status for specific user
+            user = _imap_fetcher.db.get_user(user_id)
+            users = [user] if user else []
+        else:
+            # Get all users (enabled and disabled)
+            users = _imap_fetcher.db.get_all_enabled_users()
+        
+        # Remove sensitive app_password from response
+        for user in users:
+            if "app_password" in user:
+                user["app_password"] = "****" if user["app_password"] else None
+        
+        return {
+            "success": True,
+            "service_available": True,
+            "users": users
+        }
+    except Exception as e:
+        print(f"[IMAP] Error getting status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting IMAP status: {str(e)}"
+        )
+
+
+@app.delete("/api/imap/{user_id}")
+async def disable_imap_for_user(user_id: str):
+    """
+    Disable IMAP fetching for a user
+    
+    **Path Parameters:**
+    - user_id: User email or ID
+    
+    **Returns:**
+    - Confirmation of disabling
+    
+    **Example:**
+    ```
+    DELETE /api/imap/user@example.com
+    ```
+    """
+    if _imap_fetcher is None:
+        raise HTTPException(
+            status_code=503,
+            detail="IMAP service not available"
+        )
+    
+    try:
+        success = _imap_fetcher.db.disable_user(user_id)
+        
+        if success:
+            return {
+                "success": True,
+                "user_id": user_id,
+                "message": "IMAP disabled for user"
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"User {user_id} not found in IMAP database"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[IMAP] Error disabling user: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error disabling IMAP: {str(e)}"
+        )
+
+
 @app.get("/api/label-email/summary")
 async def get_lockbook_summary(user_id: Optional[str] = None):
     """
@@ -2710,6 +3049,6 @@ if __name__ == "__main__":
         "main:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=settings.ENVIRONMENT == "development"
+        reload=False  # Disabled due to memory issues with pydantic schema validation
     )
 

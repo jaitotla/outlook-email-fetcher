@@ -1,19 +1,22 @@
 /**
  * UNIFIED EMAIL MONITOR - Single Script Solution
- * Runs every 1 minute to capture ALL new emails and attachments
+ * Runs every 1 hour to capture ALL new emails and attachments
  * 
  * SETUP INSTRUCTIONS:
  * 1. Copy this entire script to your Google Apps Script project
  * 2. Set your FLASK_SERVER_URL in Script Properties
  * 3. Run setupEmailMonitor() ONCE
- * 4. Done! Script will automatically run every minute in the background
+ * 4. Done! Script will automatically run every hour in the background
  * 
  * FEATURES:
- * - Captures emails in real-time (checks every 1 minute)
+ * - Captures emails automatically (checks every 1 hour)
  * - Processes allowed attachments: .pdf, .csv, .pptx, .ppt
  * - Tracks processed emails to avoid duplicates
  * - Automatic error recovery
  * - Runs completely in background after setup
+ * 
+ * NOTE: Gmail Add-ons have a minimum trigger interval of 1 hour.
+ *       This is a Google platform limitation.
  */
 
 // ============================================================================
@@ -25,7 +28,8 @@ var CONFIG = {
   ALLOWED_EXTENSIONS: ['.pdf', '.csv', '.pptx', '.ppt'],
   
   // How often to check for new emails (in minutes)
-  CHECK_INTERVAL_MINUTES: 1,
+  // NOTE: Gmail Add-ons require minimum 60 minutes (1 hour)
+  CHECK_INTERVAL_MINUTES: 60,
   
   // Maximum attachments to process per run (safety limit)
   MAX_ATTACHMENTS_PER_RUN: 50,
@@ -57,7 +61,7 @@ var BULK_JOB_STATE_KEY = "bulk_job_state";
 var BULK_JOB_ABORT_KEY = "bulk_job_abort";  // ← poison pill
 
 // ============================================================================
-// MAIN MONITORING FUNCTION (Runs every 1 minute)
+// MAIN MONITORING FUNCTION (Runs every 1 hour)
 // ============================================================================
 
 /**
@@ -71,19 +75,27 @@ function monitorEmails() {
     console.log("=== EMAIL MONITOR START ===");
     console.log("Time: " + startTime.toISOString());
     
-    // ✅ CHECK IF BACKGROUND MONITORING IS DISABLED BY USER
-    var scriptProps = PropertiesService.getScriptProperties();
-    if (scriptProps.getProperty("background_monitor_enabled") === "false") {
-      console.log("⏸️  Background monitoring is disabled by user. Skipping this cycle.");
+    // ✅ CHECK IF ONBOARDING HAS BEEN COMPLETED (settings must be saved first)
+    var userProps = PropertiesService.getUserProperties();
+    if (userProps.getProperty("onboarding_complete") !== "true") {
+      console.log("⏸️  Onboarding not complete — skipping monitor cycle until settings are saved.");
       return;
     }
-    
-    // ✅ CHECK FOR PENDING BULK JOB CONTINUATION
+
+    var scriptProps = PropertiesService.getScriptProperties();
+
+    // ✅ CHECK FOR PENDING BULK JOB — runs even when background monitoring is paused
     if (scriptProps.getProperty(BULK_JOB_STATE_KEY) && scriptProps.getProperty('bulk_job_pending_continuation') === 'true') {
       console.log("🔄 Detected pending bulk job continuation. Resuming...");
       scriptProps.deleteProperty('bulk_job_pending_continuation');
       _runBulkJob();
       return; // Exit monitor early, will resume next cycle if needed
+    }
+
+    // ✅ CHECK IF BACKGROUND MONITORING IS DISABLED BY USER
+    if (scriptProps.getProperty("background_monitor_enabled") === "false") {
+      console.log("⏸️  Background monitoring is disabled by user. Skipping this cycle.");
+      return;
     }
     
     // Check server URL
@@ -435,19 +447,21 @@ function getOrCreateLabel(labelName) {
 function applyLabelColor(label, labelName) {
   if (!label) return;
 
+  // All hex codes verified from Gmail API allowed palette:
+  // https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.labels
   var colorMap = {
-    "red":       { textColor:"#ffffff", backgroundColor:"#d93025"},
-    "orange":    { textColor:"#000000", backgroundColor:"#f29900"},
-    "yellow":    { textColor:"#000000", backgroundColor:"#fbbc04"},
-    "green":     { textColor:"#ffffff", backgroundColor:"#34a853"},
-    "cyan":      { textColor:"#000000", backgroundColor:"#00acc1"},
-    "blue":      { textColor:"#ffffff", backgroundColor:"#1a73e8"},
-    "purple":    { textColor:"#ffffff", backgroundColor:"#9334e6"},
-    "gray":      { textColor:"#ffffff", backgroundColor:"#5f6368"},
-    "lightgray": { textColor:"#000000", backgroundColor:"#e8eaed"},
-    "darkgray":  { textColor:"#ffffff", backgroundColor:"#3c4043"},
-    "cocoa":     { textColor:"#ffffff", backgroundColor:"#795548"},
-    "white":     { textColor:"#000000", backgroundColor:"#ffffff"}
+    "red":       { textColor:"#ffffff", backgroundColor:"#cc3a21"},  // verified
+    "orange":    { textColor:"#000000", backgroundColor:"#ffad47"},  // verified
+    "yellow":    { textColor:"#000000", backgroundColor:"#fad165"},  // verified
+    "green":     { textColor:"#ffffff", backgroundColor:"#16a766"},  // verified
+    "cyan":      { textColor:"#ffffff", backgroundColor:"#2da2bb"},  // verified
+    "blue":      { textColor:"#ffffff", backgroundColor:"#4a86e8"},  // verified
+    "purple":    { textColor:"#ffffff", backgroundColor:"#653e9b"},  // verified
+    "gray":      { textColor:"#000000", backgroundColor:"#999999"},  // verified
+    "lightgray": { textColor:"#000000", backgroundColor:"#e7e7e7"},  // verified
+    "darkgray":  { textColor:"#ffffff", backgroundColor:"#464646"},  // verified
+    "cocoa":     { textColor:"#ffffff", backgroundColor:"#7a4706"},  // verified
+    "white":     { textColor:"#000000", backgroundColor:"#ffffff"}   // verified
   };
 
   var colorName = CONFIG.LABEL_COLORS[labelName];
@@ -669,6 +683,10 @@ function sendEmailToServer(threadId, message) {
   // on behalf of this user.  Valid for ~1 hour — well within the 5-min test window.
   var accessToken = ScriptApp.getOAuthToken();
 
+  // Capture the real Gmail hex thread ID for the Gmail REST API call.
+  // threadId (above) may be the canonical RFC Message-ID used for ChromaDB.
+  var gmailThreadId = message.getThread().getId();
+
   var emailData = {
     message_id:   message.getId(),
     from_address: message.getFrom(),
@@ -684,11 +702,12 @@ function sendEmailToServer(threadId, message) {
   var attachmentPayload = _getAttachmentsForPayload(message);
 
   var payload = {
-    user_id:      userId,
-    thread_id:    threadId,
-    messages:     [emailData],
-    access_token: accessToken,  // ← server uses this to push the label via Gmail API
-    attachments:  attachmentPayload.length > 0 ? attachmentPayload : undefined
+    user_id:         userId,
+    thread_id:       threadId,       // canonical (RFC Message-ID) — used for ChromaDB key
+    gmail_thread_id: gmailThreadId,  // Gmail hex thread ID — used for Gmail REST API
+    messages:        [emailData],
+    access_token:    accessToken,    // ← server uses this to push the label via Gmail API
+    attachments:     attachmentPayload.length > 0 ? attachmentPayload : undefined
   };
 
   var options = {
@@ -1035,18 +1054,24 @@ function clearProcessedMessages() {
 function setupEmailMonitor() {
   Logger.log("=== Setting Up Email Monitor ===");
   
-  // First, delete any existing triggers to avoid duplicates
-  deleteAllMonitorTriggers();
+  // Step 1: Delete existing monitor triggers — best-effort; a failure here must NOT
+  // prevent the new trigger from being created (e.g. auth error on getProjectTriggers).
+  try {
+    deleteAllMonitorTriggers();
+  } catch (delErr) {
+    Logger.log("⚠️ Could not clean up old triggers (will try to create anyway): " + delErr.message);
+  }
   
-  // Create new trigger that runs every minute
+  // Step 2: Create new trigger — this CAN throw; let callers catch + report it.
+  // Use everyHours() instead of everyMinutes() for 1-hour interval
   ScriptApp.newTrigger('monitorEmails')
     .timeBased()
-    .everyMinutes(CONFIG.CHECK_INTERVAL_MINUTES)
+    .everyHours(1)
     .create();
   
   Logger.log("✅ Email monitor trigger created!");
   Logger.log("   Function: monitorEmails()");
-  Logger.log("   Interval: Every " + CONFIG.CHECK_INTERVAL_MINUTES + " minute(s)");
+  Logger.log("   Interval: Every 1 hour");
   Logger.log("   Allowed files: " + CONFIG.ALLOWED_EXTENSIONS.join(", "));
   
   // Initialize last check time to now
@@ -1054,13 +1079,18 @@ function setupEmailMonitor() {
   
   Logger.log("");
   Logger.log("🎉 Setup complete! Monitor is now active.");
-  Logger.log("   The script will automatically check for new emails every minute.");
+  Logger.log("   The script will automatically check for new emails every hour.");
   Logger.log("   You don't need to do anything else.");
   Logger.log("");
   Logger.log("Running first check now...");
   
-  // Run once immediately to test
-  monitorEmails();
+  // Run once immediately to test — wrap in try-catch so a failing first run
+  // does NOT make the caller think the trigger was never created.
+  try {
+    monitorEmails();
+  } catch (firstRunErr) {
+    Logger.log("⚠️ First immediate run failed (trigger still active): " + firstRunErr.message);
+  }
 }
 
 /**
@@ -1154,7 +1184,7 @@ function getMonitorStatus() {
   // Configuration
   Logger.log("⚙️  CONFIGURATION");
   Logger.log("─────────────────────────────────────────");
-  Logger.log("Check interval: Every " + CONFIG.CHECK_INTERVAL_MINUTES + " minute(s)");
+  Logger.log("Check interval: Every 1 hour");
   Logger.log("Allowed files: " + CONFIG.ALLOWED_EXTENSIONS.join(", "));
   Logger.log("Max attachments/run: " + CONFIG.MAX_ATTACHMENTS_PER_RUN);
   Logger.log("");
@@ -1396,11 +1426,15 @@ function setLabelColor(labelName, color) {
 function _launchBulkJobAsync(months) {
   var scriptProps = PropertiesService.getScriptProperties();
 
-  months = parseInt(months, 10);
-  if (isNaN(months) || months < 1) months = 3;
+  // "10d" is a special value meaning 10 days — preserve it; otherwise coerce to int months
+  if (months !== "10d") {
+    months = parseInt(months, 10);
+    if (isNaN(months) || months < 1) months = 3;
+    months = String(months);
+  }
 
   // Persist months so background trigger knows what to process
-  scriptProps.setProperty("process_last_n_months", String(months));
+  scriptProps.setProperty("process_last_n_months", months);
 
   // Clear any leftover abort flag and old job state
   scriptProps.deleteProperty(BULK_JOB_ABORT_KEY);
@@ -1413,10 +1447,28 @@ function _launchBulkJobAsync(months) {
   // Read back the state we just wrote so we can show dates to the user
   var state = JSON.parse(scriptProps.getProperty(BULK_JOB_STATE_KEY));
 
-  // Set flag for monitorEmails() to pick up on next cycle (~1 minute)
+  // Set flag for monitorEmails() to pick up (fallback if trigger below fails)
   scriptProps.setProperty('bulk_job_pending_continuation', 'true');
 
-  console.log("🚀 Async job launched: " + state.afterStr + " → " + state.beforeStr + " (starts in ~1 min via monitor loop)");
+  // Create a dedicated one-time trigger so the job starts reliably in ~1 minute
+  // without depending solely on the monitor loop being installed/running.
+  try {
+    var allTriggers = ScriptApp.getProjectTriggers();
+    for (var ti = 0; ti < allTriggers.length; ti++) {
+      if (allTriggers[ti].getHandlerFunction() === 'processLastNMonthsEmails') {
+        ScriptApp.deleteTrigger(allTriggers[ti]);
+      }
+    }
+    ScriptApp.newTrigger('processLastNMonthsEmails')
+      .timeBased()
+      .after(60000)   // Apps Script minimum is ~1 minute
+      .create();
+    console.log("✓ One-time bulk-job trigger created — will fire in ~1 minute.");
+  } catch (trigErr) {
+    console.log("⚠️ Could not create one-time trigger: " + trigErr.message + " — relying on monitor loop.");
+  }
+
+  console.log("🚀 Async job launched: " + state.afterStr + " → " + state.beforeStr);
   return state;
 }
 
@@ -1428,11 +1480,27 @@ function _launchBulkJobAsync(months) {
 function processLastNMonthsEmails(e) {
   var scriptProps = PropertiesService.getScriptProperties();
 
+  // Clean up the one-time trigger that may have fired this function
+  try {
+    var allTriggers = ScriptApp.getProjectTriggers();
+    for (var ti = 0; ti < allTriggers.length; ti++) {
+      if (allTriggers[ti].getHandlerFunction() === 'processLastNMonthsEmails') {
+        ScriptApp.deleteTrigger(allTriggers[ti]);
+      }
+    }
+  } catch (cleanErr) {
+    console.log("⚠️ Trigger cleanup: " + cleanErr.message);
+  }
+
+  // Clear the pending flag set by _launchBulkJobAsync
+  scriptProps.deleteProperty('bulk_job_pending_continuation');
+
   // If a months value was passed in, save it and force a completely fresh start
   var forceNew = false;
   if (e && e.formInput && e.formInput.process_last_n_months) {
-    scriptProps.setProperty("process_last_n_months", e.formInput.process_last_n_months);
-    console.log("📝 Time window set to: " + e.formInput.process_last_n_months + " months");
+    var val = e.formInput.process_last_n_months;
+    scriptProps.setProperty("process_last_n_months", val);
+    console.log("📝 Time window set to: " + val);
     forceNew = true;
   }
 
@@ -1463,17 +1531,30 @@ function _initBulkJob() {
 
   // Read N - with detailed logging
   var savedValue = scriptProps.getProperty("process_last_n_months");
-  console.log("🔍 DEBUG: Saved 'process_last_n_months' value: " + savedValue);
+  console.log("\uD83D\uDD0D DEBUG: Saved 'process_last_n_months' value: " + savedValue);
 
-  var n = parseInt(savedValue || "24", 10);
-  if (isNaN(n) || n < 1) n = 3;
+  var isDays = (savedValue === "10d");
+  var n, nLabel;
 
-  console.log("✅ DEBUG: Final N value being used: " + n + " months");
+  if (isDays) {
+    n = "10d";
+    nLabel = "10 days";
+  } else {
+    n = parseInt(savedValue || "3", 10);
+    if (isNaN(n) || n < 1) n = 3;
+    nLabel = n + " month" + (n !== 1 ? "s" : "");
+  }
+
+  console.log("\u2705 DEBUG: Final period: " + nLabel);
 
   // Calculate date range
   var today     = new Date();
   var startDate = new Date(today);
-  startDate.setMonth(startDate.getMonth() - n);
+  if (isDays) {
+    startDate.setDate(startDate.getDate() - 10);
+  } else {
+    startDate.setMonth(startDate.getMonth() - n);
+  }
 
   function pad(num) { return num < 10 ? '0' + num : '' + num; }
   var afterStr = startDate.getFullYear() + "/" + pad(startDate.getMonth() + 1) + "/" + pad(startDate.getDate());
@@ -1481,6 +1562,7 @@ function _initBulkJob() {
 
   var jobState = {
     n           : n,
+    nLabel      : nLabel,
     afterStr    : afterStr,
     beforeStr   : beforeStr,
     startDate   : startDate.toISOString(),
@@ -1499,7 +1581,7 @@ function _initBulkJob() {
   };
 
   scriptProps.setProperty("bulk_job_state", JSON.stringify(jobState));
-  console.log("✓ Job initialized: last " + n + " months (" + afterStr + " → " + beforeStr + ")");
+  console.log("\u2713 Job initialized: " + nLabel + " (" + afterStr + " \u2192 " + beforeStr + ")");
 }
 
 function _runBulkJob() {
@@ -1634,9 +1716,10 @@ function _runBulkJob() {
         try {
           var msgAttachments = _getAttachmentsForPayload(message);
           var bulkPayload = {
-            user_id      : userId,
-            thread_id    : threadId,
-            access_token : accessToken,
+            user_id         : userId,
+            thread_id       : threadId,        // canonical (RFC Message-ID) — used for ChromaDB key
+            gmail_thread_id : thread.getId(),  // Gmail hex thread ID — used for Gmail REST API
+            access_token    : accessToken,
             messages     : [{
               message_id   : messageId,
               from_address : message.getFrom(),
@@ -1803,7 +1886,7 @@ function checkBulkJobStatus() {
 
   var state = JSON.parse(stateJson);
   console.log("=== BULK JOB STATUS ===");
-  console.log("Period  : last " + state.n + " months");
+  console.log("Period  : last " + (state.nLabel || state.n + " months"));
   console.log("Range   : " + state.afterStr + " → " + state.beforeStr);
   console.log("Offset  : " + state.offset + " threads processed so far");
   console.log("Status  : " + state.status);

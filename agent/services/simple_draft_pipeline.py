@@ -4,8 +4,8 @@ import logging
 import traceback
 from typing import Dict, List, Optional
 
-from services.llm import LLMService
-from services.settings_manager import SettingsManager
+from agent.services.llm import LLMService
+from agent.services.settings_manager import SettingsManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,8 +32,14 @@ def _load_config() -> dict:
 
 CONFIG = _load_config()
 
-# Base data directory: agent/data/{user_id}/...
-BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# Base data directory - point to backend/data (not agent/data)
+# From: openmailbot/agent/services/simple_draft_pipeline.py
+# To: openmailbot/backend/data
+BASE_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # openmailbot/
+    "backend",
+    "data"
+)
 
 
 # ---------------------------------------------------------------------------

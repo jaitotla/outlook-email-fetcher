@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 from neo4j import AsyncGraphDatabase
 from neo4j.exceptions import ServiceUnavailable
 
-from config import settings
+from agent.config import settings
 
 
 class Neo4jClient:

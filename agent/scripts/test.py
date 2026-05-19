@@ -19,8 +19,14 @@ def query_user_settings(user_id):
     print(f"Querying Settings Database for User: {user_id}")
     print(f"{'='*70}\n")
     
-    # Get the database path
-    base_data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    # Get the database path - point to backend/data
+    # From: openmailbot/agent/scripts/test.py
+    # To: openmailbot/backend/data
+    base_data_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # openmailbot/
+        "backend",
+        "data"
+    )
     user_db = os.path.join(base_data_dir, user_id, "sql_data", "chat_thread_processing.db")
     
     # Check if database exists

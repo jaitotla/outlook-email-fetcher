@@ -22,7 +22,7 @@ except ImportError:
     ollama_chat = None
 
 # Import settings manager
-from services.settings_manager import SettingsManager
+from agent.services.settings_manager import SettingsManager
 
 # Import from the same services directory
 # from .store_graph_pipeline import StoreGraphPipeline, ThreadGraphData  # Removed: label storage
@@ -44,6 +44,7 @@ EmailLabel = Literal[
     "booking",
     "bank",
     "Insurance",
+    "Recruitment",
     "Other"
 
 ]
@@ -105,6 +106,20 @@ class EmailLabelPipeline:
                 logger.warning(f"⚠️  Failed to initialize LLM: {str(e)}")
                 self.llm = None
                 self.parser = None
+    
+    def _get_fallback_label(self, email_data: Dict[str, Any]) -> EmailLabelOutput:
+        """
+        Fallback label when both rule-based and LLM classification fail.
+        Returns a sensible default with "Other" label.
+        """
+        subject = email_data.get('subject', 'Unclassified Email')
+        return EmailLabelOutput(
+            label="Other",
+            category="Unclassified",
+            topic="Review Needed",
+            subtopic=None,
+            subject_matter=f"Please review: {subject[:40]}"
+        )
     
     def _init_llm(self):
         """Initialize LLM client based on provider settings"""
@@ -401,13 +416,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
         # Check if LLM is available
         if not self.use_ollama_native and (not self.llm or not self.parser):
             logger.warning("⚠️  LLM not available, cannot classify with LLM")
-            return EmailLabelOutput(
-                label="response",
-                category="General",
-                topic="General Communication",
-                subtopic=None,
-                subject_matter="General email communication"
-            )
+            logger.warning("ℹ️  Falling back to 'Other' label for unclassified email")
+            return self._get_fallback_label(email_data)
         
         try:
             # Prepare email data
@@ -528,14 +538,9 @@ Provide the label, category, topic, and subtopic for this email based on the use
             logger.error(f"Error in LLM classification: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
-            # Fallback to general label
-            return EmailLabelOutput(
-                label="response",
-                category="General",
-                topic="General Communication",
-                subtopic=None,
-                subject_matter="General email communication"
-            )
+            # Fallback to "Other" label when LLM fails
+            logger.warning(f"ℹ️  LLM classification failed, using 'Other' label as fallback")
+            return self._get_fallback_label(email_data)
     
     def label_email(self, email_data: Dict[str, Any]) -> EmailLabelOutput:
         """
@@ -587,13 +592,7 @@ Provide the label, category, topic, and subtopic for this email based on the use
             EmailLabelOutput with label, category, topic, subtopic for the thread
         """
         if not messages:
-            return EmailLabelOutput(
-                label="response",
-                category="Empty",
-                topic="No messages",
-                subtopic=None,
-                subject_matter="No messages in thread"
-            )
+            return self._get_fallback_label({'subject': 'Empty thread'})
         
         # Get the last message (most recent) as it's most important
         last_message = messages[-1]

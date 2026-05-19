@@ -5,9 +5,9 @@ Combines vector search with LLM generation
 from typing import Optional, Dict, Any, List
 import logging
 
-from services.embeddings import EmbeddingService
-from services.llm import LLMService
-from services.settings_manager import SettingsManager
+from agent.services.embeddings import EmbeddingService
+from agent.services.llm import LLMService
+from agent.services.settings_manager import SettingsManager
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ import httpx
 import logging
 import os
 import json
-from config import settings
+from agent.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -91,38 +91,96 @@ class LLMService:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None
     ) -> str:
-        """Call OpenAI API using Chat Completions"""
-        
+        """Call OpenAI Chat Completions API.
+
+        Falls back to gpt-4o-mini when the model name is invalid (e.g. a
+        future/nonexistent model like 'gpt-5-nano' stored in user settings).
+        """
+        FALLBACK_MODEL = "gpt-4o-mini"
+        resolved_model = model or self.default_model or FALLBACK_MODEL
+
         try:
-            model = model or self.default_model
-            
             response = openai.chat.completions.create(
-                model=model,
+                model=resolved_model,
                 messages=messages,
                 temperature=temperature or settings.TEMPERATURE,
                 max_tokens=max_tokens or settings.MAX_TOKENS
             )
-            
             return response.choices[0].message.content
-            
+
+        except openai.NotFoundError as e:
+            if resolved_model != FALLBACK_MODEL:
+                logger.warning(
+                    f"⚠️  OpenAI model '{resolved_model}' not found — retrying with '{FALLBACK_MODEL}'. "
+                    f"Update your LLM model setting."
+                )
+                try:
+                    response = openai.chat.completions.create(
+                        model=FALLBACK_MODEL,
+                        messages=messages,
+                        temperature=temperature or settings.TEMPERATURE,
+                        max_tokens=max_tokens or settings.MAX_TOKENS
+                    )
+                    return response.choices[0].message.content
+                except Exception as fe:
+                    raise ProviderError("openai", str(fe), fe)
+            raise ProviderError("openai", str(e), e)
+
+        except openai.BadRequestError as e:
+            if resolved_model != FALLBACK_MODEL:
+                logger.warning(
+                    f"⚠️  OpenAI bad request for model '{resolved_model}' ({e}) — retrying with '{FALLBACK_MODEL}'."
+                )
+                try:
+                    response = openai.chat.completions.create(
+                        model=FALLBACK_MODEL,
+                        messages=messages,
+                        temperature=temperature or settings.TEMPERATURE,
+                        max_tokens=max_tokens or settings.MAX_TOKENS
+                    )
+                    return response.choices[0].message.content
+                except Exception as fe:
+                    raise ProviderError("openai", str(fe), fe)
+            raise ProviderError("openai", str(e), e)
+
         except Exception as e:
             raise ProviderError("openai", str(e), e)
     
     async def _call_openai_responses(
         self,
         messages: list,
-        model: str = "gpt-5-mini",
+        model: str = "gpt-4o-mini",
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None
     ) -> str:
         """
-        Call OpenAI Responses API for newer models like gpt-5-mini.
-        Uses /v1/responses endpoint with 'input' format.
+        Call OpenAI Responses API (/v1/responses).
+        NOTE: generate() no longer auto-routes to this method. Only call it
+        explicitly when you know the model supports the Responses API.
+        Falls back to _call_openai (Chat Completions) on any error.
         """
         try:
             api_key = self.effective_settings.get("llm_api_key") or settings.OPENAI_API_KEY
             api_key = str(api_key).strip() if api_key else ""
-            
+
+            # Responses API: system messages go to 'instructions', rest go to 'input'
+            instructions = None
+            input_messages = []
+            for msg in messages:
+                if msg.get("role") == "system":
+                    instructions = msg.get("content", "")
+                else:
+                    input_messages.append(msg)
+
+            payload: Dict[str, Any] = {
+                "model": model,
+                "input": input_messages,
+                "temperature": temperature or settings.TEMPERATURE,
+                "max_output_tokens": max_tokens or settings.MAX_TOKENS
+            }
+            if instructions:
+                payload["instructions"] = instructions
+
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     "https://api.openai.com/v1/responses",
@@ -130,22 +188,25 @@ class LLMService:
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json"
                     },
-                    json={
-                        "model": model,
-                        "input": messages,
-                        "temperature": temperature or settings.TEMPERATURE,
-                        "max_output_tokens": max_tokens or settings.MAX_TOKENS
-                    },
+                    json=payload,
                     timeout=120.0
                 )
                 response.raise_for_status()
                 data = response.json()
-                
-                # Parse Responses API format
-                return data["output"][1]["content"][0]["text"]
-                
+
+                # Responses API output: find first message item with output_text
+                for item in data.get("output", []):
+                    if item.get("type") == "message":
+                        for part in item.get("content", []):
+                            if part.get("type") == "output_text":
+                                return part["text"]
+                raise ValueError("Responses API returned no text output")
+
         except Exception as e:
-            raise ProviderError("openai", f"Responses API error: {str(e)}", e)
+            logger.warning(
+                f"⚠️  OpenAI Responses API failed ({e}) — falling back to Chat Completions."
+            )
+            return await self._call_openai(messages, model, temperature, max_tokens)
     
     async def _call_anthropic(
         self,
@@ -310,7 +371,7 @@ class LLMService:
         """Call inbuilt LLM service (uses utils.py)"""
         
         try:
-            from utils import call_chat_api
+            from agent.utils import call_chat_api
             
             # Convert messages to prompt format
             prompt_parts = []
@@ -337,7 +398,7 @@ class LLMService:
             return result
             
         except ImportError:
-            raise ProviderError("inbuilt", "utils.py not found or call_chat_api not available")
+            raise ProviderError("inbuilt", "agent.utils not found or call_chat_api not available")
         except Exception as e:
             if isinstance(e, ProviderError):
                 raise
@@ -356,10 +417,10 @@ class LLMService:
         provider = provider or self.default_provider
         model = model or self.default_model
         
-        # Detect if we need OpenAI Responses API for gpt-5 models
-        if provider == "openai" and model and model.startswith("gpt-5"):
-            return await self._call_openai_responses(messages, model, temperature, max_tokens)
-        elif provider == "openai":
+        # All OpenAI models — including gpt-5-* — use Chat Completions (/v1/chat/completions).
+        # The Responses API (/v1/responses) has a completely different request format and
+        # must not be auto-routed based on model name prefix.
+        if provider == "openai":
             return await self._call_openai(messages, model, temperature, max_tokens)
         elif provider == "anthropic":
             return await self._call_anthropic(messages, model or "claude-3-sonnet-20240229", temperature, max_tokens)

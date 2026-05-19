@@ -44,3 +44,43 @@ vector db saving db by its own location inside the /agent
 button to veryfy the seettings 
 background process shoud be run after save settings 
 lables give llm from settings 
+
+
+
+
+
+2026-04-28 10:51:24,723 - INFO - ✅ CheckAndStoreAttachmentsPipeline done: {'found': 0, 'already_stored': 0, 'newly_stored': 0, 'errors': []}
+2026-04-28 10:51:24,723 - ERROR - ❌ JOB FAILED
+2026-04-28 10:51:24,723 - ERROR -    Error: EmailLabelPipeline.__init__() got an unexpected keyword argument 'openai_api_key'
+2026-04-28 10:51:24,723 - ERROR -    Traceback:
+Traceback (most recent call last):
+  File "/home/manotr/openmailbot/agent/main.py", line 1937, in _run_label_and_push_to_gmail
+    label_pipeline = EmailLabelPipeline(openai_api_key=openai_api_key)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: EmailLabelPipeline.__init__() got an unexpected keyword argument 'openai_api_key'
+
+Ankit Goel
+10:53 AM
+Traceback (most recent call last):
+  File "/home/manotr/openmailbot/agent/services/summarization_pipeline.py", line 255, in call_llm_api_async
+    summary_text = await self.llm_service.generate(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/manotr/openmailbot/agent/services/llm.py", line 369, in generate
+    return await self._call_ollama(messages, model, temperature)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/manotr/openmailbot/agent/services/llm.py", line 302, in _call_ollama
+    raise ProviderError("ollama", str(e), e)
+services.llm.ProviderError: ollama error: Client error '404 Not Found' for url 'http://192.168.29.116:11434/api/chat'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+
+
+
+[OpenMailBot][Monitor] === COMPLETE | found=0 processed=0 filtered=0 skipped=0 errors=0 === background.js:1198:11
+[OpenMailBot][GetAtts] Listing attachments for msg 51670 background.js:2240:13
+[OpenMailBot][GetAtts] Total attachments found: 0 background.js:2242:13
+[OpenMailBot][GetAtts] No attachments in msg 51670 background.js:2245:15
+
+
+
+feach seeting from server shoud come later 
+add agent url validator 

@@ -1,5 +1,17 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# ==================== ENVIRONMENT & CREDENTIALS ====================
+.env
+.env.local
+.env.*.local
+.env.prod
+.env.production
+!.env.example
+!.env.sample
 
+# Config files with secrets
+config.json
+!config.example.json
+
+# ==================== NODE.JS / NPM ====================
 # dependencies
 /node_modules
 /.pnp
@@ -24,13 +36,36 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local env files
-.env*.local
-.env
-
 # vercel
 .vercel
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ==================== IDE & EDITOR ====================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.iml
+*.swp
+*.swo
+*~
+*.bak
+
+# ==================== OS ====================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ==================== TEMPORARY ====================
+*.tmp
+*.temp
+.cache/
+

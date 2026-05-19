@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-from config import settings
+from agent.config import settings
 
 # Constants
 BASE_PATH = "./data_pipeline"

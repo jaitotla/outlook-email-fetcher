@@ -7,8 +7,8 @@ from typing import Dict, List, Optional
 
 from llama_index.readers.file import PDFReader
 
-from services.llm import LLMService
-from services.settings_manager import SettingsManager
+from agent.services.llm import LLMService
+from agent.services.settings_manager import SettingsManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -35,8 +35,14 @@ logger = logging.getLogger(__name__)
 
 # CONFIG = _load_config()
 
-# Base data directory: agent/data/{user_id}/...
-BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# Base data directory - point to backend/data (not agent/data)
+# From: openmailbot/agent/services/draft_pipeline.py
+# To: openmailbot/backend/data
+BASE_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # openmailbot/
+    "backend",
+    "data"
+)
 BASE_PATH = BASE_DATA_DIR
 
 

@@ -10,15 +10,21 @@ import asyncio
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from services.llm import LLMService
-from services.settings_manager import SettingsManager
+from agent.services.llm import LLMService
+from agent.services.settings_manager import SettingsManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Base data directory
-BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# Base data directory - point to backend/data (not agent/data)
+# From: openmailbot/agent/services/summarization_pipeline.py
+# To: openmailbot/backend/data
+BASE_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # openmailbot/
+    "backend",
+    "data"
+)
 
 
 class SummarizationPipeline:
@@ -37,9 +43,11 @@ class SummarizationPipeline:
         try:
             settings_manager = SettingsManager(user_id)
             # Fixed: Pass setting_type as keyword argument, not positional
-            self.effective_settings = settings_manager.get_settings(setting_type="general")
+            retrieved_settings = settings_manager.get_settings(setting_type="general")
             logger.info(f"Retrieved settings for user {user_id} (type: general)")
-            logger.info(f" these are setttings {self.effective_settings}")
+            logger.info(f" these are setttings {retrieved_settings}")
+            # Ensure settings is a dict, not None
+            self.effective_settings = retrieved_settings if retrieved_settings else {}
         except Exception as e:
             logger.warning(f"Failed to load settings for user {user_id}: {e}. Using defaults.")
             self.effective_settings = {}

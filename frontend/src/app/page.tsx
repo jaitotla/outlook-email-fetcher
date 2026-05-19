@@ -1,29 +1,38 @@
 import Link from 'next/link'
-import { Mail, Sparkles, Shield, Zap } from 'lucide-react'
+import {
+  Mail, Sparkles, Shield, Zap, Search, FileText, BarChart2, Users,
+  Lock, Globe, Settings, CheckCircle, ChevronRight, Bot, Database,
+  Layers, Cpu, MessageSquare, TrendingUp, Star, ArrowRight, GitBranch,
+  Cloud, Server, Building2, User, BrainCircuit, Inbox, Clock, Send
+} from 'lucide-react'
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      {/* Navigation */}
-      <nav className="bg-white shadow-sm">
+    <main className="min-h-screen bg-white text-gray-900">
+      {/* ── Navigation ─────────────────────────────────────────────────── */}
+      <nav className="bg-white/90 backdrop-blur border-b border-gray-100 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex justify-between items-center">
             <div className="flex items-center space-x-2">
-              <Mail className="w-8 h-8 text-blue-600" />
-              <span className="text-2xl font-bold text-gray-900">OpenMailBot</span>
+              <div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center">
+                <Mail className="w-5 h-5 text-white" />
+              </div>
+              <span className="text-xl font-bold text-gray-900">OpenMailBot</span>
+              <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">Open Source</span>
             </div>
-            <div className="flex space-x-4">
-              <Link 
-                href="/auth/signin"
-                className="text-gray-700 hover:text-blue-600 px-4 py-2 rounded-md"
-              >
+            <div className="hidden md:flex items-center space-x-8 text-sm font-medium text-gray-600">
+              <a href="#features" className="hover:text-blue-600 transition">Features</a>
+              <a href="#how-it-works" className="hover:text-blue-600 transition">How It Works</a>
+              <a href="#integrations" className="hover:text-blue-600 transition">Integrations</a>
+              <a href="#enterprise" className="hover:text-blue-600 transition">Enterprise</a>
+              <a href="#pricing" className="hover:text-blue-600 transition">Pricing</a>
+            </div>
+            <div className="flex items-center space-x-3">
+              <Link href="/auth/signin" className="text-gray-600 hover:text-blue-600 px-4 py-2 rounded-md text-sm font-medium transition">
                 Sign In
               </Link>
-              <Link 
-                href="/auth/signup"
-                className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 transition"
-              >
-                Get Started
+              <Link href="/auth/signup" className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition shadow-sm">
+                Get Started Free
               </Link>
             </div>
           </div>

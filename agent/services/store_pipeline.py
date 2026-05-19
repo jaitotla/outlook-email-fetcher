@@ -33,8 +33,8 @@ import chromadb
 from llama_index.core import SimpleDirectoryReader
 from llama_index.readers.file import PDFReader, CSVReader
 
-from services.embeddings import EmbeddingService
-from services.settings_manager import SettingsManager
+from agent.services.embeddings import EmbeddingService
+from agent.services.settings_manager import SettingsManager
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -44,7 +44,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants (mirror chat_pipeline.py)
 # ---------------------------------------------------------------------------
-BASE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# Base data directory - point to backend/data (not agent/data)
+# From: openmailbot/agent/services/store_pipeline.py
+# To: openmailbot/backend/data
+BASE_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # openmailbot/
+    "backend",
+    "data"
+)
 
 FILE_EXTRACTOR = {
     ".pdf": PDFReader(),
