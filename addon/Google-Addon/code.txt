@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Runs automatically when a user installs the add-on.
  * Show onboarding immediately on install.
  */
@@ -523,16 +523,28 @@ function _buildOnboardingStep1Card() {
           .addItem("✨  Manotr (Zero Configuration — Recommended)", "manotr", modeVal === "manotr")
           .addItem("🖥️  Local (Ollama / Self-hosted)",              "local",   modeVal === "local")
           .addItem("⚡  External API (Your Own API Keys)",           "external", modeVal === "external")
+          .setOnChangeAction(CardService.newAction().setFunctionName("handleModeChange"))
       )
   );
 
   // ── Agent URL (Thunderbird: ob-agent-url-group + ob-connect-btn) ───────
   var agentSection = CardService.newCardSection()
-    .setHeader("🌐  AGENT URL")
-    .addWidget(
+    .setHeader("🌐  AGENT URL");
+
+  // For Manotr mode: hide the URL input, show auto-configured status
+  if (modeVal === "manotr") {
+    agentSection.addWidget(
       CardService.newTextParagraph()
         .setText(
-          "Manotr mode: use <b>http://omb.manotr.com</b> (pre-filled).\n" +
+          "✨ <b>Manotr Mode:</b> Backend URL is automatically configured.\n" +
+          "No manual entry needed — click \"Verify Connection\" below to connect."
+        )
+    );
+  } else {
+    // For Local/External modes: show URL input field for user entry
+    agentSection.addWidget(
+      CardService.newTextParagraph()
+        .setText(
           "Local/External: enter the URL where your OpenMailBot agent server is running.\n" +
           "💡 Tip: If server shows 0.0.0.0:5051, use localhost:5051 instead."
         )
@@ -541,22 +553,28 @@ function _buildOnboardingStep1Card() {
       CardService.newTextInput()
         .setFieldName("agent_url")
         .setTitle("Agent Server URL")
-        .setValue(pv("agent_url", "http://omb.manotr.com"))
-        .setHint("http://localhost:5051  ·  https://your-server.com  ·  http://omb.manotr.com")
-    )
-    .addWidget(
-      CardService.newTextButton()
-        .setText("🔗  Connect & Verify Server")
-        .setOnClickAction(
-          CardService.newAction().setFunctionName("handleVerifyAgentConnection")
-        )
+        .setValue(pv("agent_url", "http://localhost:5051"))
+        .setHint("http://localhost:5051  ·  https://your-server.com")
     );
+  }
+
+  // Add verify button for all modes
+  agentSection.addWidget(
+    CardService.newTextButton()
+      .setText("🔗  Verify Connection")
+      .setOnClickAction(
+        CardService.newAction().setFunctionName("handleVerifyAgentConnection")
+      )
+  );
+
+  // Show connection status message if available
   if (connectMsg) {
     agentSection.addWidget(
       CardService.newTextParagraph()
         .setText(connectOk ? "✅  " + connectMsg : "❌  " + connectMsg)
     );
   }
+
   card.addSection(agentSection);
 
   // ── User Profile (required) ────────────────────────────────────────────
@@ -879,6 +897,241 @@ function showOnboardingStep1(e) {
 }
 
 /**
+ * Fetches the backend URL from the Manotr remote config (S3 bucket).
+ * Used when mode === "manotr" to dynamically resolve the current backend URL.
+ * Tries HTTPS first, then HTTP fallback. Falls back to cached/default URL if both fail.
+ * 
+ * S3 Config URL: https://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json
+ * Extracts: config.backend_url
+ * 
+ * @return {string} The backend URL from remote config, cached value, or default.
+ */
+function _fetchManotrBackendUrl() {
+  var S3_CONFIG_URL_HTTPS = "https://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json";
+  var S3_CONFIG_URL_HTTP  = "http://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json";
+  var CACHE_KEY           = "MANOTR_BACKEND_URL_CACHE";
+  var CACHE_TIMESTAMP_KEY = "MANOTR_BACKEND_URL_TIMESTAMP";
+  var CACHE_DURATION_HOURS = 24;  // Re-fetch config every 24 hours
+  var DEFAULT_FALLBACK_URL = "https://omb.manotr.com";  // Updated to HTTPS
+  
+  var scriptProps = PropertiesService.getScriptProperties();
+  var now = new Date().getTime();
+  
+  // Check if we have a recent cached value (within 24 hours)
+  var cachedUrl = scriptProps.getProperty(CACHE_KEY);
+  var cachedTime = scriptProps.getProperty(CACHE_TIMESTAMP_KEY);
+  if (cachedUrl && cachedTime && (now - parseInt(cachedTime)) < (CACHE_DURATION_HOURS * 3600000)) {
+    Logger.log("✅ Using cached Manotr backend URL: " + cachedUrl);
+    return cachedUrl;
+  }
+  
+  Logger.log("🔄 Fetching Manotr backend URL from S3 config...");
+  
+  // Try HTTPS first
+  var config = _tryFetchManotrConfig(S3_CONFIG_URL_HTTPS, "HTTPS");
+  
+  // If HTTPS fails, try HTTP
+  if (!config) {
+    config = _tryFetchManotrConfig(S3_CONFIG_URL_HTTP, "HTTP");
+  }
+  
+  if (config && config.backend_url) {
+    var backendUrl = config.backend_url.replace(/\/+$/, "").trim();
+    if (backendUrl) {
+      // Cache the successful URL
+      scriptProps.setProperty(CACHE_KEY, backendUrl);
+      scriptProps.setProperty(CACHE_TIMESTAMP_KEY, String(now));
+      Logger.log("✅ Using Manotr backend URL from S3: " + backendUrl);
+      return backendUrl;
+    }
+  }
+  
+  // If S3 fetch failed but we have a cached value (older than 24h), use it
+  if (cachedUrl) {
+    Logger.log("⚠️ S3 fetch failed. Using older cached URL: " + cachedUrl);
+    return cachedUrl;
+  }
+  
+  Logger.log("⚠️ Could not fetch S3 config. Using fallback URL: " + DEFAULT_FALLBACK_URL);
+  return DEFAULT_FALLBACK_URL;
+}
+
+/**
+ * Helper: Try to fetch and parse the Manotr config from S3.
+ * @param {string} url - The S3 config URL (HTTP or HTTPS)
+ * @param {string} protocol - Protocol name for logging ("HTTP" or "HTTPS")
+ * @return {object|null} Parsed config object, or null if fetch/parse fails
+ */
+function _tryFetchManotrConfig(url, protocol) {
+  try {
+    Logger.log("📡 Attempting " + protocol + " fetch from S3: " + url);
+    var resp = UrlFetchApp.fetch(url, {
+      method: "get",
+      muteHttpExceptions: true,
+      timeout: 5000
+    });
+    
+    var code = resp.getResponseCode();
+    Logger.log("   HTTP Status: " + code);
+    
+    if (code === 200) {
+      try {
+        var config = JSON.parse(resp.getContentText());
+        Logger.log("   ✅ Parsed config successfully");
+        return config;
+      } catch (je) {
+        Logger.log("   ❌ Failed to parse JSON: " + je.message);
+        return null;
+      }
+    } else {
+      Logger.log("   ❌ HTTP " + code + " returned");
+      return null;
+    }
+  } catch (e) {
+    Logger.log("   ❌ " + protocol + " fetch failed: " + e.message);
+    return null;
+  }
+}
+
+/**
+ * Resolves the agent/backend URL to use for API calls.
+ * When mode is "manotr" (from saved settings or the optional formMode param),
+ * always fetches the URL dynamically from the S3 remote config so it stays current.
+ * For "external" mode, returns FLASK_SERVER_URL from Script Properties.
+ *
+ * S3 Config: https://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json  →  backend_url
+ *
+ * @param {string=} formMode - Mode from form input ("manotr" | "external").
+ *                             If omitted, reads from saved user_settings.
+ * @return {string} The resolved backend URL (never empty — falls back to S3 default).
+ */
+function _getAgentUrl(formMode) {
+  var mode = formMode;
+  if (!mode) {
+    try {
+      var settings = JSON.parse(
+        PropertiesService.getUserProperties().getProperty("user_settings") || "{}"
+      );
+      mode = settings.mode || "manotr";
+    } catch (e) {
+      mode = "manotr";
+    }
+  }
+  // Normalise legacy values
+  if (mode === "inbuilt") mode = "manotr";
+  if (mode === "custom")  mode = "external";
+
+  if (mode === "manotr") {
+    return _fetchManotrBackendUrl();
+  }
+  return PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL") || "";
+}
+
+/**
+ * DIAGNOSTIC: Test S3 config fetch directly.
+ * Call this from Apps Script → Execution log to debug Manotr URL issues.
+ * Usage: In Apps Script Editor, Ctrl+Enter or Run → Run function → testManotrConfigFetch
+ */
+function testManotrConfigFetch() {
+  var MANOTR_CONFIG_URL = "https://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json";
+  
+  Logger.log("🔍 ════════════════════════════════════════════");
+  Logger.log("🔍 MANOTR CONFIG DIAGNOSTIC TEST");
+  Logger.log("🔍 ════════════════════════════════════════════");
+  Logger.log("📍 S3 URL: " + MANOTR_CONFIG_URL);
+  Logger.log("⏱️  Testing fetch...");
+  
+  try {
+    var resp = UrlFetchApp.fetch(MANOTR_CONFIG_URL, {
+      method: "get",
+      muteHttpExceptions: true,
+      timeout: 5000
+    });
+    
+    Logger.log("📡 HTTP Status: " + resp.getResponseCode());
+    Logger.log("📏 Response Size: " + resp.getContentLength() + " bytes");
+    
+    if (resp.getResponseCode() === 200) {
+      var contentText = resp.getContentText();
+      Logger.log("📄 Raw Response:\n" + contentText);
+      
+      var config = JSON.parse(contentText);
+      Logger.log("✅ Parsed JSON: " + JSON.stringify(config, null, 2));
+      
+      if (config.backend_url) {
+        Logger.log("🎯 backend_url found: " + config.backend_url);
+        
+        // Test if the backend URL is reachable
+        Logger.log("🔗 Testing backend URL connectivity...");
+        try {
+          var backendResp = UrlFetchApp.fetch(config.backend_url + "/handshake", {
+            method: "get",
+            muteHttpExceptions: true,
+            timeout: 5000
+          });
+          Logger.log("✅ Backend reachable! HTTP " + backendResp.getResponseCode());
+        } catch (backendErr) {
+          Logger.log("❌ Backend NOT reachable: " + backendErr.message);
+        }
+      } else {
+        Logger.log("⚠️  backend_url NOT found in config. Available keys: " + Object.keys(config).join(", "));
+      }
+    } else {
+      Logger.log("❌ S3 returned HTTP " + resp.getResponseCode());
+      Logger.log("📝 Response: " + resp.getContentText());
+    }
+  } catch (e) {
+    Logger.log("❌ FAILED to fetch S3 config: " + e.message);
+  }
+  
+  Logger.log("🔍 ════════════════════════════════════════════");
+  Logger.log("💡 Tip: Check Apps Script Execution log above for full diagnostic info");
+  Logger.log("🔍 ════════════════════════════════════════════");
+}
+
+/**
+ * Handler for mode selection change in onboarding.
+ * When user selects "manotr" mode, fetches and pre-fills the backend URL.
+ * When user selects "local" or "external", clears the pre-filled URL.
+ */
+function handleModeChange(e) {
+  var userProps = PropertiesService.getUserProperties();
+  var f = e.formInput || {};
+  var selectedMode = f.mode || "manotr";
+
+  // Get current form state
+  var prefillJson = userProps.getProperty("ob_prefill") || "{}";
+  var p = {};
+  try { p = JSON.parse(prefillJson); } catch (ex) {}
+
+  if (selectedMode === "manotr") {
+    // Fetch Manotr backend URL and pre-fill
+    var manotrUrl = _fetchManotrBackendUrl();
+    p.agent_url = manotrUrl;
+    p.mode = "manotr";
+    
+    userProps.setProperty("ob_prefill", JSON.stringify(p));
+    userProps.setProperty("ob_connect_msg", "✅ Manotr URL auto-configured: " + manotrUrl);
+    userProps.setProperty("ob_connect_ok", "true");
+    
+    Logger.log("🔄 Mode changed to Manotr. Pre-filled URL: " + manotrUrl);
+  } else {
+    // For local/external modes, keep the form as-is but allow user to enter custom URL
+    p.mode = selectedMode;
+    userProps.setProperty("ob_prefill", JSON.stringify(p));
+    userProps.setProperty("ob_connect_msg", "");
+    userProps.setProperty("ob_connect_ok", "false");
+    
+    Logger.log("🔄 Mode changed to " + selectedMode + ". User can enter custom URL.");
+  }
+
+  // Refresh the onboarding form with updated prefill
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().updateCard(_buildOnboardingStep1Card()))
+    .build();
+}
+
+/**
  * "Fill Settings from Server" handler.
  * Equivalent of Thunderbird's ob-fetch-backend-btn + ob-use-backend-btn flow.
  * Tries the agent_url already typed in the form, then falls back to saved settings.
@@ -955,11 +1208,19 @@ function handleFetchSettingsForOnboarding(e) {
 function handleVerifyAgentConnection(e) {
   var userProps = PropertiesService.getUserProperties();
   var f = (e && e.formInput) ? e.formInput : {};
+  var mode = f.mode || "manotr";
   var agentUrl = (f.agent_url || "").trim();
+
+  // ── For Manotr mode, always fetch fresh URL from S3 config ──────────
+  // Never use form-provided URL for Manotr — always fetch from remote config
+  if (mode === "manotr") {
+    agentUrl = _fetchManotrBackendUrl();
+    Logger.log("🔍 Verify - Manotr mode: fetched URL from S3 config: " + agentUrl);
+  }
 
   // Preserve all current form values as prefill so the user doesn't lose what they typed
   userProps.setProperty("ob_prefill", JSON.stringify({
-    mode:                     f.mode                     || "manotr",
+    mode:                     mode,
     agent_url:                agentUrl,
     user_name:                f.user_name                || "",
     user_position:            f.user_position            || "",
@@ -991,27 +1252,51 @@ function handleVerifyAgentConnection(e) {
 
   try {
     var baseUrl = agentUrl.replace(/\/+$/, "");
+    Logger.log("🔗 Testing connection to: " + baseUrl + "/handshake");
     var resp    = UrlFetchApp.fetch(baseUrl + "/handshake", {
       method: "get",
-      muteHttpExceptions: true
+      muteHttpExceptions: true,
+      timeout: 5000
     });
     var code = resp.getResponseCode();
     var body = {};
     try { body = JSON.parse(resp.getContentText()); } catch (je) {}
 
+    Logger.log("📡 Server response - HTTP " + code + ": " + JSON.stringify(body));
+
     if (code === 200 &&
         (body.handshake === true || body.status === "ok" || body.status === "healthy")) {
-      userProps.setProperty("ob_connect_msg", "Server connected and verified! (" + baseUrl + ")");
+      userProps.setProperty("ob_connect_msg", "✅ Server connected and verified! (" + baseUrl + ")");
       userProps.setProperty("ob_connect_ok",  "true");
       // Persist the verified URL right away
       PropertiesService.getScriptProperties().setProperty("FLASK_SERVER_URL", baseUrl);
+      Logger.log("✅ Connection verified and URL saved");
     } else {
-      userProps.setProperty("ob_connect_msg", "Server responded with HTTP " + code + ". Check URL or server status.");
+      userProps.setProperty("ob_connect_msg", "❌ Server responded with HTTP " + code + ". Check URL or server status.");
       userProps.setProperty("ob_connect_ok",  "false");
+      Logger.log("❌ Server check failed - HTTP " + code);
     }
   } catch (err) {
-    userProps.setProperty("ob_connect_msg", "Cannot reach server: " + err.message.substring(0, 120));
+    var errorMsg = err.message.substring(0, 120);
+    var displayMsg = "❌ Cannot reach server: " + errorMsg;
+    
+    // If Manotr mode and error is DNS-related, provide helpful debugging info
+    if (mode === "manotr" && (errorMsg.indexOf("DNS") !== -1 || errorMsg.indexOf("getaddrinfo") !== -1)) {
+      displayMsg = "❌ <b>DNS Error — Backend URL not found or unreachable</b>\n\n" +
+                   "<b>Troubleshooting:</b>\n" +
+                   "1️⃣  Verify S3 config at:\n" +
+                   "    https://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json\n" +
+                   "2️⃣  Check that <b>backend_url</b> field exists and is correct\n" +
+                   "3️⃣  Ensure the backend URL is publicly reachable (HTTPS)\n" +
+                   "4️⃣  Run <b>testManotrConfigFetch()</b> in Apps Script to diagnose\n\n" +
+                   "<b>Current Attempt:</b> " + baseUrl;
+      Logger.log("⚠️  Manotr mode DNS error. URL from config: " + baseUrl);
+      Logger.log("💡 User should run testManotrConfigFetch() in Apps Script editor");
+    }
+    
+    userProps.setProperty("ob_connect_msg", displayMsg);
     userProps.setProperty("ob_connect_ok",  "false");
+    Logger.log("❌ Connection error: " + err.message);
   }
 
   return CardService.newActionResponseBuilder()
@@ -1065,9 +1350,7 @@ function handleOBFetchLLMModels(e) {
     userProps.setProperty("ob_llm_msg", "Enter your " + provider.toUpperCase() + " API key first.");
     userProps.setProperty("ob_llm_ok",  "false");
   } else {
-    var agentUrl = (f.agent_url || "").trim()
-                   || PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL")
-                   || "http://omb.manotr.com";
+    var agentUrl = (f.agent_url || "").trim() || _getAgentUrl(f.mode || "manotr");
     var result = _validateViaEndpoint(agentUrl, "llm", provider, apiKey, "");
     userProps.setProperty("ob_llm_msg", result.message || "");
     userProps.setProperty("ob_llm_ok",  result.valid ? "true" : "false");
@@ -1093,9 +1376,7 @@ function handleOBFetchLLMOllamaModels(e) {
   var userProps = PropertiesService.getUserProperties();
   var ollamaUrl = (f.llm_base_url      || "http://localhost:11434").trim();
   var apiKey    = (f.llm_ollama_api_key || "").trim();
-  var agentUrl  = (f.agent_url || "").trim()
-                  || PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL")
-                  || "http://omb.manotr.com";
+  var agentUrl  = (f.agent_url || "").trim() || _getAgentUrl(f.mode || "manotr");
   var result = _validateViaEndpoint(agentUrl, "llm", "ollama", apiKey, ollamaUrl);
   userProps.setProperty("ob_llm_msg", result.message || "");
   userProps.setProperty("ob_llm_ok",  result.valid ? "true" : "false");
@@ -1120,9 +1401,7 @@ function handleOBFetchEmbeddingModels(e) {
     userProps.setProperty("ob_emb_msg", "Enter your " + provider.toUpperCase() + " API key first.");
     userProps.setProperty("ob_emb_ok",  "false");
   } else {
-    var agentUrl = (f.agent_url || "").trim()
-                   || PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL")
-                   || "http://omb.manotr.com";
+    var agentUrl = (f.agent_url || "").trim() || _getAgentUrl(f.mode || "manotr");
     var result = _validateViaEndpoint(agentUrl, "embedding", provider, apiKey, "");
     userProps.setProperty("ob_emb_msg", result.message || "");
     userProps.setProperty("ob_emb_ok",  result.valid ? "true" : "false");
@@ -1145,9 +1424,7 @@ function handleOBFetchEmbeddingOllamaModels(e) {
   var userProps = PropertiesService.getUserProperties();
   var ollamaUrl = (f.embedding_base_url      || "http://localhost:11434").trim();
   var apiKey    = (f.embedding_ollama_api_key || "").trim();
-  var agentUrl  = (f.agent_url || "").trim()
-                  || PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL")
-                  || "http://omb.manotr.com";
+  var agentUrl  = (f.agent_url || "").trim() || _getAgentUrl(f.mode || "manotr");
   var result = _validateViaEndpoint(agentUrl, "embedding", "ollama", apiKey, ollamaUrl);
   userProps.setProperty("ob_emb_msg", result.message || "");
   userProps.setProperty("ob_emb_ok",  result.valid ? "true" : "false");
@@ -1173,9 +1450,16 @@ function saveOnboardingStep1(e) {
   if (mode === "inbuilt") mode = "manotr";
   if (mode === "custom")  mode = "external";
 
-  // Auto-set agent URL for Manotr mode
+  // Auto-set agent URL for Manotr mode — always fetch from remote config
+  // S3 Config: https://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json
+  // Property: backend_url
   var agentUrl = (f.agent_url || "").trim();
-  if (mode === "manotr" && !agentUrl) agentUrl = "http://omb.manotr.com";
+  if (mode === "manotr") {
+    agentUrl = _fetchManotrBackendUrl();
+    Logger.log("📝 Onboarding Step 1 - Manotr mode selected. Backend URL fetched from S3 config: " + agentUrl);
+  } else {
+    Logger.log("📝 Onboarding Step 1 - Mode: " + mode + ", Agent URL: " + agentUrl);
+  }
 
   // Normalise provider names — map legacy "inbuilt" → "manotr"
   var mapProvider = function(v) { return (v === "inbuilt") ? "manotr" : (v || "manotr"); };
@@ -1619,7 +1903,7 @@ function generateDraft(e) {
     }
 
     // Step 2: Call /api/draft (simple draft, no attachment indexing)
-    var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
+    var flaskUrl = _getAgentUrl();
     if (!flaskUrl) {
       throw new Error("Flask server URL not configured. Please set FLASK_SERVER_URL in Script Properties.");
     }
@@ -1909,7 +2193,7 @@ function draftWithAttachments(e) {
  */
 function pollJobStatus(jobId, maxWaitMs) {
   maxWaitMs = maxWaitMs || 120000;
-  var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
+  var flaskUrl = _getAgentUrl();
   var baseUrl = flaskUrl.replace(/\/$/, '').replace(/\/api$/, '');
   var statusUrl = baseUrl + '/api/job-status/' + jobId;
   var waited = 0;
@@ -1933,8 +2217,7 @@ function pollJobStatus(jobId, maxWaitMs) {
  * No longer sends email_data - server will fetch from stored messages
  */
 function callPipelineAPI(requestData) {
-  var flaskUrl = PropertiesService.getScriptProperties()
-    .getProperty("FLASK_SERVER_URL");
+  var flaskUrl = _getAgentUrl();
   
   if (!flaskUrl) {
     throw new Error("Flask server URL not configured. Please set FLASK_SERVER_URL in Script Properties.");
@@ -2124,8 +2407,7 @@ function summarizeThread(e) {
     
     // Step 3: Call the new /api/summarize-thread endpoint
     Logger.log("🤖 Step 3: Calling summarization API...");
-    var flaskUrl = PropertiesService.getScriptProperties()
-      .getProperty("FLASK_SERVER_URL");
+    var flaskUrl = _getAgentUrl();
     
     Logger.log("   Flask URL from properties: " + flaskUrl);
     if (!flaskUrl) {
@@ -2834,8 +3116,7 @@ function chatWithThread(e) {
     Logger.log("Processing chat request for thread: " + threadId);
     
     // Call chat-with-thread API
-    var flaskUrl = PropertiesService.getScriptProperties()
-      .getProperty("FLASK_SERVER_URL");
+    var flaskUrl = _getAgentUrl();
     
     if (!flaskUrl) {
       throw new Error("Flask server URL not configured.");
@@ -2963,8 +3244,7 @@ function escapeHtml(text) {
  * Calls Flask Server API (with Ollama/llama3.2 backend)
  */
 function callFlaskAPI(content, action) {
-  var flaskUrl = PropertiesService.getScriptProperties()
-    .getProperty("FLASK_SERVER_URL");
+  var flaskUrl = _getAgentUrl();
   
   if (!flaskUrl) {
     throw new Error("Flask server URL not configured. Please set FLASK_SERVER_URL in Script Properties.");
@@ -3129,8 +3409,7 @@ function testFlaskConnection() {
  */
 function logEmailMessages(threadId, messages) {
   Logger.log("   [logEmailMessages] Starting...");
-  var flaskUrl = PropertiesService.getScriptProperties()
-    .getProperty("FLASK_SERVER_URL");
+  var flaskUrl = _getAgentUrl();
   
   Logger.log("   [logEmailMessages] Flask URL: " + flaskUrl);
   if (!flaskUrl) {
@@ -3246,7 +3525,7 @@ function logEmailMessages(threadId, messages) {
  */
 function storeMessageAttachments(threadId, message) {
   Logger.log("      [storeMessageAttachments] Starting...");
-  var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
+  var flaskUrl = _getAgentUrl();
   if (!flaskUrl) {
     throw new Error("FLASK_SERVER_URL not configured.");
   }
@@ -3421,7 +3700,7 @@ function _buildSettingsCard() {
   var embedModel = currentSettings.embedding_model    || "text-embedding-3-small";
   var userName   = currentSettings.user_name          || "Not set";
   var userPos    = currentSettings.user_position      || "Not set";
-  var agentUrl   = currentSettings.agent_url          || "http://omb.manotr.com";
+  var agentUrl   = isManotr ? _fetchManotrBackendUrl() : (currentSettings.agent_url || "");
   var modeLabel  = isManotr ? "✨ Manotr Mode" : (mode === "local" ? "🖥️ Local Mode" : "⚡ External API Mode");
 
   // Read stored models (keyed by provider so they survive provider switches)
@@ -4017,7 +4296,7 @@ function _buildSettingsCard() {
  * Returns { valid: bool, message: string, models: [] }
  */
 function _validateViaEndpoint(agentUrl, providerType, provider, apiKey, baseUrl) {
-  var endpoint = (agentUrl || "http://omb.manotr.com").replace(/\/+$/, "") + "/api/validate-provider";
+  var endpoint = (agentUrl || _fetchManotrBackendUrl()).replace(/\/+$/, "") + "/api/validate-provider";
   try {
     var resp = UrlFetchApp.fetch(endpoint, {
       method: "post",
@@ -4044,10 +4323,7 @@ function _validateViaEndpoint(agentUrl, providerType, provider, apiKey, baseUrl)
  * Returns { valid: bool, message: string, models: [] }
  */
 function _validateProviderViaAgent(providerType, provider, apiKey, baseUrl) {
-  var settings = loadUserSettings();
-  var agentUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL")
-                 || settings.agent_url
-                 || "http://omb.manotr.com";
+  var agentUrl = _getAgentUrl();
   return _validateViaEndpoint(agentUrl, providerType, provider, apiKey, baseUrl);
 }
 
@@ -4631,7 +4907,7 @@ function skipHistoricalIndexing(e) {
  * Backend is the authoritative source - local is a cache
  */
 function syncSettingsToBackend(settings) {
-  var flaskUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
+  var flaskUrl = _getAgentUrl();
   if (!flaskUrl) {
     throw new Error("FLASK_SERVER_URL not configured in Script Properties");
   }
@@ -6226,6 +6502,20 @@ function ensureAutoSyncTriggerRunning() {
  * @returns {string|null} The backend URL or null if not configured
  */
 function getBackendUrl() {
+  // 0. If mode is manotr, always fetch fresh from S3 config
+  try {
+    var userSettingsForMode = JSON.parse(
+      PropertiesService.getUserProperties().getProperty("user_settings") || "{}"
+    );
+    var mode = userSettingsForMode.mode || "manotr";
+    if (mode === "inbuilt") mode = "manotr";
+    if (mode === "manotr") {
+      return _fetchManotrBackendUrl();
+    }
+  } catch (modeErr) {
+    Logger.log("[WARN] getBackendUrl: could not read mode — " + modeErr.message);
+  }
+
   // 1. Check ScriptProperties (set by onboarding)
   var scriptUrl = PropertiesService.getScriptProperties().getProperty("FLASK_SERVER_URL");
   if (scriptUrl && scriptUrl.trim() !== "") {

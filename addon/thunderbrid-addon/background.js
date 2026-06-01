@@ -147,6 +147,33 @@ function _mapBackendLabelToThunderbirdKey(backendLabel) {
 
 let _addonConfig = null;
 
+// ─── MANOTR REMOTE CONFIG ────────────────────────────────────────────────────
+const MANOTR_REMOTE_CONFIG_URL = "https://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json";
+let _manotrBackendUrl = null; // cached value so we only fetch once per session
+
+/**
+ * Fetch the backend URL from the Manotr remote S3 config.
+ * Caches the result for the lifetime of the background script session.
+ * Returns null if the fetch fails (caller should fall back to DEFAULT_FLASK_URL).
+ */
+async function _fetchManotrBackendUrl() {
+  if (_manotrBackendUrl) return _manotrBackendUrl;
+  try {
+    const resp = await fetch(MANOTR_REMOTE_CONFIG_URL);
+    if (resp.ok) {
+      const config = await resp.json();
+      if (config && config.backend_url) {
+        _manotrBackendUrl = config.backend_url.replace(/\/$/, "");
+        console.log("[OpenMailBot] Manotr backend URL from remote config:", _manotrBackendUrl);
+        return _manotrBackendUrl;
+      }
+    }
+  } catch (e) {
+    console.warn("[OpenMailBot] Could not fetch Manotr remote config:", e.message);
+  }
+  return null;
+}
+
 /**
  * Load the bundled addon_config.json file once and cache it.
  * This is the addon-side equivalent of .env / app secrets.
@@ -290,12 +317,23 @@ async function getAccountEmail(accountId) {
  */
 async function _getBackendUrlFromConfig() {
   try {
-    // Check user_settings first — allows the user to change Agent URL from the settings UI
     const r = await browser.storage.local.get("user_settings");
-    const userUrl = r.user_settings && (r.user_settings.agent_url || r.user_settings.backend_url);
-    if (userUrl) {
-      return userUrl.replace(/\/$/, "");
+    const userSettings = r.user_settings || {};
+    const mode = userSettings.mode || DEFAULT_SETTINGS.mode;
+
+    // When mode is "manotr", always resolve from the remote S3 config so the URL stays current
+    if (mode === "manotr") {
+      const manotrUrl = await _fetchManotrBackendUrl();
+      if (manotrUrl) return manotrUrl;
+      // Fall through to default if remote config is unreachable
+    } else {
+      // For local/external modes use the URL the user explicitly configured
+      const userUrl = userSettings.agent_url || userSettings.backend_url;
+      if (userUrl) {
+        return userUrl.replace(/\/$/, "");
+      }
     }
+
     // Fall back to addon_config.json (used on first run before any settings are saved)
     const cfg = await getAddonConfig();
     // Support both agent_url (new) and backend_url (legacy)

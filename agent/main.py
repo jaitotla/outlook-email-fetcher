@@ -1787,16 +1787,57 @@ def _apply_gmail_label_sync(
     else:
         logger.info(f"🔗 Gmail API [STEP 2/3]: SKIP (label already exists)")
 
-    # ── Step 3: apply label to thread ─────────────────────────────────────
-    logger.info(f"🔗 Gmail API [STEP 3/3]: POST /threads/{thread_id}/modify")
+    # ── Step 3: apply label to thread (replace, not append) ──────────────
+    # First fetch the thread's current labelIds so we can remove any previously
+    # applied managed label before adding the new one.  This ensures a thread
+    # always has exactly ONE managed label — the latest classification.
+    logger.info(f"🔗 Gmail API [STEP 3a/4]: GET /threads/{thread_id} (fetch current labels)")
+    remove_label_ids: list = []
+    try:
+        tr = _requests.get(
+            f"{GMAIL_BASE}/threads/{thread_id}",
+            headers=headers,
+            params={"format": "metadata", "fields": "id,labelIds"},
+            timeout=30,
+        )
+        if tr.status_code == 200:
+            current_label_ids = tr.json().get("labelIds", [])
+            logger.info(f"   Current thread labelIds: {current_label_ids}")
+
+            # Build a reverse map: label_id → label_name, restricted to
+            # only the labels we manage (i.e. keys in _GMAIL_LABEL_COLORS).
+            # This prevents accidentally removing system labels like INBOX or UNREAD.
+            managed_names_lower = {name.lower() for name in _GMAIL_LABEL_COLORS}
+            managed_id_to_name = {
+                lbl_id: lbl_name
+                for lbl_name, lbl_id in existing.items()
+                if lbl_name in managed_names_lower
+            }
+
+            for cur_id in current_label_ids:
+                cur_name = managed_id_to_name.get(cur_id)
+                if cur_name and cur_name.lower() != formatted.lower():
+                    # This is a different managed label — schedule it for removal
+                    remove_label_ids.append(cur_id)
+                    logger.info(f"   Will remove old managed label: '{cur_name}' (id={cur_id})")
+        else:
+            logger.warning(f"   Could not fetch thread labels ({tr.status_code}) — will add only")
+    except Exception as fetch_err:
+        logger.warning(f"   Failed to fetch thread labels: {fetch_err} — will add only")
+
+    # ── Step 4: modify thread — add new label, remove old managed labels ──
+    logger.info(f"🔗 Gmail API [STEP 4/4]: POST /threads/{thread_id}/modify")
+    modify_body: Dict[str, Any] = {"addLabelIds": [label_id]}
+    if remove_label_ids:
+        modify_body["removeLabelIds"] = remove_label_ids
     logger.info(f"   Applying label ID: {label_id} (name: '{formatted}')")
-    logger.info(f"   Request body: {{\"addLabelIds\": [\"{label_id}\"]}}")
-    
+    logger.info(f"   Request body: {modify_body}")
+
     try:
         mr = _requests.post(
             f"{GMAIL_BASE}/threads/{thread_id}/modify",
             headers=headers,
-            json={"addLabelIds": [label_id]},
+            json=modify_body,
             timeout=30,
         )
         logger.info(f"   ✓ Response: {mr.status_code}")
@@ -1811,7 +1852,7 @@ def _apply_gmail_label_sync(
         mr_data = mr.json()
         logger.info(f"   ✓ SUCCESS: label applied to thread")
         logger.info(f"   Response: {mr_data}")
-        logger.info(f"✅ Gmail API: COMPLETE — thread {thread_id} now labeled '{formatted}'")
+        logger.info(f"✅ Gmail API: COMPLETE — thread {thread_id} now labeled '{formatted}' (replaced previous)")
         
         return {"label_id": label_id, "label_name": formatted}
         

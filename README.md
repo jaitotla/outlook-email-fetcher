@@ -1,119 +1,56 @@
-<div align="center">
+# OpenMailBot
 
-# 📨 OpenMailBot - AI-Powered Email Assistant
+AI-powered email assistant for Gmail and Thunderbird. Summarize, draft, search, and organize emails with multi-provider LLM support.
 
-<img width="454" height="156" alt="image" src="https://github.com/user-attachments/assets/8d5de857-3f17-4545-9d5e-83cd395b6baf" />
-<br><br>
+## Installation
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-Latest-green.svg)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/ankitgoel2004/openmailbot?style=social)](https://github.com/ankitgoel2004/openmailbot)
-
-**OpenMailBot** is an AI-powered email assistant that helps you summarize, draft, search, and organize emails with ease. Transform your email workflows with automated intelligence and privacy-first design.
-
-[Features](#-1-product-overview) • [Installation](#-3-installation-steps) • [Usage](#-6-local-development--running-locally) • [Documentation](#-4-google-gmail-add-on-setup) • [Support](#-9-troubleshooting)
-
----
-  <br><br>
-</div>
-
-# 📨 OpenMailBot - Complete Setup & Installation Guide
-
-**Version:** 1.0  
-**Last Updated:** May 2026  
-**Website:** https://openmailbot.com
-
----
-
-## Table of Contents
-
-1. [Product Overview](#-1-product-overview)
-2. [System Requirements](#-2-system-requirements)
-3. [Installation Steps](#-3-installation-steps)
-4. [Google Gmail Add-on Setup](#-4-google-gmail-add-on-setup)
-5. [Thunderbird Add-on Setup](#-5-thunderbird-add-on-setup)
-6. [Local Development & Running Locally](#-6-local-development--running-locally)
-7. [API Key Configuration](#-7-api-key-configuration)
-8. [Ollama Setup & Usage](#-8-ollama-setup--usage)
-9. [Troubleshooting](#-9-troubleshooting)
-
----
-
-## 🎯 1. Product Overview
-
-### What is OpenMailBot?
-
-**OpenMailBot** is an **AI-powered email assistant** that helps you:
-
-- ✅ **Summarize** email threads instantly
-- ✅ **Draft replies** with AI assistance
-- ✅ **Search emails** using natural language (RAG - Retrieval-Augmented Generation)
-- ✅ **Analyze sentiment** and extract key information
-- ✅ **Organize emails** with smart labels
-- ✅ **Chat** with your email history
-
-### Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **Multi-Provider Support** | Works with OpenAI, Anthropic, Groq, Google Gemini, and local Ollama |
-| **Vector Database** | Pinecone cloud or local vector storage for semantic search |
-| **Gmail Integration** | Native Gmail Add-on for in-inbox access |
-| **Thunderbird Support** | Thunderbird WebExtension for email clients |
-| **Open Source** | 100% transparent, self-hostable, no vendor lock-in |
-| **Privacy-First** | Your data stays encrypted and under your control |
-| **Flexible Deployment** | Cloud, self-hosted, or local-only options |
-
-### Supported Email Clients
-
-- ✅ **Gmail** (Google Workspace and personal accounts)
-- ✅ **Thunderbird** (cross-platform email client)
-- ✅ **Outlook** (IMAP support via Thunderbird)
-
-
-## 📦 3. Installation Steps
-
-### Step 3.1: Clone the Repository
+### macOS / Linux
 
 ```bash
-# Open terminal/command prompt
+curl -fsSL https://raw.githubusercontent.com/ankitgoel2004/openmailbot/main/run.sh | sh
+```
+
+or manually:
+
+```bash
 git clone https://github.com/ankitgoel2004/openmailbot.git
 cd openmailbot
+chmod +x run.sh
+./run.sh
 ```
 
+### Windows
 
-### Step 3.3: Install Backend Dependencies
-
-```bash
-# Navigate to backend directory
+```powershell
+git clone https://github.com/ankitgoel2004/openmailbot.git
+cd openmailbot
+python -m venv backend/venv
+backend\venv\Scripts\activate
+pip install --upgrade pip setuptools wheel
 cd backend
-
+pip install -r requirements.txt
+python main.py
 ```
 
-### Step 3.4: Install Agent Dependencies
+### Requirements
 
-```bash
-# Navigate to agent directory
-cd agent
-
-# Create Python virtual environment
-python -m venv venv
+- Python 3.8+
+- Git
+- 500MB free disk space
+- Internet connection for LLM providers (optional for local Ollama)
 
 # Activate virtual environment
+
 # On Windows:
 venv\Scripts\activate
+
 # On macOS/Linux:
 source venv/bin/activate
 
 # Install Python packages
 pip install -r requirements.txt
 
-# Deactivate (for now)
-deactivate
 
-# Go back to root
-cd ..
 ```
 
 

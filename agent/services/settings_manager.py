@@ -71,9 +71,20 @@ def sanitize_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     return sanitized
 
 
-# Encryption key - in production, this should come from environment variable
-# For now, using a default that should be changed
-ENCRYPTION_KEY_SALT = b"openmailbot_settings_salt_v1"  # Should be stored securely
+# Encryption salt – loaded from the environment so the value is never
+# committed to source control.  Set SETTINGS_ENCRYPTION_SALT to a random,
+# high-entropy string before starting the agent.
+# Example:
+#   export SETTINGS_ENCRYPTION_SALT="$(python -c 'import secrets,base64; \
+#       print(base64.b64encode(secrets.token_bytes(32)).decode())')"
+_salt_raw = os.environ.get("SETTINGS_ENCRYPTION_SALT", "")
+if not _salt_raw:
+    raise EnvironmentError(
+        "SETTINGS_ENCRYPTION_SALT environment variable is not set. "
+        "This is required to encrypt/decrypt user settings. "
+        "Set it to a random high-entropy string before starting the agent."
+    )
+ENCRYPTION_KEY_SALT: bytes = _salt_raw.encode()
 
 
 def _get_encryption_key(user_id: str = "default") -> bytes:

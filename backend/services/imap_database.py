@@ -1,12 +1,78 @@
 """
 IMAP Credentials Database Manager
-Stores and manages user IMAP credentials (email and app password) in SQLite
+Stores and manages user IMAP credentials (email and app password) in SQLite.
+App passwords are encrypted at rest using PBKDF2+Fernet (same pattern as
+settings_manager.py).  Set the IMAP_ENCRYPTION_SALT environment variable to a
+random, high-entropy string before starting the backend.
 """
 import sqlite3
 import os
+import base64
+import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import threading
+
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Encryption helpers
+# ---------------------------------------------------------------------------
+# Required environment variable – must be set before the backend starts.
+# Use a random, high-entropy string (e.g. 32+ bytes, base64-encoded).
+# Example:
+#   export IMAP_ENCRYPTION_SALT="$(python -c 'import secrets,base64; \
+#       print(base64.b64encode(secrets.token_bytes(32)).decode())')"
+_imap_salt_raw = os.environ.get("IMAP_ENCRYPTION_SALT", "")
+if not _imap_salt_raw:
+    raise EnvironmentError(
+        "IMAP_ENCRYPTION_SALT environment variable is not set. "
+        "This is required to encrypt IMAP app passwords at rest. "
+        "Set it to a random high-entropy string before starting the backend."
+    )
+_IMAP_ENCRYPTION_SALT: bytes = _imap_salt_raw.encode()
+
+
+def _get_imap_encryption_key(user_id: str) -> bytes:
+    """Derive a Fernet-compatible key from user_id + the IMAP salt."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=_IMAP_ENCRYPTION_SALT,
+        iterations=100_000,
+        backend=default_backend(),
+    )
+    return base64.urlsafe_b64encode(kdf.derive(user_id.encode()))
+
+
+def _encrypt_password(password: str, user_id: str) -> str:
+    """Encrypt an IMAP app password for the given user."""
+    key = _get_imap_encryption_key(user_id)
+    return Fernet(key).encrypt(password.encode()).decode("utf-8")
+
+
+def _decrypt_password(stored: str, user_id: str) -> str:
+    """Decrypt a stored IMAP app password.
+
+    If decryption fails the value is assumed to be a legacy plaintext entry
+    (migration path).  A warning is logged so operators can re-save the
+    credential to encrypt it.
+    """
+    key = _get_imap_encryption_key(user_id)
+    try:
+        return Fernet(key).decrypt(stored.encode()).decode("utf-8")
+    except (InvalidToken, Exception):
+        logger.warning(
+            "Could not decrypt IMAP password for user '%s' – treating as "
+            "plaintext (legacy record).  Re-save the credential to encrypt it.",
+            user_id,
+        )
+        return stored
 
 
 class IMAPDatabaseManager:
@@ -102,6 +168,9 @@ class IMAPDatabaseManager:
             try:
                 cursor = conn.cursor()
                 
+                # Encrypt the password before storing
+                encrypted_password = _encrypt_password(app_password, user_id)
+
                 # Check if user exists
                 cursor.execute("SELECT user_id FROM imap_users WHERE user_id = ?", (user_id,))
                 exists = cursor.fetchone() is not None
@@ -117,7 +186,7 @@ class IMAPDatabaseManager:
                             enabled = ?,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE user_id = ?
-                    """, (email, app_password, imap_host, imap_port, enabled, user_id))
+                    """, (email, encrypted_password, imap_host, imap_port, enabled, user_id))
                     print(f"✅ Updated IMAP user: {user_id}")
                 else:
                     # Insert new user
@@ -125,7 +194,7 @@ class IMAPDatabaseManager:
                         INSERT INTO imap_users 
                         (user_id, email, app_password, imap_host, imap_port, enabled)
                         VALUES (?, ?, ?, ?, ?, ?)
-                    """, (user_id, email, app_password, imap_host, imap_port, enabled))
+                    """, (user_id, email, encrypted_password, imap_host, imap_port, enabled))
                     print(f"✅ Added new IMAP user: {user_id}")
                 
                 conn.commit()
@@ -161,7 +230,7 @@ class IMAPDatabaseManager:
                     return {
                         "user_id": row[0],
                         "email": row[1],
-                        "app_password": row[2],
+                        "app_password": _decrypt_password(row[2], row[0]),
                         "imap_host": row[3],
                         "imap_port": row[4],
                         "enabled": bool(row[5]),
@@ -200,7 +269,7 @@ class IMAPDatabaseManager:
                     users.append({
                         "user_id": row[0],
                         "email": row[1],
-                        "app_password": row[2],
+                        "app_password": _decrypt_password(row[2], row[0]),
                         "imap_host": row[3],
                         "imap_port": row[4],
                         "enabled": bool(row[5]),

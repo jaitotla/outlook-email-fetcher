@@ -6,7 +6,28 @@
 "use strict";
 
 // ── CONSTANTS ──────────────────────────────────────────
-const MANOTR_AGENT_URL = "http://omb.manotr.com";
+const MANOTR_AGENT_URL     = "http://omb.manotr.com";  // fallback if S3 config unreachable
+const MANOTR_CONFIG_URL    = "https://omb-s3.s3.us-west-2.amazonaws.com/omb_config.json";
+
+/**
+ * Fetch the backend URL from the Manotr remote S3 config.
+ * Returns the `backend_url` value from the config JSON.
+ * Falls back to MANOTR_AGENT_URL if the fetch fails.
+ */
+async function fetchManotrBackendUrl() {
+  try {
+    const resp = await fetch(MANOTR_CONFIG_URL);
+    if (resp.ok) {
+      const config = await resp.json();
+      if (config && config.backend_url) {
+        return config.backend_url.replace(/\/$/, "");
+      }
+    }
+  } catch (e) {
+    console.warn("[Popup] Could not fetch Manotr config:", e.message);
+  }
+  return MANOTR_AGENT_URL;
+}
 
 // ── Static model catalogues (curated, fallback if API fetch fails) ───
 const MODELS = {
@@ -87,7 +108,7 @@ const ALL_VIEWS = [
  *
  * @param {string} prefix - "ob" for onboarding, "s" for settings
  */
-function updateModeVisibility(prefix) {
+async function updateModeVisibility(prefix) {
   const mode = getVal(`${prefix}-mode`);
 
   // ── Agent URL: always visible, behaviour driven by mode ──
@@ -98,19 +119,22 @@ function updateModeVisibility(prefix) {
   
   if (mode === "manotr") {
     if (agentInput) {
-      agentInput.value = MANOTR_AGENT_URL;
+      const manotrUrl = await fetchManotrBackendUrl();
+      agentInput.value = manotrUrl;
       agentInput.readOnly = false;
       agentInput.removeAttribute("readonly");
       agentInput.style.background = "#f0f7ff";
       agentInput.style.color = "#1a73e8";
-      agentInput.placeholder = MANOTR_AGENT_URL;
+      agentInput.placeholder = manotrUrl;
     }
     if (agentHint) agentHint.textContent = "Auto-set for Manotr — edit only if you self-host.";
     _showEl(`${prefix}-manotr-url-info`);
     _hideEl(`${prefix}-connect-row`);  // Hide connect button for Manotr
   } else if (mode) {
     if (agentInput) {
-      if (agentInput.value === MANOTR_AGENT_URL) agentInput.value = "";
+      // Clear field if it still holds a Manotr URL (the stored value may differ from the constant)
+      const curVal = agentInput.value;
+      if (curVal === MANOTR_AGENT_URL || /omb\.manotr\.com/.test(curVal)) agentInput.value = "";
       agentInput.readOnly = false;
       agentInput.removeAttribute("readonly");  // Explicitly remove the readonly attribute
       agentInput.style.background = "#ffffff";  // Set to white
@@ -444,8 +468,17 @@ async function handleFetchOllamaModels(prefix, section) {
 async function getAgentUrl() {
   try {
     const r = await browser.storage.local.get("user_settings");
-    let url = (r.user_settings && (r.user_settings.agent_url || r.user_settings.backend_url))
-              || MANOTR_AGENT_URL;
+    const stored = r.user_settings && (r.user_settings.agent_url || r.user_settings.backend_url);
+    const mode   = r.user_settings && r.user_settings.mode;
+
+    let url;
+    if (mode === "manotr" || !stored) {
+      // For manotr mode always resolve from remote config so URL stays current
+      url = await fetchManotrBackendUrl();
+    } else {
+      url = stored;
+    }
+
     // Convert 0.0.0.0 to localhost for client-side connections
     const originalUrl = url;
     url = url.replace(/:\/\/0\.0\.0\.0:/g, '://localhost:');
@@ -456,7 +489,7 @@ async function getAgentUrl() {
     return url;
   } catch (e) {
     console.error(`[Popup] Error getting agent URL:`, e);
-    return MANOTR_AGENT_URL;
+    return await fetchManotrBackendUrl();
   }
 }
 

@@ -7,15 +7,43 @@ as 'effective_settings' to service methods.
 
 Provider priorities:
 1. effective_settings (per-request user config from backend)
-2. Environment variables (tenant-level defaults)
-3. Hardcoded defaults below (inbuilt mode)
+2. Environment variables (tenant-level defaults from .env file)
+3. Hardcoded defaults below (inbuilt mode - for localhost URLs only)
+
+⚠️  IMPORTANT: Secret URLs (like INBUILT_FLASK_URL, INBUILT_OLLAMA_URL) MUST be
+configured via .env file. No hardcoded defaults for security.
 """
 from pydantic_settings import BaseSettings
-from typing import Optional, Dict,Any
+from typing import Optional, Dict, Any
 import os
 from pydantic import field_validator
+from dotenv import load_dotenv
 import re 
 import json
+
+# Load environment variables from .env file
+load_dotenv()
+
+def _load_required_env(key: str, description: str) -> str:
+    """
+    Load a required environment variable or raise an error.
+    
+    Args:
+        key: Environment variable name
+        description: Human-readable description for error message
+        
+    Raises:
+        ValueError: If environment variable is not set
+    """
+    value = os.environ.get(key)
+    if not value:
+        raise ValueError(
+            f"\n❌ ERROR: Required environment variable '{key}' not found in .env file.\n"
+            f"   This is needed for: {description}\n"
+            f"   Please add to .env file:\n"
+            f"   {key}=<your-{description.lower()}>\n"
+        )
+    return value.strip()  # Remove whitespace
 class Settings(BaseSettings):
     # Server
     HOST: str = "0.0.0.0"
@@ -62,11 +90,31 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "llama3.2"
     
     # ==========================================================================
-    # Inbuilt Mode - Central Servers (zero-config for users)
+    # Inbuilt Mode - Central Servers (MUST be configured via .env for security)
     # ==========================================================================
-    INBUILT_FLASK_URL: str = "https://lsdiedb39c.pagekite.me"
-    INBUILT_OLLAMA_URL: str = "https://ej5f4s6jtj.pagekite.me"
-    INBUILT_CHROMA_URL: str = "http://localhost:8500"  # Central ChromaDB
+    # These URLs are loaded from .env file - no hardcoded defaults for production
+    
+    @classmethod
+    def _setup_inbuilt_urls(cls):
+        """Setup inbuilt mode URLs from .env file"""
+        try:
+            flask_url = _load_required_env(
+                "INBUILT_FLASK_URL",
+                "Central Flask server for LLM and embedding services"
+            )
+            ollama_url = _load_required_env(
+                "INBUILT_OLLAMA_URL", 
+                "Central Ollama server for LLM access"
+            )
+            return flask_url, ollama_url
+        except ValueError as e:
+            print(str(e))
+            raise
+    
+    # Initialize these after class is fully loaded
+    INBUILT_FLASK_URL: str = ""
+    INBUILT_OLLAMA_URL: str = ""
+    INBUILT_CHROMA_URL: str = "http://localhost:8500"  # Local ChromaDB default
     
     # ==========================================================================
     # Vector Database Settings
@@ -212,6 +260,16 @@ class Settings(BaseSettings):
 
 # Create global settings instance
 settings = Settings()
+
+# Load inbuilt mode URLs from .env file (required for production)
+try:
+    settings.INBUILT_FLASK_URL, settings.INBUILT_OLLAMA_URL = Settings._setup_inbuilt_urls()
+except ValueError as e:
+    # Re-raise with clear error message
+    raise ValueError(
+        "❌ Failed to initialize settings. Required environment variables missing.\n"
+        "Please configure .env file with required URLs."
+    ) from e
 
 # Load persisted settings on startup if available
 settings.load_from_file()

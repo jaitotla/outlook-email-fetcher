@@ -28,21 +28,51 @@ Usage:
 import os
 import json
 import requests
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # =============================================================================
 # INBUILT MODE CONFIGURATION
-# These are the default URLs for the central server infrastructure.
-# Override via environment variables for tenant-specific deployments.
+# Secret URLs MUST be configured via .env file for security.
+# Localhost URLs have defaults for local development.
 # =============================================================================
 
-# Central Flask server URL (provides /chat and /embed endpoints)
-FLASK_URL = os.environ.get("INBUILT_FLASK_URL", "https://lsdiedb39c.pagekite.me/")
+def _load_required_env(key: str, description: str) -> str:
+    """
+    Load a required environment variable or raise an error.
+    
+    Args:
+        key: Environment variable name
+        description: Human-readable description for error message
+        
+    Raises:
+        ValueError: If environment variable is not set
+    """
+    value = os.environ.get(key)
+    if not value:
+        raise ValueError(
+            f"\n❌ ERROR: Required environment variable '{key}' not found in .env file.\n"
+            f"   This is needed for: {description}\n"
+            f"   Please add to .env file:\n"
+            f"   {key}=<your-{description.lower()}>\n"
+        )
+    return value.strip()  # Remove whitespace
+
+# Central Flask server URL (REQUIRED - provides /chat and /embed endpoints)
+FLASK_URL = _load_required_env(
+    "INBUILT_FLASK_URL",
+    "Central Flask server for LLM and embedding services"
+)
+
+# Flask local fallback (optional - for local development)
 FLASK_LOCAL = os.environ.get("INBUILT_FLASK_LOCAL", "http://localhost:5050/")
 
 # Use FLASK_URL by default, can be overridden
 ollama_flask = os.environ.get("INBUILT_OLLAMA_FLASK", FLASK_URL)
 
-# Direct Ollama server URL (for local deployments or specific model access)
+# Direct Ollama server URL (localhost default for local deployments)
 ollama_url = os.environ.get("INBUILT_OLLAMA_URL", "http://localhost:11434/")
 
 # =============================================================================
@@ -138,7 +168,7 @@ def ollama_generate_chat(prompt, ollama_model="llama3.2"):
 # OPENAI RESPONSES API (for gpt-5-mini and newer models)
 # =============================================================================
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()  # Optional, may use other providers
 OPENAI_API_URL = "https://api.openai.com/v1/responses"
 OPENAI_MODEL = "gpt-5-mini"
 
