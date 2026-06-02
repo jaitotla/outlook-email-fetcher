@@ -1,27 +1,18 @@
 {
   "timeZone": "Asia/Kolkata",
+  "runtimeVersion": "V8",
   "oauthScopes": [
     "https://www.googleapis.com/auth/gmail.addons.execute",
     "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
     "https://www.googleapis.com/auth/gmail.addons.current.message.metadata",
     "https://www.googleapis.com/auth/gmail.addons.current.action.compose",
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/script.scriptapp",
-    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/script.external_request",
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/calendar.events.readonly",
-    "https://www.google.com/calendar/feeds"
-
-
+    "https://www.googleapis.com/auth/userinfo.email"
   ],
   "addOns": {
     "common": {
-      "name": "AI Thread Summarizer",
+      "name": "OpenMailBot",
       "logoUrl": "https://www.gstatic.com/images/branding/product/1x/apps_script_48dp.png",
       "layoutProperties": {
         "primaryColor": "#4285f4"
@@ -52,7 +43,8 @@
       },
       "universalActions": [
         {
-          "text": "Open AI Assistant"
+          "text": "Open AI Assistant",
+          "runFunction": "onGmailHomepage"
         }
       ]
     }

@@ -23,6 +23,7 @@ pinecone
 protobuf
 pydantic
 pydantic_settings
+PyNaCl
 PyPDF2
 pytesseract
 python-dotenv

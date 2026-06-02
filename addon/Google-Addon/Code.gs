@@ -4567,11 +4567,13 @@ function saveSettings(e) {
     PropertiesService.getScriptProperties().setProperty("FLASK_SERVER_URL", settings.agent_url);
   }
 
-  // Sync to backend (best effort)
+  // Sync to backend using ENCRYPTED endpoint (new)
+  // Falls back to plaintext if encryption fails
   try {
-    syncSettingsToBackend(settings);
+    var flaskUrl = _getAgentUrl();
+    syncSettingsToBackendEncrypted(settings, flaskUrl);
   } catch (syncErr) {
-    Logger.log("Settings sync to backend failed: " + syncErr.message);
+    Logger.log("Encrypted settings sync to backend failed: " + syncErr.message);
     // Continue - local save was successful
   }
 

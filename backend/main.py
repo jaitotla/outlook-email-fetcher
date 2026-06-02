@@ -39,6 +39,7 @@ from agent.services.label_pipeline import EmailLabelPipeline
 from agent.services.label_email_lockbook import get_user_lockbook, get_global_lockbook
 from agent.services.store_pipeline import CheckAndStoreEmailPipeline, CheckAndStoreAttachmentsPipeline
 from agent.services.summarization_pipeline import SummarizationPipeline
+from agent.services.encryption_service import get_encryption_service
 #from agent.database.mongodb import MongoDBClient
 from agent.services.simple_draft_pipeline import SimpleDraftPipeline
 
@@ -1228,15 +1229,47 @@ class SyncSettingsRequest(BaseModel):
     settings: Dict[str, Any]
 
 
+class EncryptedSettingsRequest(BaseModel):
+    """Request model for encrypted settings from add-ons using libsodium."""
+    user_id: str
+    encrypted_payload: str  # base64-encoded encrypted settings
+    key_version: int = 1
+    timestamp: Optional[str] = None
+
+
+@app.get("/api/public-key")
+async def get_public_key():
+    """
+    Expose public key for client-side encryption.
+    Add-ons fetch this key to encrypt settings before sending.
+    
+    Returns:
+        {
+            "public_key": "base64-encoded-public-key",
+            "algorithm": "libsodium/box_seal",
+            "key_version": 1
+        }
+    """
+    try:
+        enc_service = get_encryption_service()
+        print("\n📤 [REQUEST] GET /api/public-key called", flush=True)
+        print("   🔐 Exposing public key for client encryption", flush=True)
+        sys.stdout.flush()
+        
+        return enc_service.get_public_key_dict()
+    except Exception as e:
+        print(f"\n❌ [ERROR] Failed to get public key: {e}", flush=True)
+        sys.stdout.flush()
+        raise HTTPException(status_code=500, detail=f"Failed to get public key: {str(e)}")
+
+
 @app.post("/api/settings")
 async def sync_settings(request: SyncSettingsRequest, background_tasks: BackgroundTasks):
     """
-    Sync user settings from Gmail Add-on to backend.
+    Sync user settings from Gmail Add-on to backend (PLAINTEXT - DEPRECATED).
     
-    This endpoint receives settings configured in the Gmail Add-on
-    and saves them to encrypted SQLite database.
-    
-    If IMAP is enabled, triggers background email fetching asynchronously.
+    DEPRECATED: New add-ons should use encrypted endpoint.
+    This endpoint maintained for backward compatibility.
     
     Request:
     {
@@ -1245,11 +1278,7 @@ async def sync_settings(request: SyncSettingsRequest, background_tasks: Backgrou
             "mode": "custom",
             "llm_provider": "openai",
             "llm_api_key": "sk-...",
-            "embedding_provider": "openai",
-            "user_tone": "professional",
-            "run_imap_server": true,
-            "imap_email": "user@gmail.com",
-            "imap_app_password": "xxxx xxxx xxxx xxxx"
+            ...
         }
     }
     
@@ -1259,14 +1288,16 @@ async def sync_settings(request: SyncSettingsRequest, background_tasks: Backgrou
         "message": "Settings synced successfully",
         "user_id": "user@example.com",
         "settings_saved": 15,
-        "encrypted": true
+        "encrypted": true,
+        "transport": "plaintext",
+        "warning": "Consider using POST /api/settings/encrypted for better security"
     }
     """
     print("\n" + "="*70, flush=True)
-    print("🔧 [REQUEST] POST /api/settings endpoint called", flush=True)
+    print("🔧 [REQUEST] POST /api/settings endpoint called (PLAINTEXT - DEPRECATED)", flush=True)
     print(f"   👤 User ID: {request.user_id}", flush=True)
     print(f"   📋 Settings: {list(request.settings.keys())}", flush=True)
-    print(f"   📦 Total fields: {len(request.settings)}", flush=True)
+    print(f"   ⚠️  Transport: PLAINTEXT - Consider using encrypted endpoint", flush=True)
     print("="*70, flush=True)
     sys.stdout.flush()
     
@@ -1286,7 +1317,7 @@ async def sync_settings(request: SyncSettingsRequest, background_tasks: Backgrou
         
         print(f"✅ [SAVED] Settings encrypted and stored successfully", flush=True)
         print(f"   📁 Database: data/{request.user_id}/sql_data/chat_thread_processing.db", flush=True)
-        print(f"   🔐 Encryption: Enabled (Fernet)", flush=True)
+        print(f"   🔐 Encryption: Enabled (Fernet, at-rest only)", flush=True)
         sys.stdout.flush()
         
         # Check if IMAP server should be enabled
@@ -1340,7 +1371,9 @@ async def sync_settings(request: SyncSettingsRequest, background_tasks: Backgrou
             "user_id": request.user_id,
             "settings_saved": len(request.settings),
             "encrypted": True,
-            "storage": f"data/{request.user_id}/sql_data/chat_thread_processing.db"
+            "transport": "plaintext",
+            "storage": f"data/{request.user_id}/sql_data/chat_thread_processing.db",
+            "warning": "This endpoint receives plaintext. Consider POST /api/settings/encrypted for client-side encryption"
         }
     except Exception as e:
         print(f"\n❌ [ERROR] Failed to sync settings for {request.user_id}", flush=True)
@@ -1351,6 +1384,145 @@ async def sync_settings(request: SyncSettingsRequest, background_tasks: Backgrou
         raise HTTPException(
             status_code=500,
             detail=f"Failed to sync settings: {str(e)}"
+        )
+
+
+@app.post("/api/settings/encrypted")
+async def sync_settings_encrypted(request: EncryptedSettingsRequest, background_tasks: BackgroundTasks):
+    """
+    Sync ENCRYPTED user settings from add-ons to backend.
+    
+    Add-ons encrypt settings client-side using the public key fetched from /api/public-key.
+    Backend decrypts using the private key stored in environment variables.
+    
+    This provides defense-in-depth:
+    - Layer 1: Encrypted in transit (libsodium box_seal)
+    - Layer 2: Encrypted at-rest (Fernet)
+    
+    Request:
+    {
+        "user_id": "user@example.com",
+        "encrypted_payload": "base64-encoded-encrypted-settings",
+        "key_version": 1,
+        "timestamp": "2024-06-02T10:30:00Z"
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "message": "Settings encrypted and stored successfully",
+        "user_id": "user@example.com",
+        "settings_saved": 15,
+        "encrypted": true,
+        "transport": "encrypted",
+        "storage": "data/{user_id}/sql_data/chat_thread_processing.db"
+    }
+    """
+    print("\n" + "="*70, flush=True)
+    print("🔧 [REQUEST] POST /api/settings/encrypted endpoint called", flush=True)
+    print(f"   👤 User ID: {request.user_id}", flush=True)
+    print(f"   🔐 Payload size: {len(request.encrypted_payload)} bytes (base64)", flush=True)
+    print(f"   📅 Timestamp: {request.timestamp}", flush=True)
+    print(f"   🔑 Key version: {request.key_version}", flush=True)
+    print("="*70, flush=True)
+    sys.stdout.flush()
+    
+    try:
+        # Decrypt the settings using encryption service
+        enc_service = get_encryption_service()
+        settings = enc_service.decrypt_settings(request.encrypted_payload)
+        
+        print(f"✅ [DECRYPTED] Successfully decrypted settings", flush=True)
+        print(f"   📋 Settings keys: {list(settings.keys())}", flush=True)
+        sys.stdout.flush()
+        
+        # Initialize settings manager for the user
+        settings_manager = SettingsManager(request.user_id)
+        
+        # Save settings with additional Fernet encryption (2nd layer)
+        success = settings_manager.save_settings(
+            settings,
+            request.user_id,
+            "general"
+        )
+        
+        if not success:
+            raise Exception("Failed to save settings to database")
+        
+        print(f"✅ [SAVED] Settings encrypted and stored successfully", flush=True)
+        print(f"   📁 Database: data/{request.user_id}/sql_data/chat_thread_processing.db", flush=True)
+        print(f"   🔐 Transport: Encrypted (libsodium box_seal)", flush=True)
+        print(f"   🔐 Storage: Encrypted (Fernet)", flush=True)
+        sys.stdout.flush()
+        
+        # Check if IMAP server should be enabled
+        run_imap = settings.get("run_imap_server", False)
+        print(f"🔍 [IMAP CHECK] run_imap={run_imap}, _imap_fetcher={'available' if _imap_fetcher else 'None'}", flush=True)
+        sys.stdout.flush()
+        
+        if run_imap and _imap_fetcher is not None:
+            # Extract IMAP credentials from settings
+            imap_email = settings.get("imap_email") or request.user_id
+            imap_app_password = settings.get("imap_app_password")
+            imap_host = settings.get("imap_host", "imap.gmail.com")
+            imap_port = settings.get("imap_port", 993)
+            
+            if imap_app_password:
+                # Add or update user in IMAP database
+                db_success = _imap_fetcher.db.add_or_update_user(
+                    user_id=request.user_id,
+                    email=imap_email,
+                    app_password=imap_app_password,
+                    imap_host=imap_host,
+                    imap_port=imap_port,
+                    enabled=True
+                )
+                
+                if db_success:
+                    print(f"✅ IMAP enabled for user: {request.user_id}", flush=True)
+                    print(f"   📧 Email: {imap_email}", flush=True)
+                    print(f"   🌐 Host: {imap_host}:{imap_port}", flush=True)
+                    print(f"   🔄 Scheduling background email fetch...", flush=True)
+                    
+                    # Schedule IMAP email fetch to run in the background (non-blocking)
+                    background_tasks.add_task(
+                        _imap_fetcher.fetch_and_process_for_user,
+                        request.user_id
+                    )
+                    
+                    print(f"✅ Background task queued for IMAP fetch", flush=True)
+                else:
+                    print(f"❌ Failed to enable IMAP for user: {request.user_id}", flush=True)
+            else:
+                print(f"⚠️  IMAP enabled but no app_password provided for {request.user_id}", flush=True)
+        elif run_imap and _imap_fetcher is None:
+            print(f"⚠️  IMAP requested but service not available for {request.user_id}", flush=True)
+        
+        sys.stdout.flush()
+        
+        return {
+            "success": True,
+            "message": "Settings encrypted and stored successfully",
+            "user_id": request.user_id,
+            "settings_saved": len(settings),
+            "encrypted": True,
+            "transport": "encrypted",
+            "storage": f"data/{request.user_id}/sql_data/chat_thread_processing.db"
+        }
+    except ValueError as e:
+        # Decryption failed
+        print(f"\n❌ [ERROR] Decryption failed for {request.user_id}: {str(e)}", flush=True)
+        sys.stdout.flush()
+        raise HTTPException(status_code=400, detail=f"Decryption failed: {str(e)}")
+    except Exception as e:
+        print(f"\n❌ [ERROR] Failed to sync encrypted settings for {request.user_id}", flush=True)
+        print(f"   Error: {str(e)}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to sync encrypted settings: {str(e)}"
         )
 
 
