@@ -20,8 +20,7 @@ import uuid
 import threading
 from functools import partial
 
-# Add parent directory to sys.path so we can import agent module
-# This allows running 'python main.py' from the backend directory
+# ✓ MUST be before any 'from agent import' statements
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from agent.config import settings
@@ -40,6 +39,7 @@ from agent.services.label_email_lockbook import get_user_lockbook, get_global_lo
 from agent.services.store_pipeline import CheckAndStoreEmailPipeline, CheckAndStoreAttachmentsPipeline
 from agent.services.summarization_pipeline import SummarizationPipeline
 from agent.services.encryption_service import get_encryption_service
+from agent.services.email_tone_pipeline import TonePipelineManager
 #from agent.database.mongodb import MongoDBClient
 from agent.services.simple_draft_pipeline import SimpleDraftPipeline
 
@@ -1238,25 +1238,53 @@ class EncryptedSettingsRequest(BaseModel):
 
 
 @app.get("/api/public-key")
-async def get_public_key():
+async def get_public_key(user_id: Optional[str] = None):
     """
-    Expose public key for client-side encryption.
-    Add-ons fetch this key to encrypt settings before sending.
+    Get the public encryption key for client-side settings encryption.
+    
+    Each user gets their own Ed25519 keypair.
+    Add-ons fetch this key during onboarding or settings save and use it to encrypt.
+    Backend decrypts using the corresponding private key.
+    
+    Args:
+        user_id: User email or unique identifier. If provided, returns user-specific key.
+                If not provided, returns HTTP 400.
     
     Returns:
-        {
-            "public_key": "base64-encoded-public-key",
-            "algorithm": "libsodium/box_seal",
-            "key_version": 1
-        }
+    {
+        "user_id": "user@example.com",
+        "public_key": "base64-encoded-key",
+        "algorithm": "libsodium/box_seal",
+        "key_version": 1,
+        "format": "base64",
+        "instance_id": "unique-instance-identifier-for-debugging"
+    }
     """
     try:
         enc_service = get_encryption_service()
-        print("\n📤 [REQUEST] GET /api/public-key called", flush=True)
-        print("   🔐 Exposing public key for client encryption", flush=True)
-        sys.stdout.flush()
+        import socket
+        instance_id = f"{socket.gethostname()}:{settings.PORT}"
         
-        return enc_service.get_public_key_dict()
+        # If user_id provided, return per-user key
+        if user_id:
+            print(f"\n📤 GET /api/public-key?user_id={user_id}", flush=True)
+            print(f"   🔐 Fetching/generating public key for user encryption", flush=True)
+            print(f"   📍 Instance: {instance_id}", flush=True)
+            sys.stdout.flush()
+            
+            key_dict = enc_service.get_user_public_key_dict(user_id)
+            key_dict["instance_id"] = instance_id  # Include for debugging
+            return key_dict
+        else:
+            # Fallback: if no user_id, raise error (force user_id)
+            print("\n📤 GET /api/public-key called without user_id", flush=True)
+            sys.stdout.flush()
+            raise HTTPException(
+                status_code=400,
+                detail="user_id parameter is required"
+            )
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"\n❌ [ERROR] Failed to get public key: {e}", flush=True)
         sys.stdout.flush()
@@ -1428,11 +1456,11 @@ async def sync_settings_encrypted(request: EncryptedSettingsRequest, background_
     sys.stdout.flush()
     
     try:
-        # Decrypt the settings using encryption service
+        # Decrypt the settings using user's private key
         enc_service = get_encryption_service()
-        settings = enc_service.decrypt_settings(request.encrypted_payload)
+        settings = enc_service.decrypt_settings_for_user(request.user_id, request.encrypted_payload)
         
-        print(f"✅ [DECRYPTED] Successfully decrypted settings", flush=True)
+        print(f"✅ [DECRYPTED] Successfully decrypted settings for user {request.user_id}", flush=True)
         print(f"   📋 Settings keys: {list(settings.keys())}", flush=True)
         sys.stdout.flush()
         
@@ -1510,10 +1538,26 @@ async def sync_settings_encrypted(request: EncryptedSettingsRequest, background_
             "storage": f"data/{request.user_id}/sql_data/chat_thread_processing.db"
         }
     except ValueError as e:
-        # Decryption failed
-        print(f"\n❌ [ERROR] Decryption failed for {request.user_id}: {str(e)}", flush=True)
+        # Decryption failed - provide diagnostic help
+        error_msg = str(e)
+        print(f"\n❌ [ERROR] Decryption failed for {request.user_id}: {error_msg}", flush=True)
+        print(f"   🔍 DIAGNOSTIC HINTS:", flush=True)
+        print(f"   💡 This error typically occurs when:", flush=True)
+        print(f"      1. Add-on's cached public key mismatches backend private key", flush=True)
+        print(f"      2. Different backend instances (load balancer) have different keypairs", flush=True)
+        print(f"      3. Backend keypair changed between client fetch and data send", flush=True)
+        print(f"      4. Network corruption during transmission", flush=True)
+        print(f"   🔧 TROUBLESHOOTING STEPS:", flush=True)
+        print(f"      1. Client: Delete cached public key (browser.storage.local)", flush=True)
+        print(f"      2. Client: Fetch fresh /api/public-key", flush=True)
+        print(f"      3. Retry encryption", flush=True)
+        print(f"      4. If using load balancer: Configure key sharing across instances", flush=True)
+        print(f"   📝 Error details: {error_msg}", flush=True)
         sys.stdout.flush()
-        raise HTTPException(status_code=400, detail=f"Decryption failed: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Decryption failed: {error_msg}. Try refreshing the public key cache on client."
+        )
     except Exception as e:
         print(f"\n❌ [ERROR] Failed to sync encrypted settings for {request.user_id}", flush=True)
         print(f"   Error: {str(e)}", flush=True)
@@ -2208,6 +2252,96 @@ def _apply_gmail_label_sync(
         raise
 
 
+async def _capture_tone_for_sent_emails(user_id: str, thread_id: str, processed_messages: List[Dict],
+                                    logger=None) -> Dict[str, Any]:
+    """
+    Captures email tone/style for emails SENT by the user (where from == user_id).
+    
+    This is called during the label pipeline to extract and store the user's writing
+    style, relationship, and tone information. Data is stored per-user in:
+        data/{user_id}/tone_db/
+    
+    Uses the user's configured LLM provider and embedding provider from SettingsManager.
+    
+    Args:
+        user_id: The user's email (primary identifier)
+        thread_id: Normalized thread ID
+        processed_messages: List of preprocessed message dicts
+        logger: Optional logger instance
+    
+    Returns:
+        Dict with tone extraction results: {"captured": int, "errors": [...], "details": [...]}
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    
+    result = {"captured": 0, "errors": [], "details": []}
+    
+    try:
+        base_data_dir = os.path.join(os.path.dirname(__file__), "data")
+        tone_manager = TonePipelineManager(user_id, base_data_dir)
+        
+        for msg in processed_messages:
+            # Check if this is a SENT email (from == user_id)
+            msg_from = msg.get("from", "").strip().lower()
+            user_id_lower = user_id.strip().lower()
+            
+            if msg_from != user_id_lower:
+                # Not a sent email, skip
+                continue
+            
+            # Extract recipients and email body
+            recipients = msg.get("to", [])
+            email_body = msg.get("body", "")
+            message_id = msg.get("message_id")
+            
+            if not recipients or not email_body:
+                logger.warning(f"      [tone] Skipping sent email: missing recipients or body")
+                continue
+            
+            # Process each recipient (user may have sent to multiple people)
+            for recipient in recipients:
+                recipient = recipient.strip()
+                if not recipient:
+                    continue
+                
+                try:
+                    logger.info(f"      [tone] Processing sent email to {recipient}")
+                    extracted = await tone_manager.process_sent_email(
+                        recipient=recipient,
+                        email_text=email_body,
+                        email_id=message_id
+                    )
+                    result["captured"] += 1
+                    result["details"].append({
+                        "recipient": recipient,
+                        "tone": extracted.get("writing_style", {}).get("tone"),
+                        "relationship": extracted.get("relationship", {}).get("type"),
+                    })
+                    logger.info(
+                        f"      [tone] ✅ Captured tone: {recipient} | "
+                        f"Tone={extracted.get('writing_style', {}).get('tone')} | "
+                        f"Relationship={extracted.get('relationship', {}).get('type')}"
+                    )
+                except Exception as e:
+                    logger.warning(f"      [tone] ⚠️  Failed to capture tone for {recipient}: {e}")
+                    result["errors"].append({"recipient": recipient, "error": str(e)})
+        
+        tone_manager.close()
+        
+        if result["captured"] > 0:
+            logger.info(f"   ✅ Tone capture: {result['captured']} email(s) processed")
+        else:
+            logger.info(f"   ℹ️  No sent emails found in thread (tone capture skipped)")
+        
+        return result
+        
+    except Exception as e:
+        logger.warning(f"   ⚠️  Tone capture error (non-fatal): {e}")
+        result["errors"].append({"general": str(e)})
+        return result
+
+
 async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
     """
     Background task for /api/label-email-async.
@@ -2344,9 +2478,22 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
         # graph_status = label_and_store_result.get("graph_store_result") or {}  # DISABLED: graph storage
         logger.info(f"   [job {job_id}] Label determined: '{label_name}'")
 
+        # ── Tone capture for SENT emails (non-fatal) ──────────────────────
+        try:
+            tone_result = await _capture_tone_for_sent_emails(
+                user_id=request.user_id,
+                thread_id=thread_id,
+                processed_messages=processed_messages,
+                logger=logger
+            )
+            if tone_result["captured"] > 0:
+                logger.info(f"   [job {job_id}] Tone capture: {tone_result}")
+        except Exception as tone_err:
+            logger.warning(f"   [job {job_id}] Tone capture failed (non-fatal): {tone_err}")
+
         # ── Push label to Gmail via REST API ──────────────────────────────
         gmail_result: Dict[str, Any] = {}
-        if request.access_token:
+        if request.access_token and request.access_token != "thunderbird_addon":
             # Use gmail_thread_id (Gmail's hex ID) for the REST API call.
             # thread_id may be a canonical RFC Message-ID used for ChromaDB — Gmail
             # rejects anything other than its own 16-char hex thread IDs.
@@ -2377,7 +2524,12 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                 logger.error(f"   Traceback: {traceback.format_exc()}")
                 gmail_result = {"error": str(gmail_err)}
         else:
-            logger.warning(f"⚠️ [job {job_id}] No access_token provided — skipping Gmail API push")
+            if request.access_token == "thunderbird_addon":
+                logger.info(f"📧 [job {job_id}] Thunderbird add-on detected — skipping Gmail API push")
+                logger.info(f"   ℹ️  Labels applied locally by Thunderbird client")
+                gmail_result = {"skipped": "thunderbird_addon"}
+            else:
+                logger.warning(f"⚠️ [job {job_id}] No access_token provided — skipping Gmail API push")
 
         # ── Lock-book metrics ─────────────────────────────────────────────
         num_stored = 0  # Graph storage disabled
@@ -3211,6 +3363,246 @@ async def get_lockbook_summary(user_id: Optional[str] = None):
         return {
             "success": True,
             "summary": summary
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADMIN PANEL AND ASSOCIATED ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+from fastapi.responses import HTMLResponse
+
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+class AdminSaveSettingsRequest(BaseModel):
+    settings: Dict[str, Any]
+
+@app.get("/admin", response_class=HTMLResponse)
+async def serve_admin_panel():
+    """Serves the front-end dashboard for OpenMailBot administration."""
+    admin_html_path = os.path.join(os.path.dirname(__file__), "admin.html")
+    if os.path.exists(admin_html_path):
+        try:
+            with open(admin_html_path, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read(), status_code=200)
+        except Exception as e:
+            return HTMLResponse(content=f"Error reading admin.html: {str(e)}", status_code=500)
+    else:
+        return HTMLResponse(content="Admin HTML template not found. Please ensure admin.html exists in the backend directory.", status_code=404)
+
+@app.post("/api/admin/login")
+async def admin_login(request: AdminLoginRequest):
+    """Handles admin credentials authentication."""
+    if request.username == "admin" and request.password == "admin@123":
+        return {"success": True, "token": "admin-token-2026", "message": "Logged in successfully"}
+    raise HTTPException(status_code=401, detail="Invalid admin username or password")
+
+@app.get("/api/admin/users")
+async def admin_list_users():
+    """List all unique users configured on this backend and gather basic stats"""
+    users_dict = {}
+    
+    # Check directory names in backend/data (represent user_ids)
+    if os.path.exists(BASE_DATA_DIR):
+        for item in os.listdir(BASE_DATA_DIR):
+            item_path = os.path.join(BASE_DATA_DIR, item)
+            # Filter for email-like directory names that have '@'
+            if os.path.isdir(item_path) and "@" in item:
+                users_dict[item] = {
+                    "user_id": item,
+                    "email": item,
+                    "imap_enabled": False,
+                    "imap_host": "imap.gmail.com",
+                    "last_check": None,
+                    "emails_count": 0,
+                    "attachments_count": 0,
+                    "threads_count": 0
+                }
+    
+    # Check imap_users.db
+    if _imap_available and _imap_fetcher is not None:
+        try:
+            conn = sqlite3.connect(_imap_fetcher.db.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, email, imap_host, enabled, last_check FROM imap_users")
+            rows = cursor.fetchall()
+            for r in rows:
+                uid = r[0]
+                if uid not in users_dict:
+                    users_dict[uid] = {
+                        "user_id": uid,
+                        "email": r[1],
+                        "imap_enabled": bool(r[3]),
+                        "imap_host": r[2],
+                        "last_check": r[4],
+                        "emails_count": 0,
+                        "attachments_count": 0,
+                        "threads_count": 0
+                    }
+                else:
+                    users_dict[uid]["email"] = r[1]
+                    users_dict[uid]["imap_enabled"] = bool(r[3])
+                    users_dict[uid]["imap_host"] = r[2]
+                    users_dict[uid]["last_check"] = r[4]
+            conn.close()
+        except Exception as e:
+            print(f"Error querying imap_users table for admin: {e}", flush=True)
+
+    # Fill basic stats for each user
+    for uid in users_dict:
+        db_paths = get_sql_db_paths(uid)
+        chat_db = db_paths.get("chat_thread_db")
+        if os.path.exists(chat_db):
+            try:
+                conn = sqlite3.connect(chat_db)
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='email_embeddings'")
+                if cursor.fetchone():
+                    cursor.execute("SELECT COUNT(*), COUNT(DISTINCT thread_id) FROM email_embeddings")
+                    row = cursor.fetchone()
+                    if row:
+                        users_dict[uid]["emails_count"] = row[0] or 0
+                        users_dict[uid]["threads_count"] = row[1] or 0
+                
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='attachment_processing'")
+                if cursor.fetchone():
+                    cursor.execute("SELECT COUNT(*) FROM attachment_processing")
+                    row = cursor.fetchone()
+                    if row:
+                        users_dict[uid]["attachments_count"] = row[0] or 0
+                conn.close()
+            except Exception as e:
+                print(f"Error querying user {uid} sqlite DB: {e}", flush=True)
+
+    return {
+        "success": True,
+        "users": list(users_dict.values())
+    }
+
+@app.get("/api/admin/user/{user_id}/stats")
+async def admin_get_user_stats(user_id: str):
+    """Retrieve full stats for a specific user"""
+    stats = {
+        "emails_count": 0,
+        "attachments_count": 0,
+        "threads_count": 0,
+        "last_active": None,
+        "imap_settings": None
+    }
+    
+    # 1. Fetch from user sqlite
+    db_paths = get_sql_db_paths(user_id)
+    chat_db = db_paths.get("chat_thread_db")
+    if os.path.exists(chat_db):
+        try:
+            conn = sqlite3.connect(chat_db)
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='email_embeddings'")
+            if cursor.fetchone():
+                cursor.execute("SELECT COUNT(*), COUNT(DISTINCT thread_id), MAX(timestamp) FROM email_embeddings")
+                row = cursor.fetchone()
+                if row:
+                    stats["emails_count"] = row[0] or 0
+                    stats["threads_count"] = row[1] or 0
+                    stats["last_active"] = row[2]
+            
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='attachment_processing'")
+            if cursor.fetchone():
+                cursor.execute("SELECT COUNT(*) FROM attachment_processing")
+                row = cursor.fetchone()
+                if row:
+                    stats["attachments_count"] = row[0] or 0
+            conn.close()
+        except Exception as e:
+            print(f"Error getting stats for {user_id}: {e}", flush=True)
+            
+    # 2. Fetch from imap_users
+    if _imap_available and _imap_fetcher is not None:
+        try:
+            user_imap = _imap_fetcher.db.get_user(user_id)
+            if user_imap:
+                stats["imap_settings"] = {
+                    "email": user_imap.get("email"),
+                    "host": user_imap.get("imap_host"),
+                    "port": user_imap.get("imap_port"),
+                    "enabled": user_imap.get("enabled"),
+                    "last_check": user_imap.get("last_check")
+                }
+        except Exception as e:
+            print(f"Error reading IMAP DB for user stats {user_id}: {e}", flush=True)
+            
+    return {
+        "success": True,
+        "stats": stats
+    }
+
+@app.post("/api/admin/user/{user_id}/settings")
+async def admin_save_user_settings(user_id: str, request: AdminSaveSettingsRequest, background_tasks: BackgroundTasks):
+    try:
+        # Initialize settings manager for the user
+        settings_manager = SettingsManager(user_id)
+        
+        # Save settings (will encrypt internally)
+        success = settings_manager.save_settings(
+            request.settings,
+            user_id,
+            "general"
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save settings via SettingsManager")
+            
+        # Update IMAP if configured
+        run_imap = request.settings.get("run_imap_server", False)
+        if run_imap and _imap_fetcher is not None:
+            imap_email = request.settings.get("imap_email") or user_id
+            imap_app_password = request.settings.get("imap_app_password")
+            imap_host = request.settings.get("imap_host", "imap.gmail.com")
+            
+            try:
+                imap_port = int(request.settings.get("imap_port", 993))
+            except:
+                imap_port = 993
+                
+            if imap_app_password:
+                db_success = _imap_fetcher.db.add_or_update_user(
+                    user_id=user_id,
+                    email=imap_email,
+                    app_password=imap_app_password,
+                    imap_host=imap_host,
+                    imap_port=imap_port,
+                    enabled=True
+                )
+                if db_success:
+                    background_tasks.add_task(
+                        _imap_fetcher.fetch_and_process_for_user,
+                        user_id
+                    )
+        elif not run_imap and _imap_fetcher is not None:
+            try:
+                # We can just update enabled=False in IMAP database if user exists there
+                existing_user = _imap_fetcher.db.get_user(user_id)
+                if existing_user:
+                    _imap_fetcher.db.add_or_update_user(
+                        user_id=user_id,
+                        email=existing_user["email"],
+                        app_password=existing_user["app_password"],
+                        imap_host=existing_user["imap_host"],
+                        imap_port=existing_user["imap_port"],
+                        enabled=False
+                    )
+            except Exception as e:
+                print(f"Error disabling imap for {user_id}: {e}", flush=True)
+
+        return {
+            "success": True,
+            "message": "Settings saved successfully",
+            "user_id": user_id
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -159,6 +159,7 @@ async function getAddonConfig() {
 document.addEventListener("DOMContentLoaded", async () => {
   await detectAndDisplayEmail();
   await loadSettings();
+  await loadCachedEncryptionKey();
   setupEventListeners();
 });
 
@@ -686,6 +687,11 @@ function setupEventListeners() {
   // Cloud provider fetch buttons
   document.getElementById("llm-cloud-fetch-btn")?.addEventListener("click", () => handleFetchCloudModels("llm"));
   document.getElementById("embedding-cloud-fetch-btn")?.addEventListener("click", () => handleFetchCloudModels("embedding"));
+
+  // Encryption key management buttons
+  document.getElementById("set-manual-key-btn")?.addEventListener("click", handleSetManualKey);
+  document.getElementById("clear-key-cache-btn")?.addEventListener("click", handleClearKeyCache);
+  document.getElementById("refresh-key-btn")?.addEventListener("click", handleRefreshKeyFromBackend);
 }
 
 function showPage1Status(msg, type) {
@@ -995,4 +1001,136 @@ function showStatus(message, type) {
   statusEl.className = `status-message ${type}`;
   statusEl.classList.remove("hidden");
   setTimeout(() => statusEl.classList.add("hidden"), 7000);
+}
+
+// ─── Encryption Key Management ────────────────────────────────────────────────
+/** Load and display the currently cached encryption public key */
+async function loadCachedEncryptionKey() {
+  try {
+    const storage = await browser.storage.local.get(["encryption_public_key", "encryption_key_version"]);
+    const cachedKey = storage.encryption_public_key;
+    const version = storage.encryption_key_version || "1";
+    
+    const keyDisplay = document.getElementById("cached-key-display");
+    const versionDisplay = document.getElementById("key-version-display");
+    
+    if (cachedKey) {
+      // Show truncated key + full key on hover
+      const preview = cachedKey.substring(0, 50) + "...";
+      keyDisplay.innerHTML = `<code title="${cachedKey}">${preview}</code>`;
+      keyDisplay.classList.add("readonly-field-ok");
+      versionDisplay.textContent = `Version ${version}`;
+    } else {
+      keyDisplay.innerHTML = "<em>No cached key</em>";
+      keyDisplay.classList.remove("readonly-field-ok");
+      versionDisplay.textContent = "<em>Not set</em>";
+    }
+  } catch (e) {
+    console.error("Error loading cached encryption key:", e);
+  }
+}
+
+/** Set manual public key entered by user */
+async function handleSetManualKey() {
+  const keyInput = document.getElementById("manual_public_key");
+  const key = (keyInput?.value || "").trim();
+  const statusSpan = document.getElementById("encryption-status");
+  const btn = document.getElementById("set-manual-key-btn");
+  
+  if (!key) {
+    setStatus("encryption-status", "❌ Please enter a public key first", "error");
+    return;
+  }
+
+  try {
+    btn.disabled = true;
+    setStatus("encryption-status", "💾 Saving key…", "");
+    
+    // Validate it looks like base64
+    if (!key.match(/^[A-Za-z0-9+/=]+$/)) {
+      throw new Error("Key doesn't look like valid base64 (should contain only A-Za-z0-9+/=)");
+    }
+
+    // Save to storage
+    await browser.storage.local.set({
+      encryption_public_key: key,
+      encryption_key_version: 1
+    });
+
+    keyInput.value = ""; // Clear input after save
+    setStatus("encryption-status", "✅ Manual public key saved!", "success");
+    
+    // Refresh display
+    await loadCachedEncryptionKey();
+  } catch (e) {
+    setStatus("encryption-status", "❌ " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** Clear cached public key and its version */
+async function handleClearKeyCache() {
+  const statusSpan = document.getElementById("encryption-status");
+  const btn = document.getElementById("clear-key-cache-btn");
+  
+  try {
+    btn.disabled = true;
+    setStatus("encryption-status", "🗑️  Clearing…", "");
+    
+    await browser.storage.local.remove(["encryption_public_key", "encryption_key_version"]);
+    
+    setStatus("encryption-status", "✅ Cached key cleared! Next encryption will fetch from backend.", "success");
+    
+    // Refresh display
+    await loadCachedEncryptionKey();
+  } catch (e) {
+    setStatus("encryption-status", "❌ " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** Force refresh public key from backend */
+async function handleRefreshKeyFromBackend() {
+  const statusSpan = document.getElementById("encryption-status");
+  const btn = document.getElementById("refresh-key-btn");
+  
+  try {
+    btn.disabled = true;
+    setStatus("encryption-status", "🔄 Fetching fresh key from backend…", "");
+    
+    const backendUrl = await getBackendUrl();
+    const url = backendUrl.replace(/\/$/, "") + "/api/public-key";
+    
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Backend returned HTTP ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    if (!data.public_key) {
+      throw new Error("No public_key in response");
+    }
+
+    // Save fresh key
+    await browser.storage.local.set({
+      encryption_public_key: data.public_key,
+      encryption_key_version: data.key_version || 1
+    });
+
+    setStatus("encryption-status", `✅ Key refreshed! (Version: ${data.key_version || 1})`, "success");
+    
+    // Refresh display
+    await loadCachedEncryptionKey();
+  } catch (e) {
+    setStatus("encryption-status", "❌ " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
 }

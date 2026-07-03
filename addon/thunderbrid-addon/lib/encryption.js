@@ -51,21 +51,31 @@ async function _loadSodiumLibrary() {
 }
 
 /**
- * Get and cache the public key from backend
+ * Get and cache the public key from backend with version checking
  * @param {string} backendUrl - Backend base URL
+ * @param {boolean} forceRefresh - Force fetch fresh key (bypass cache)
  * @return {string} Base64-encoded public key
  */
-async function _getEncryptionPublicKey(backendUrl) {
+async function _getEncryptionPublicKey(backendUrl, forceRefresh = false) {
   try {
-    // Try to get from storage cache first
-    const cached = await _safeStorageGet("encryption_public_key");
-    if (cached) {
-      console.log("[Encryption] ✅ Using cached public key");
-      return cached;
+    // Try to get from storage cache first (unless forced to refresh)
+    if (!forceRefresh) {
+      const cached = await _safeStorageGet("encryption_public_key");
+      const cachedVersion = await _safeStorageGet("encryption_key_version");
+      
+      if (cached) {
+        console.log("[Encryption] ✅ Using cached public key (v" + cachedVersion + ")");
+        return cached;
+      }
     }
 
     // Fetch fresh from backend
-    console.log("[Encryption] 📤 Fetching public key from backend...");
+    if (forceRefresh) {
+      console.log("[Encryption] 🔄 Force-refreshing public key from backend...");
+    } else {
+      console.log("[Encryption] 📤 Fetching public key from backend...");
+    }
+    
     const url = backendUrl.replace(/\/$/, "") + "/api/public-key";
     
     const response = await fetch(url, {
@@ -82,8 +92,11 @@ async function _getEncryptionPublicKey(backendUrl) {
       throw new Error("No public_key in response");
     }
 
-    // Cache the public key
-    await _safeStorageSet({ encryption_public_key: data.public_key }, "cache public key");
+    // Cache both key and version
+    await _safeStorageSet({
+      encryption_public_key: data.public_key,
+      encryption_key_version: data.key_version || 1
+    }, "cache public key with version");
     
     console.log("[Encryption] ✅ Fetched and cached public key");
     console.log(`   Algorithm: ${data.algorithm}`);
@@ -148,7 +161,7 @@ function _bytesToBase64(bytes) {
 }
 
 /**
- * Send encrypted settings to backend encrypted endpoint
+ * Send encrypted settings to backend encrypted endpoint with auto-retry on key mismatch
  * @param {Object} settings - Settings object
  * @param {string} userEmail - User email ID
  * @param {string} backendUrl - Backend base URL
@@ -163,14 +176,14 @@ async function _syncSettingsToBackendEncrypted(settings, userEmail, backendUrl) 
     console.log("[Encryption] 🔐 Starting encrypted settings sync...");
     
     // Get public key
-    const publicKeyB64 = await _getEncryptionPublicKey(backendUrl);
+    let publicKeyB64 = await _getEncryptionPublicKey(backendUrl);
     if (!publicKeyB64) {
       console.warn("[Encryption] ⚠️  Failed to get public key, falling back to plaintext");
       return _syncSettingsToBackend(settings, userEmail);
     }
     
     // Encrypt settings
-    const encryptedPayload = await _encryptSettings(publicKeyB64, settings);
+    let encryptedPayload = await _encryptSettings(publicKeyB64, settings);
     
     // Send encrypted payload
     const base = backendUrl.replace(/\/$/, "").replace(/\/api$/, "");
@@ -185,11 +198,34 @@ async function _syncSettingsToBackendEncrypted(settings, userEmail, backendUrl) 
       timestamp: new Date().toISOString()
     };
     
-    const response = await fetch(endpoint, {
+    let response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    
+    // Auto-retry with fresh key if we get a 400 (likely decryption failure)
+    if (response.status === 400) {
+      console.warn("[Encryption] ⚠️  Decryption failed (400) - Likely key mismatch");
+      console.warn("[Encryption] 🔄 Refreshing public key and retrying...");
+      
+      // Force refresh the public key
+      publicKeyB64 = await _getEncryptionPublicKey(backendUrl, true);
+      if (!publicKeyB64) {
+        throw new Error("Failed to refresh public key after 400 error");
+      }
+      
+      // Re-encrypt with fresh key
+      encryptedPayload = await _encryptSettings(publicKeyB64, settings);
+      
+      // Retry
+      payload.encrypted_payload = encryptedPayload;
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    }
     
     if (!response.ok) {
       const errText = await response.text();
@@ -217,16 +253,40 @@ async function _syncSettingsToBackendEncrypted(settings, userEmail, backendUrl) 
 }
 
 /**
- * Clear cached public key (use when rotating keys)
+ * Clear cached public key and force refresh on next encryption
+ * Call this when you suspect the backend has rotated keys
  */
 async function _clearPublicKeyCache() {
   try {
-    const storage = await browser.storage.local.get("encryption_public_key");
-    if (storage.encryption_public_key) {
-      await browser.storage.local.remove("encryption_public_key");
-      console.log("[Encryption] ✅ Cleared cached public key");
-    }
+    await browser.storage.local.remove(["encryption_public_key", "encryption_key_version"]);
+    console.log("[Encryption] ✅ Cleared cached public key and version");
+    console.log("[Encryption] 📝 Next encryption will fetch fresh key from backend");
   } catch (e) {
     console.error("[Encryption] ⚠️  Error clearing cache:", e.message);
+  }
+}
+
+/**
+ * Manual force-refresh of the public key from backend
+ * Returns the new key version on success
+ */
+async function _refreshEncryptionKeyManual(backendUrl) {
+  try {
+    console.log("[Encryption] 🔄 Manual force-refresh of public key...");
+    await _clearPublicKeyCache();
+    
+    const newKey = await _getEncryptionPublicKey(backendUrl, true);
+    if (!newKey) {
+      throw new Error("Failed to fetch fresh public key");
+    }
+    
+    const version = await _safeStorageGet("encryption_key_version");
+    console.log("[Encryption] ✅ Public key refreshed successfully!");
+    console.log(`[Encryption] 📌 New version: ${version}`);
+    
+    return { success: true, key_version: version };
+  } catch (e) {
+    console.error("[Encryption] ❌ Manual refresh failed:", e.message);
+    return { success: false, error: e.message };
   }
 }

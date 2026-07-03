@@ -221,7 +221,7 @@ Other - other types of emails that don't fit the above categories"""
             "application shortlisted",
             "talent acquisition"
         ]):
-            return "recruitment"
+            return "Recruitment"
 
         # -------------------------
         # 6. BOOKING

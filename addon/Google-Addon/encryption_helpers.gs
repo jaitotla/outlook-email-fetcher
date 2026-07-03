@@ -87,25 +87,23 @@ function _getFallbackEncryption() {
 }
 
 /**
- * Get cached public key or fetch from backend
+ * Get public key for encryption - always fetches fresh per-user key from backend
  * 
- * Public keys don't need to be secret - they're safe to cache indefinitely
+ * Per-user encryption workflow:
+ * 1. Add-on calls GET /api/public-key?user_id=<email>
+ * 2. Backend generates/retrieves user's latest public key
+ * 3. Add-on uses it to encrypt settings (ensures fresh key, avoids mismatch)
+ * 4. Backend decrypts with user's stored private key
+ * 5. Backend saves encrypted with Fernet
  */
-async function getEncryptionPublicKey(backendUrl) {
-  var userProps = PropertiesService.getUserProperties();
-  var cacheKey = "encryption_public_key";
+async function getEncryptionPublicKey(backendUrl, forceRefresh = false) {
+  var userEmail = Session.getEffectiveUser().getEmail();
   
-  // Try to get cached public key
-  var cached = userProps.getProperty(cacheKey);
-  if (cached) {
-    Logger.log("✅ Using cached public key");
-    return cached;
-  }
-  
+  // For per-user keys, always fetch fresh (no cache to avoid stale keys)
+  // This ensures we always have the latest key for this user
   try {
-    // Fetch fresh public key from backend
-    Logger.log("📤 Fetching encryption public key from backend");
-    var url = backendUrl.replace(/\/$/, "") + "/api/public-key";
+    Logger.log("📤 Fetching fresh public key for user: " + userEmail);
+    var url = backendUrl.replace(/\/$/, "") + "/api/public-key?user_id=" + encodeURIComponent(userEmail);
     
     var response = UrlFetchApp.fetch(url, {
       method: "get",
@@ -117,6 +115,7 @@ async function getEncryptionPublicKey(backendUrl) {
     
     if (response.getResponseCode() !== 200) {
       Logger.log("⚠️  Failed to fetch public key: HTTP " + response.getResponseCode());
+      Logger.log("   Response: " + response.getContentText());
       return null;
     }
     
@@ -126,9 +125,7 @@ async function getEncryptionPublicKey(backendUrl) {
       return null;
     }
     
-    // Cache the public key
-    userProps.setProperty(cacheKey, data.public_key);
-    Logger.log("✅ Fetched and cached public key");
+    Logger.log("✅ Fetched fresh public key for user: " + userEmail);
     Logger.log("   Key version: " + data.key_version);
     Logger.log("   Algorithm: " + data.algorithm);
     
@@ -177,7 +174,7 @@ async function encryptSettings(publicKeyB64, settings) {
 }
 
 /**
- * Send encrypted settings to backend
+ * Send encrypted settings to backend with auto-retry on key mismatch
  * 
  * @param {string} encryptedPayloadB64 - Base64-encoded encrypted settings
  * @param {string} userId - User email ID
@@ -213,6 +210,35 @@ async function sendEncryptedSettingsToBackend(encryptedPayloadB64, userId, backe
     
     Logger.log("📨 Response: HTTP " + code);
     Logger.log("   Body: " + body.substring(0, 200));
+    
+    // Auto-retry with fresh key if we get a 400 (likely decryption failure)
+    if (code === 400) {
+      Logger.log("❌ Decryption failed (HTTP 400) - Likely key mismatch");
+      Logger.log("🔄 Refreshing public key and retrying...");
+      
+      // Force refresh the public key
+      var userProps = PropertiesService.getUserProperties();
+      userProps.deleteProperty("encryption_public_key");
+      userProps.deleteProperty("encryption_key_version");
+      
+      var freshKey = await getEncryptionPublicKey(backendUrl, true);
+      if (!freshKey) {
+        throw new Error("Failed to refresh public key after 400 error");
+      }
+      
+      // Re-encrypt with fresh key
+      var reencryptedPayload = await encryptSettings(freshKey, JSON.parse(payload));
+      
+      // Retry with fresh payload
+      payload.encrypted_payload = reencryptedPayload;
+      options.payload = JSON.stringify(payload);
+      
+      response = UrlFetchApp.fetch(endpoint, options);
+      code = response.getResponseCode();
+      body = response.getContentText();
+      
+      Logger.log("📨 Retry Response: HTTP " + code);
+    }
     
     if (code >= 400) {
       Logger.log("❌ Server error: " + body);
@@ -271,5 +297,105 @@ async function syncSettingsToBackendEncrypted(settings, backendUrl) {
       Logger.log("❌ Fallback also failed: " + fallbackErr.message);
       throw fallbackErr;
     }
+  }
+}
+
+/**
+ * Clear cached public key and force refresh on next encryption
+ * Call this when you suspect the backend has rotated keys
+ */
+function clearEncryptionKeyCache() {
+  var userProps = PropertiesService.getUserProperties();
+  userProps.deleteProperty("encryption_public_key");
+  userProps.deleteProperty("encryption_key_version");
+  Logger.log("✅ Cleared cached public key and version");
+  Logger.log("   Next encryption will fetch fresh key from backend");
+}
+
+/**
+ * Manual force-refresh of the public key from backend
+ * Returns the new key version on success
+ */
+async function refreshEncryptionKeyManual(backendUrl) {
+  try {
+    Logger.log("🔄 Manual force-refresh of public key...");
+    clearEncryptionKeyCache();
+    
+    var newKey = await getEncryptionPublicKey(backendUrl, true);
+    if (!newKey) {
+      throw new Error("Failed to fetch fresh public key");
+    }
+    
+    var userProps = PropertiesService.getUserProperties();
+    var version = userProps.getProperty("encryption_key_version");
+    
+    Logger.log("✅ Public key refreshed successfully!");
+    Logger.log("   New version: " + version);
+    
+    return { success: true, key_version: version };
+  } catch (e) {
+    Logger.log("❌ Manual refresh failed: " + e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Set a manual public key in user properties
+ * @param {string} publicKeyB64 - Base64-encoded public key to set manually
+ * @return {Object} { success, message }
+ */
+function setManualEncryptionKey(publicKeyB64) {
+  try {
+    var key = (publicKeyB64 || "").trim();
+    
+    if (!key) {
+      return { success: false, message: "Empty public key" };
+    }
+    
+    // Validate it looks like base64
+    if (!key.match(/^[A-Za-z0-9+/=]+$/)) {
+      return { 
+        success: false, 
+        message: "Key doesn't look like valid base64 (should contain only A-Za-z0-9+/=)" 
+      };
+    }
+    
+    var userProps = PropertiesService.getUserProperties();
+    userProps.setProperty("encryption_public_key", key);
+    userProps.setProperty("encryption_key_version", 1);
+    
+    Logger.log("✅ Manual public key saved!");
+    Logger.log("   Key version: 1");
+    
+    return { success: true, message: "Public key saved successfully" };
+  } catch (e) {
+    Logger.log("❌ Error setting manual key: " + e.message);
+    return { success: false, message: e.message };
+  }
+}
+
+/**
+ * Get the currently cached encryption public key (for debugging)
+ * @return {Object} { cached, version, preview }
+ */
+function getEncryptionKeyInfo() {
+  try {
+    var userProps = PropertiesService.getUserProperties();
+    var cachedKey = userProps.getProperty("encryption_public_key");
+    var version = userProps.getProperty("encryption_key_version") || "1";
+    
+    if (cachedKey) {
+      var preview = cachedKey.substring(0, 50) + "...";
+      return { 
+        cached: true, 
+        version: version, 
+        preview: preview,
+        full_key: cachedKey
+      };
+    } else {
+      return { cached: false, version: null, message: "No cached key" };
+    }
+  } catch (e) {
+    return { error: e.message };
   }
 }

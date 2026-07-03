@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenMailBot - Admin Console</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* Custom scrollbars */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans flex flex-col">
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-3"></div>
+
+    <!-- LOGIN SCREEN -->
+    <div id="login-screen" class="flex-grow flex items-center justify-center p-4">
+        <div class="bg-slate-800 p-8 rounded-2xl shadow-2xl border border-slate-700 w-full max-w-md transition-all duration-300 hover:border-violet-500/50">
+            <div class="text-center mb-8">
+                <div class="inline-flex items-center justify-center p-3 bg-violet-500/10 rounded-2xl text-violet-400 mb-4 border border-violet-500/20">
+                    <i class="fa-solid fa-envelope-open-text text-4xl"></i>
+                </div>
+                <h1 class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-indigo-400">OpenMailBot</h1>
+                <p class="text-slate-400 mt-2">Central Security & Admin Credentials</p>
+            </div>
+            
+            <div id="login-error" class="hidden bg-rose-500/10 border border-rose-500/20 text-rose-300 p-3 rounded-lg text-sm mb-5 text-center flex items-center justify-center gap-2">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+                <span id="login-error-text">Invalid credentials</span>
+            </div>
+
+            <form id="login-form" class="space-y-5">
+                <div>
+                    <label class="block text-sm font-semibold text-slate-300 mb-1.5">Admin Username</label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
+                            <i class="fa-solid fa-user"></i>
+                        </span>
+                        <input type="text" id="username" required value="admin"
+                            class="bg-slate-900/50 block w-full pl-10 pr-3 py-2.5 rounded-lg border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-500 sm:text-sm transition-all">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-slate-300 mb-1.5">Password</label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
+                            <i class="fa-solid fa-lock"></i>
+                        </span>
+                        <input type="password" id="password" required value="admin@123"
+                            class="bg-slate-900/50 block w-full pl-10 pr-3 py-2.5 rounded-lg border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-500 sm:text-sm transition-all">
+                    </div>
+                </div>
+
+                <button type="submit"
+                    class="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-md text-sm font-bold text-white bg-violet-600 hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-all hover:scale-[1.01] active:scale-[0.99] mt-2">
+                    Access Dashboard
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MAIN ADMIN INTERFACE -->
+    <div id="admin-interface" class="hidden flex-grow flex flex-col">
+        <!-- TOP NAV -->
+        <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-40 px-6 py-4 flex items-center justify-between shadow-lg">
+            <div class="flex items-center gap-3">
+                <div class="bg-violet-600 text-white p-2 rounded-xl text-lg flex items-center justify-center">
+                    <i class="fa-solid fa-envelope-open-text"></i>
+                </div>
+                <div>
+                    <h2 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                        OpenMailBot <span class="bg-violet-500/10 text-violet-400 font-semibold py-0.5 px-2 rounded-md text-xs border border-violet-500/20">Admin Panel</span>
+                    </h2>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <span id="active-user-badge" class="hidden bg-slate-900 text-violet-300 py-1.5 px-3 border border-slate-700 hover:border-violet-500/30 rounded-full text-sm font-semibold flex items-center gap-2 transition-all">
+                    <i class="fa-solid fa-circle text-emerald-400 text-xs animate-pulse"></i>
+                    <span id="active-user-name">Loading...</span>
+                </span>
+                <button onclick="openAccountSelector()" class="bg-slate-700 hover:bg-slate-600 text-slate-100 py-2 px-4 rounded-lg flex items-center gap-2 text-sm font-semibold transition-all">
+                    <i class="fa-solid fa-users"></i> Accounts List
+                </button>
+                <button onclick="handleLogout()" class="text-slate-400 hover:text-white px-2 py-1 flex items-center gap-1 text-sm font-medium transition-all">
+                    <i class="fa-solid fa-arrow-right-from-bracket"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- DASHBOARD WORKSPACE -->
+        <div class="flex-grow p-6 lg:p-8 max-w-7xl mx-auto w-full flex flex-col">
+            <!-- EMPTY STATE / WELCOME screen -->
+            <div id="empty-workspace-state" class="flex-grow flex flex-col items-center justify-center max-w-lg mx-auto py-12 text-center">
+                <div class="p-4 bg-slate-800 rounded-3xl text-violet-400 mb-6 border border-slate-700">
+                    <i class="fa-solid fa-network-wired text-5xl"></i>
+                </div>
+                <h3 class="text-2xl font-bold text-white mb-2">No Active Account Selected</h3>
+                <p class="text-slate-400 mb-6">Explore connected users, inspect automated email metrics in real-time, or update RAG/LLM backend credentials across platforms.</p>
+                <button onclick="openAccountSelector()" class="bg-violet-600 hover:bg-violet-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-violet-600/20 transition-all hover:scale-[1.02] active:scale-[0.98]">
+                    Select Account to Manage
+                </button>
+            </div>
+
+            <!-- SELECTED ACCOUNT DASHBOARD -->
+            <div id="active-workspace" class="hidden flex-grow flex flex-col gap-8">
+                <!-- SEGMENT BUTTONS -->
+                <div class="flex border-b border-slate-700">
+                    <button onclick="switchTab('overview')" id="tab-overview" class="py-3 px-6 font-bold text-sm tracking-wide border-b-2 border-violet-500 text-violet-400 flex items-center gap-2 transition-all">
+                        <i class="fa-solid fa-chart-pie"></i> Overview & Metrics
+                    </button>
+                    <button onclick="switchTab('settings')" id="tab-settings" class="py-3 px-6 font-semibold text-sm tracking-wide border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 transition-all">
+                        <i class="fa-solid fa-sliders"></i> Configuration & Google Add-On Settings
+                    </button>
+                </div>
+
+                <!-- OVERVIEW TAB -->
+                <div id="pane-overview" class="space-y-8 animate-fadeIn">
+                    <!-- Stat Grid -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 relative overflow-hidden group">
+                            <div class="absolute -right-4 -bottom-4 text-slate-700/20 text-6xl font-black group-hover:scale-110 transition-transform"><i class="fa-solid fa-envelope"></i></div>
+                            <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Processed Emails</p>
+                            <h4 id="stat-emails" class="text-3xl font-black text-white">0</h4>
+                            <p class="text-xs text-indigo-400 mt-2 font-medium">Logged in SQLite</p>
+                        </div>
+                        <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 relative overflow-hidden group">
+                            <div class="absolute -right-4 -bottom-4 text-slate-700/20 text-6xl font-black group-hover:scale-110 transition-transform"><i class="fa-solid fa-paperclip"></i></div>
+                            <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Processed Attachments</p>
+                            <h4 id="stat-attachments" class="text-3xl font-black text-white">0</h4>
+                            <p class="text-xs text-violet-400 mt-2 font-medium">Extracted & Vectorized</p>
+                        </div>
+                        <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 relative overflow-hidden group">
+                            <div class="absolute -right-4 -bottom-4 text-slate-700/20 text-6xl font-black group-hover:scale-110 transition-transform"><i class="fa-solid fa-comments"></i></div>
+                            <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Total Threads</p>
+                            <h4 id="stat-threads" class="text-3xl font-black text-white">0</h4>
+                            <p class="text-xs text-sky-400 mt-2 font-medium">Unique Email Threads</p>
+                        </div>
+                        <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 relative overflow-hidden group">
+                            <div class="absolute -right-4 -bottom-4 text-slate-700/20 text-6xl font-black group-hover:scale-110 transition-transform"><i class="fa-solid fa-satellite-dish"></i></div>
+                            <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">IMAP Monitor</p>
+                            <h4 id="stat-imap" class="text-xl font-black text-white flex items-center gap-1.5">
+                                <span id="stat-imap-status" class="bg-slate-700 text-slate-300 text-xs px-2 py-0.5 rounded-full">Inactive</span>
+                            </h4>
+                            <p id="stat-last-active" class="text-xs text-slate-400 mt-2 truncate">Last Active: Never</p>
+                        </div>
+                    </div>
+
+                    <!-- Connection details -->
+                    <div class="bg-slate-800 rounded-2xl border border-slate-700 p-6">
+                        <h4 class="text-lg font-bold text-white mb-4 flex items-center gap-2"><i class="fa-solid fa-database text-violet-400"></i> Account Properties</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div class="space-y-4">
+                                <div class="flex justify-between items-center p-3.5 bg-slate-900/50 rounded-xl border border-slate-700/55">
+                                    <span class="text-slate-400 text-sm">Account ID (Email)</span>
+                                    <span id="prop-user-id" class="text-white font-mono text-sm font-semibold">unknown</span>
+                                </div>
+                                <div class="flex justify-between items-center p-3.5 bg-slate-900/50 rounded-xl border border-slate-700/55">
+                                    <span class="text-slate-400 text-sm">IMAP Target Email</span>
+                                    <span id="prop-imap-email" class="text-white text-sm font-semibold">-</span>
+                                </div>
+                            </div>
+                            <div class="space-y-4">
+                                <div class="flex justify-between items-center p-3.5 bg-slate-900/50 rounded-xl border border-slate-700/55">
+                                    <span class="text-slate-400 text-sm">IMAP Server Host</span>
+                                    <span id="prop-imap-host" class="text-white text-sm font-semibold">-</span>
+                                </div>
+                                <div class="flex justify-between items-center p-3.5 bg-slate-900/50 rounded-xl border border-slate-700/55">
+                                    <span class="text-slate-400 text-sm">Last Synced Timestamp</span>
+                                    <span id="prop-last-check" class="text-white text-sm font-mono font-semibold">-</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SETTINGS TAB -->
+                <div id="pane-settings" class="hidden animate-fadeIn">
+                    <form id="settings-form" class="space-y-8">
+                        <!-- Top Floating save indicator -->
+                        <div class="bg-slate-800 border border-slate-700 p-4 rounded-xl flex items-center justify-between shadow-md mb-2">
+                            <div>
+                                <h3 class="font-bold text-white">Save Changes</h3>
+                                <p class="text-xs text-slate-400">These plain-text settings populate instantly next login / add-on requests</p>
+                            </div>
+                            <button type="button" onclick="saveSettings()" class="bg-violet-600 hover:bg-violet-700 text-white font-bold py-2.5 px-6 rounded-lg shadow-lg shadow-violet-600/10 flex items-center gap-2 transition-all">
+                                <i class="fa-solid fa-floppy-disk"></i> Save Settings
+                            </button>
+                        </div>
+
+                        <!-- Grid representing settings sections -->
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                            
+                            <!-- Profile & Configuration section removed per admin request -->
+
+                            <!-- 2. IMAP CONNECTION SETTINGS -->
+                            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 space-y-6">
+                                <h3 class="text-lg font-bold text-white border-b border-slate-700 pb-3 flex items-center justify-between">
+                                    <span class="flex items-center gap-2">
+                                        <span class="text-sky-400 text-lg flex items-center justify-center p-1.5 bg-sky-400/10 rounded-lg border border-sky-400/20">
+                                            <i class="fa-solid fa-server"></i>
+                                        </span>
+                                        Background IMAP Monitor Target
+                                    </span>
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" id="run_imap_server" class="sr-only peer">
+                                        <div class="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
+                                    </label>
+                                </h3>
+
+                                <div id="imap-config-fields" class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">IMAP Email Account</label>
+                                        <input type="email" id="imap_email" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500" placeholder="email@gmail.com">
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Gmail App Password</label>
+                                        <div class="relative">
+                                            <input type="password" id="imap_app_password" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 pr-10 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500" placeholder="16-character google app password">
+                                            <button type="button" onclick="togglePassword('imap_app_password')" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300">
+                                                <i class="fa-solid fa-eye" id="imap_app_password-eye"></i>
+                                            </button>
+                                        </div>
+                                        <p class="text-slate-500 text-[11px] mt-1">If enabled, the background monitor continuously fetches and auto-labels emails for this account</p>
+                                    </div>
+
+                                    <div class="grid grid-cols-3 gap-4">
+                                        <div class="col-span-2">
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">IMAP Server Host</label>
+                                            <input type="text" id="imap_host" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500" value="imap.gmail.com">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">SSL Port</label>
+                                            <input type="number" id="imap_port" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500" value="993">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 3. AI LANGUAGE MODEL (LLM) -->
+                            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 space-y-6">
+                                <h3 class="text-lg font-bold text-white border-b border-slate-700 pb-3 flex items-center gap-2">
+                                    <span class="text-violet-400 text-lg flex items-center justify-center p-1.5 bg-violet-400/10 rounded-lg border border-violet-400/20">
+                                        <i class="fa-solid fa-robot"></i>
+                                    </span>
+                                    AI Language Model (LLM)
+                                </h3>
+
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">LLM Provider</label>
+                                        <select id="llm_provider" onchange="adjustLLMFields()" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500">
+                                            <option value="manotr" selected>✨ Manotr (Zero Config - gpt-4o-mini)</option>
+                                            <option value="openai">🌐 OpenAI REST API</option>
+                                            <option value="anthropic">🤖 Anthropic Claude</option>
+                                            <option value="groq">⚡ Groq Cloud</option>
+                                            <option value="ollama">🖥️ Ollama (Local/Self-hosted)</option>
+                                        </select>
+                                    </div>
+
+                                    <div id="group-llm-cloud" class="hidden space-y-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">LLM API Key</label>
+                                            <div class="relative">
+                                                <input type="password" id="llm_api_key" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 pr-10 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500">
+                                                <button type="button" onclick="togglePassword('llm_api_key')" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300">
+                                                    <i class="fa-solid fa-eye" id="llm_api_key-eye"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div id="group-llm-ollama" class="hidden space-y-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Ollama Connection URL</label>
+                                            <input type="text" id="llm_base_url" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none" value="http://localhost:11434">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Ollama Bearer Token (optional)</label>
+                                            <input type="password" id="llm_ollama_api_key" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none">
+                                        </div>
+                                    </div>
+
+                                    <div id="group-llm-model-wrapper" class="hidden space-y-3">
+                                        <div class="flex items-end gap-3">
+                                            <div class="flex-grow">
+                                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">LLM Model Name</label>
+                                                <select id="llm_model_select" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500">
+                                                    <option value="">Fetch API Models first...</option>
+                                                </select>
+                                                <!-- Text fallback for manual entries -->
+                                                <input type="text" id="llm_model_text" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500" placeholder="Model name (e.g. llama3.3)">
+                                            </div>
+                                            <button type="button" onclick="fetchLiveModels('llm')" class="bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 px-4 rounded-lg flex items-center justify-center gap-1.5 text-sm transition-all h-[42px] shrink-0 border border-slate-600">
+                                                <i class="fa-solid fa-arrows-rotate"></i> Fetch
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <input type="checkbox" id="llm_model_fallback_chk" class="rounded text-violet-600 bg-slate-900 border-slate-700 focus:ring-0 focus:ring-offset-0" onchange="toggleModelTextMode('llm')">
+                                            <label for="llm_model_fallback_chk" class="text-xs text-slate-400 select-none">Manual Model Entry Mode (text input)</label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 4. EMBEDDING ENGINE -->
+                            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 space-y-6">
+                                <h3 class="text-lg font-bold text-white border-b border-slate-700 pb-3 flex items-center gap-2">
+                                    <span class="text-violet-400 text-lg flex items-center justify-center p-1.5 bg-violet-400/10 rounded-lg border border-violet-400/20">
+                                        <i class="fa-solid fa-shapes"></i>
+                                    </span>
+                                    Embedding Engine
+                                </h3>
+
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Embedding Provider</label>
+                                        <select id="embedding_provider" onchange="adjustEmbeddingFields()" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500">
+                                            <option value="manotr" selected>✨ Manotr (Default - no API key needed)</option>
+                                            <option value="openai">🌐 OpenAI text-embedding</option>
+                                            <option value="ollama">🖥️ Ollama Embeddings</option>
+                                        </select>
+                                    </div>
+
+                                    <div id="group-emb-cloud" class="hidden space-y-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Embedding Engine API Key</label>
+                                            <div class="relative">
+                                                <input type="password" id="embedding_api_key" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 pr-10 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500">
+                                                <button type="button" onclick="togglePassword('embedding_api_key')" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300">
+                                                    <i class="fa-solid fa-eye" id="embedding_api_key-eye"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div id="group-emb-ollama" class="hidden space-y-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Ollama Connection URL</label>
+                                            <input type="text" id="embedding_base_url" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none" value="http://localhost:11434">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Ollama Bearer Token (optional)</label>
+                                            <input type="password" id="embedding_ollama_api_key" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none">
+                                        </div>
+                                    </div>
+
+                                    <div id="group-emb-model-wrapper" class="hidden space-y-3">
+                                        <div class="flex items-end gap-3">
+                                            <div class="flex-grow">
+                                                <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Embedding Model Name</label>
+                                                <select id="embedding_model_select" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500">
+                                                    <option value="">Fetch API Models first...</option>
+                                                </select>
+                                                <!-- Text fallback for manual entries -->
+                                                <input type="text" id="embedding_model_text" class="hidden bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500" placeholder="Model name (e.g. nomic-embed-text)">
+                                            </div>
+                                            <button type="button" onclick="fetchLiveModels('embedding')" class="bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 px-4 rounded-lg flex items-center justify-center gap-1.5 text-sm transition-all h-[42px] shrink-0 border border-slate-600">
+                                                <i class="fa-solid fa-arrows-rotate"></i> Fetch
+                                            </button>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <input type="checkbox" id="embedding_model_fallback_chk" class="rounded text-violet-600 bg-slate-900 border-slate-700 focus:ring-0 focus:ring-offset-0" onchange="toggleModelTextMode('embedding')">
+                                            <label for="embedding_model_fallback_chk" class="text-xs text-slate-400 select-none">Manual Model Entry Mode (text input)</label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 5. VECTOR DATABASE -->
+                            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 space-y-6 lg:col-span-2">
+                                <h3 class="text-lg font-bold text-white border-b border-slate-700 pb-3 flex items-center gap-2">
+                                    <span class="text-violet-400 text-lg flex items-center justify-center p-1.5 bg-violet-400/10 rounded-lg border border-violet-400/20">
+                                        <i class="fa-solid fa-database"></i>
+                                    </span>
+                                    Vector Datastore (ChromaDB / pinecone / qdrant)
+                                </h3>
+
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div class="space-y-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Vector DB Provider</label>
+                                            <select id="vector_provider" onchange="adjustVectorFields()" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 focus:outline-none focus:border-violet-500">
+                                                <option value="manotr" selected>✨ Manotr Vector DB (Default Cloud hosting)</option>
+                                                <option value="local">📁 Local ChromaDB (On Agent server)</option>
+                                                <option value="pinecone">🌲 Pinecone (Cloud Indexed)</option>
+                                                <option value="qdrant">🎯 Qdrant Vector Engine</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <div id="group-vector-url">
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Vector Datastore URL</label>
+                                            <input type="text" id="vector_url" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500" placeholder="https://example-index.pinecone.io">
+                                        </div>
+                                    </div>
+
+                                    <div class="space-y-4 justify-between h-full flex flex-col">
+                                        <div id="group-vector-key">
+                                            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">Vector Database API Key</label>
+                                            <div class="relative">
+                                                <input type="password" id="vector_api_key" class="bg-slate-900 border border-slate-700 rounded-lg p-2.5 pr-10 w-full text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-violet-500">
+                                                <button type="button" onclick="togglePassword('vector_api_key')" class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300">
+                                                    <i class="fa-solid fa-eye" id="vector_api_key-eye"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="bg-slate-900/60 p-4 border border-slate-700/50 rounded-xl text-xs text-slate-400">
+                                            <p class="flex gap-2"><i class="fa-solid fa-info-circle text-violet-400 text-sm mt-0.5"></i> Selecting <b>Local</b> utilizes user-isolated server directory <code class="font-mono text-violet-300 bg-slate-950 px-1 py-0.5 rounded text-[10px]">data/{user_id}/vector_db/</code> directly via Chroma client core natively without auth.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- bottom large full action -->
+                        <div class="pt-6 flex justify-end gap-4 border-t border-slate-800">
+                            <button type="button" onclick="saveSettings()" class="bg-violet-600 hover:bg-violet-700 active:scale-[0.98] text-white font-extrabold px-10 py-3.5 rounded-xl shadow-lg shadow-violet-600/20 text-md tracking-wider flex items-center gap-2.5 transition-all">
+                                <i class="fa-solid fa-floppy-disk"></i> SAVE ACCOUNT SETTINGS
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL BOX: ACCOUNT SELECTION POPUP -->
+    <div id="account-selector-modal" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <!-- Dialog Container -->
+        <div id="account-dialog" class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col p-6 shadow-2xl animate-zoomIn">
+            <!-- Modal Header -->
+            <div class="flex items-center justify-between border-b border-slate-700 pb-4 mb-4">
+                <div>
+                    <h3 class="text-xl font-bold text-white flex items-center gap-2">
+                        <i class="fa-solid fa-users text-violet-400"></i> Select Email Account
+                    </h3>
+                    <p class="text-slate-400 text-xs mt-1">Select an existing connected mailbox, or link a new mailbox server account below</p>
+                </div>
+                <button onclick="closeAccountSelector()" id="close-modal-btn" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-700 transition">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Loader -->
+            <div id="account-loader" class="hidden py-12 flex flex-col items-center justify-center gap-3">
+                <i class="fa-solid fa-circle-notch text-violet-500 text-4xl animate-spin"></i>
+                <p class="text-slate-400 text-sm font-semibold">Reading SQLite and files metadata...</p>
+            </div>
+
+            <!-- Account List Content -->
+            <div id="account-list-content" class="flex-grow overflow-y-auto space-y-3 pr-1">
+                <!-- Javascript populates -->
+            </div>
+
+            <!-- Create New User Form footer -->
+            <div class="border-t border-slate-700 pt-5 mt-4">
+                <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Create New Mailbox Account</label>
+                <div class="flex gap-2">
+                    <input type="email" id="new_user_email" class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 flex-grow" placeholder="user@example.com">
+                    <button onclick="createAccount()" class="bg-violet-600 hover:bg-violet-700 text-white text-sm font-bold px-4 py-2 rounded-lg flex items-center gap-1.5 shrink-0 transition">
+                        <i class="fa-solid fa-plus font-bold"></i> Add Account
+                    </button>
+                </div>
+                <p id="new-user-error" class="hidden text-rose-400 text-xs mt-1.5 font-medium"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Client-side logic script -->
+    <script>
+        // API Base URL (always empty as we are serving on the same origin server)
+        const API_BASE = '';
+        
+        // Static fallbacks for curation list (matches Code.gs definitions)
+        const OB_STATIC_LLM = {
+            openai: ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
+            anthropic: ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229", "claude-3-sonnet-20240229"],
+            groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
+            ollama: ["llama3.3", "llama3.1", "mistral", "phi3", "gemma2"]
+        };
+        
+        const OB_STATIC_EMB = {
+            openai: ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"],
+            ollama: ["nomic-embed-text", "bge-large-en", "all-minilm", "mxbai-embed-large"]
+        };
+
+        // App States
+        let token = localStorage.getItem('omb_admin_token') || '';
+        let activeUser = localStorage.getItem('omb_admin_active_user') || '';
+        let tab = 'overview';
+        let currentSettings = {};
+
+        // On Load initialization
+        window.addEventListener('DOMContentLoaded', () => {
+            if (token === 'admin-token-2026') {
+                showDashboard();
+            } else {
+                showLogin();
+            }
+        });
+
+        // Toast Messages
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            
+            let bg = 'bg-slate-800 border-slate-700 text-slate-100';
+            let icon = '<i class="fa-solid fa-info-circle text-sky-400"></i>';
+            if (type === 'success') {
+                bg = 'bg-emerald-950 border-emerald-800 text-emerald-100';
+                icon = '<i class="fa-solid fa-circle-check text-emerald-400"></i>';
+            } else if (type === 'error') {
+                bg = 'bg-rose-950 border-rose-900 text-rose-100';
+                icon = '<i class="fa-solid fa-triangle-exclamation text-rose-400"></i>';
+            } else if (type === 'warning') {
+                bg = 'bg-amber-950 border-amber-900 text-amber-100';
+                icon = '<i class="fa-solid fa-triangle-exclamation text-amber-400"></i>';
+            }
+            
+            toast.className = `${bg} p-4 rounded-xl border flex items-center gap-3 shadow-2xl min-w-[300px] max-w-sm border-l-4 transition-all duration-300 translate-y-2 opacity-0`;
+            toast.innerHTML = `
+                <div class="text-lg">${icon}</div>
+                <div class="text-sm font-semibold flex-grow">${message}</div>
+                <button class="text-slate-400 hover:text-white" onclick="this.parentElement.remove()"><i class="fa-solid fa-xmark"></i></button>
+            `;
+            
+            container.appendChild(toast);
+            
+            // Trigger animation
+            setTimeout(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            }, 10);
+            
+            // Auto remove
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-1');
+                setTimeout(() => toast.remove(), 300);
+            }, 5000);
+        }
+
+        // Toggle secure passwords visibility
+        function togglePassword(id) {
+            const input = document.getElementById(id);
+            const icon = document.getElementById(`${id}-eye`);
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.className = 'fa-solid fa-eye-slash';
+            } else {
+                input.type = 'password';
+                icon.className = 'fa-solid fa-eye';
+            }
+        }
+
+        // Screens Switches
+        function showLogin() {
+            document.getElementById('login-screen').classList.remove('hidden');
+            document.getElementById('admin-interface').classList.add('hidden');
+        }
+
+        function showDashboard() {
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('admin-interface').classList.remove('hidden');
+            
+            if (activeUser) {
+                document.getElementById('active-user-badge').classList.remove('hidden');
+                document.getElementById('active-user-name').innerText = activeUser;
+                document.getElementById('empty-workspace-state').classList.add('hidden');
+                document.getElementById('active-workspace').classList.remove('hidden');
+                loadUserData(activeUser);
+            } else {
+                document.getElementById('active-user-badge').classList.add('hidden');
+                document.getElementById('empty-workspace-state').classList.remove('hidden');
+                document.getElementById('active-workspace').classList.add('hidden');
+                openAccountSelector(false); // Force modal open on welcome state if no user active
+            }
+        }
+
+        // Authentication form handler
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errBox = document.getElementById('login-error');
+            
+            errBox.classList.add('hidden');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/admin/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const data = await response.json();
+                if (response.ok && data.success) {
+                    token = data.token;
+                    localStorage.setItem('omb_admin_token', token);
+                    showToast('Admin access granted', 'success');
+                    showDashboard();
+                } else {
+                    errBox.classList.remove('hidden');
+                    document.getElementById('login-error-text').innerText = data.detail || 'Wrong username or password';
+                }
+            } catch (err) {
+                errBox.classList.remove('hidden');
+                document.getElementById('login-error-text').innerText = 'Network error reaching backend service';
+            }
+        });
+
+        // Logout
+        function handleLogout() {
+            token = '';
+            activeUser = '';
+            localStorage.removeItem('omb_admin_token');
+            localStorage.removeItem('omb_admin_active_user');
+            document.getElementById('login-form').reset();
+            showLogin();
+        }
+
+        // Tab selection
+        function switchTab(target) {
+            tab = target;
+            document.getElementById('tab-overview').className = target === 'overview' 
+                ? 'py-3 px-6 font-bold text-sm border-b-2 border-violet-500 text-violet-400 flex items-center gap-2 transition-all'
+                : 'py-3 px-6 font-semibold text-sm border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 transition-all';
+            document.getElementById('tab-settings').className = target === 'settings' 
+                ? 'py-3 px-6 font-bold text-sm border-b-2 border-violet-500 text-violet-400 flex items-center gap-2 transition-all'
+                : 'py-3 px-6 font-semibold text-sm border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 transition-all';
+
+            if (target === 'overview') {
+                document.getElementById('pane-overview').classList.remove('hidden');
+                document.getElementById('pane-settings').classList.add('hidden');
+            } else {
+                document.getElementById('pane-overview').classList.add('hidden');
+                document.getElementById('pane-settings').classList.remove('hidden');
+            }
+        }
+
+        // Account popup controller
+        function openAccountSelector(allowClose = true) {
+            document.getElementById('account-selector-modal').classList.remove('hidden');
+            const closeBtn = document.getElementById('close-modal-btn');
+            
+            if (allowClose) {
+                closeBtn.classList.remove('hidden');
+            } else {
+                closeBtn.classList.add('hidden');
+            }
+            
+            loadAccountsList();
+        }
+
+        function closeAccountSelector() {
+            if (!activeUser && !localStorage.getItem('omb_admin_active_user')) {
+                showToast('Please select or create an account to proceed to workspace', 'warning');
+                return;
+            }
+            document.getElementById('account-selector-modal').classList.add('hidden');
+        }
+
+        // Fetch Accounts List
+        async function loadAccountsList() {
+            const loader = document.getElementById('account-loader');
+            const container = document.getElementById('account-list-content');
+            
+            loader.classList.remove('hidden');
+            container.innerHTML = '';
+            
+            try {
+                const res = await fetch(`${API_BASE}/api/admin/users`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                loader.classList.add('hidden');
+                
+                if (res.ok) {
+                    const data = await res.json();
+                    const users = data.users || [];
+                    
+                    if (users.length === 0) {
+                        container.innerHTML = `
+                            <div class="text-center py-8 text-slate-500 text-sm">
+                                <i class="fa-solid fa-circle-info text-2xl mb-2"></i>
+                                <p>No active user directories found.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    
+                    users.forEach(u => {
+                        const isCurrentActive = activeUser === u.user_id;
+                        const card = document.createElement('div');
+                        card.className = `flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl border transition-all ${isCurrentActive ? 'bg-violet-950/20 border-violet-500' : 'bg-slate-900 border-slate-700 hover:border-slate-500'}`;
+                        
+                        card.innerHTML = `
+                            <div class="flex items-center gap-3">
+                                <div class="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 font-bold ${isCurrentActive ? 'border-violet-500/50 text-violet-400 bg-violet-600/10' : ''}">
+                                    ${u.user_id.charAt(0).toUpperCase()}
+                                </div>
+                                <div>
+                                    <h4 class="font-bold text-white flex items-center gap-1.5 text-sm sm:text-base">
+                                        ${u.user_id}
+                                        ${isCurrentActive ? '<span class="bg-violet-500/20 border border-violet-500/30 text-violet-400 text-[10px] py-0.5 px-1.5 rounded-full font-semibold">Active</span>' : ''}
+                                    </h4>
+                                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-slate-400 font-medium">
+                                        <span class="flex items-center gap-1"><i class="fa-solid fa-envelope"></i> ${u.emails_count} processed</span>
+                                        <span class="flex items-center gap-1"><i class="fa-solid fa-paperclip"></i> ${u.attachments_count} attachments</span>
+                                        <span class="flex items-center gap-1">
+                                            <i class="fa-solid fa-circle text-[8px] ${u.imap_enabled ? 'text-emerald-400' : 'text-slate-500'}"></i> IMAP Sync ${u.imap_enabled ? 'On' : 'Off'}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2 mt-3 sm:mt-0 justify-end shrink-0">
+                                <button onclick="selectUser('${u.user_id}')" class="text-xs font-bold py-2 px-3.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 hover:border-slate-500 text-white transition">
+                                    Manage Account
+                                </button>
+                            </div>
+                        `;
+                        container.appendChild(card);
+                    });
+                } else {
+                    container.innerHTML = `<div class="text-center py-6 text-rose-400 text-sm">Failed to list user directories.</div>`;
+                }
+            } catch (err) {
+                loader.classList.add('hidden');
+                container.innerHTML = `<div class="text-center py-6 text-rose-400 text-sm">Network error trying to list system accounts.</div>`;
+            }
+        }
+
+        // Account management selector
+        function selectUser(user_id) {
+            activeUser = user_id;
+            localStorage.setItem('omb_admin_active_user', user_id);
+            closeAccountSelector();
+            showDashboard();
+            showToast(`Loading workspace for: ${user_id}`, 'info');
+        }
+
+        // Create user account
+        async function createAccount() {
+            const input = document.getElementById('new_user_email');
+            const err = document.getElementById('new-user-error');
+            const email = input.value.trim();
+            
+            err.className = 'hidden';
+            
+            if (!email || !email.includes('@')) {
+                err.innerText = 'Please insert a valid client email account address.';
+                err.classList.remove('hidden');
+                return;
+            }
+            
+            try {
+                // To create an account, save a set of blank default settings
+                const defaultSettingsPayload = {
+                    mode: 'manotr',
+                    user_name: email.split('@')[0],
+                    user_position: 'E-Mail Account Owner',
+                    user_tone: 'professional',
+                    run_imap_server: false,
+                    imap_email: email,
+                    imap_host: 'imap.gmail.com',
+                    imap_port: 993,
+                    llm_provider: 'manotr',
+                    llm_model: 'gpt-4o-mini',
+                    embedding_provider: 'manotr',
+                    embedding_model: 'text-embedding-3-small',
+                    vector_provider: 'manotr'
+                };
+                
+                const response = await fetch(`${API_BASE}/api/admin/user/${encodeURIComponent(email)}/settings`, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ settings: defaultSettingsPayload })
+                });
+                
+                const data = await response.json();
+                if (response.ok && data.success) {
+                    showToast(`Created system workspace for ${email}`, 'success');
+                    input.value = '';
+                    loadAccountsList();
+                    // Auto-select newly created user
+                    selectUser(email);
+                } else {
+                    err.innerText = data.detail || 'Could not instantiate user folders';
+                    err.classList.remove('hidden');
+                }
+            } catch (ex) {
+                err.innerText = 'Network request failed';
+                err.classList.remove('hidden');
+            }
+        }
+
+        // Fetch Stats & Settings for selected user
+        async function loadUserData(user_id) {
+            // Reset form first
+            document.getElementById('settings-form').reset();
+            
+            try {
+                // 1. Fetch User Stats
+                const statsRes = await fetch(`${API_BASE}/api/admin/user/${encodeURIComponent(user_id)}/stats`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (statsRes.ok) {
+                    const statsData = await statsRes.json();
+                    const stats = statsData.stats;
+                    
+                    document.getElementById('stat-emails').innerText = stats.emails_count;
+                    document.getElementById('stat-attachments').innerText = stats.attachments_count;
+                    document.getElementById('stat-threads').innerText = stats.threads_count;
+                    
+                    const imapStat = document.getElementById('stat-imap-status');
+                    if (stats.imap_settings && stats.imap_settings.enabled) {
+                        imapStat.innerText = 'Sync Active';
+                        imapStat.className = 'bg-emerald-950 border border-emerald-800 text-emerald-400 text-xs px-2 py-0.5 rounded-full font-bold flex items-center gap-1';
+                        imapStat.innerHTML = '<i class="fa-solid fa-circle text-[8px] text-emerald-400 animate-pulse"></i> Sync Active';
+                    } else {
+                        imapStat.innerText = 'Sync Locked';
+                        imapStat.className = 'bg-slate-700/50 text-slate-300 text-xs px-2 py-0.5 rounded-full';
+                    }
+                    
+                    document.getElementById('stat-last-active').innerText = stats.last_active 
+                        ? `Last Logged: ${stats.last_active}`
+                        : 'Last Logged: Never';
+                        
+                    // Properties block
+                    document.getElementById('prop-user-id').innerText = user_id;
+                    document.getElementById('prop-imap-email').innerText = (stats.imap_settings && stats.imap_settings.email) || '-';
+                    document.getElementById('prop-imap-host').innerText = (stats.imap_settings && stats.imap_settings.host) 
+                        ? `${stats.imap_settings.host}:${stats.imap_settings.port || '993'}`
+                        : '-';
+                    document.getElementById('prop-last-check').innerText = (stats.imap_settings && stats.imap_settings.last_check) || 'Never';
+                }
+                
+                // 2. Fetch User Settings
+                const settingsRes = await fetch(`${API_BASE}/api/settings/${encodeURIComponent(user_id)}?ts=${Date.now()}`); // avoids cache
+                if (settingsRes.ok) {
+                    const settingsData = await settingsRes.json();
+                    currentSettings = settingsData.settings || {};
+                    populateSettingsForm(currentSettings);
+                } else {
+                    showToast('Failed to load existing user configurations', 'error');
+                }
+            } catch (err) {
+                console.error(err);
+                showToast('Network error loading account workspace details', 'error');
+            }
+        }
+
+        // Fill form fields
+        function populateSettingsForm(s) {
+            // Mode Select
+            const mode = s.mode || 'manotr';
+            const radio = document.querySelector(`input[name="mode"][value="${mode}"]`);
+            if (radio) {
+                radio.checked = true;
+            }
+            
+            // Profile fields removed from UI; skipping population
+            
+            // IMAP Settings
+            document.getElementById('run_imap_server').checked = s.run_imap_server || false;
+            document.getElementById('imap_email').value = s.imap_email || activeUser || '';
+            document.getElementById('imap_app_password').value = s.imap_app_password || '';
+            document.getElementById('imap_host').value = s.imap_host || 'imap.gmail.com';
+            document.getElementById('imap_port').value = s.imap_port || 993;
+            
+            // LLM Settings
+            const llmProvider = s.llm_provider || 'manotr';
+            document.getElementById('llm_provider').value = llmProvider;
+            document.getElementById('llm_api_key').value = s.llm_api_key || '';
+            document.getElementById('llm_base_url').value = s.llm_base_url || 'http://localhost:11434';
+            document.getElementById('llm_ollama_api_key').value = s.llm_ollama_api_key || '';
+            
+            // Embeddings Settings
+            const embProvider = s.embedding_provider || 'manotr';
+            document.getElementById('embedding_provider').value = embProvider;
+            document.getElementById('embedding_api_key').value = s.embedding_api_key || '';
+            document.getElementById('embedding_base_url').value = s.embedding_base_url || 'http://localhost:11434';
+            document.getElementById('embedding_ollama_api_key').value = s.embedding_ollama_api_key || '';
+            
+            // Vector Store Settings
+            document.getElementById('vector_provider').value = s.vector_provider || 'manotr';
+            document.getElementById('vector_url').value = s.vector_url || '';
+            document.getElementById('vector_api_key').value = s.vector_api_key || '';
+            
+            // Setup responsive layout constraints
+            adjustLLMFields();
+            adjustEmbeddingFields();
+            adjustVectorFields();
+            
+            // Set models values back after setup
+            setTimeout(() => {
+                // Populate curate list before saving
+                const curModelsList = OB_STATIC_LLM[llmProvider] || [];
+                const modelSelect = document.getElementById('llm_model_select');
+                modelSelect.innerHTML = '';
+                curModelsList.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m;
+                    opt.innerText = m;
+                    modelSelect.appendChild(opt);
+                });
+                
+                // Add saved option
+                const savedModel = s.llm_model || '';
+                if (savedModel && !curModelsList.includes(savedModel)) {
+                    const opt = document.createElement('option');
+                    opt.value = savedModel;
+                    opt.innerText = `📌 ${savedModel} (saved)`;
+                    modelSelect.appendChild(opt);
+                }
+                
+                if (savedModel) {
+                    modelSelect.value = savedModel;
+                    document.getElementById('llm_model_text').value = savedModel;
+                }
+                
+                // Setup Embeddings Models dropdown
+                const curEmbList = OB_STATIC_EMB[embProvider] || [];
+                const embSelect = document.getElementById('embedding_model_select');
+                embSelect.innerHTML = '';
+                curEmbList.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m;
+                    opt.innerText = m;
+                    embSelect.appendChild(opt);
+                });
+                
+                const savedEmbModel = s.embedding_model || 'text-embedding-3-small';
+                if (savedEmbModel && !curEmbList.includes(savedEmbModel)) {
+                    const opt = document.createElement('option');
+                    opt.value = savedEmbModel;
+                    opt.innerText = `📌 ${savedEmbModel} (saved)`;
+                    embSelect.appendChild(opt);
+                }
+                
+                if (savedEmbModel) {
+                    embSelect.value = savedEmbModel;
+                    document.getElementById('embedding_model_text').value = savedEmbModel;
+                }
+            }, 50);
+        }
+
+        // Toggle text/select mode
+        function toggleModelTextMode(type) {
+            const isTextMode = document.getElementById(`${type}_model_fallback_chk`).checked;
+            const selectEl = document.getElementById(`${type}_model_select`);
+            const textInputEl = document.getElementById(`${type}_model_text`);
+            
+            if (isTextMode) {
+                selectEl.classList.add('hidden');
+                textInputEl.classList.remove('hidden');
+            } else {
+                selectEl.classList.remove('hidden');
+                textInputEl.classList.add('hidden');
+            }
+        }
+
+        // Mode selection removed from UI; no-op retained for compatibility
+
+        // Responsive LLM input constraints
+        function adjustLLMFields() {
+            const provider = document.getElementById('llm_provider').value;
+            const cloudGrp = document.getElementById('group-llm-cloud');
+            const ollamaGrp = document.getElementById('group-llm-ollama');
+            const modelWrapper = document.getElementById('group-llm-model-wrapper');
+            
+            cloudGrp.classList.add('hidden');
+            ollamaGrp.classList.add('hidden');
+            modelWrapper.classList.add('hidden');
+            
+            if (provider === 'manotr') {
+                return;
+            }
+            
+            modelWrapper.classList.remove('hidden');
+            
+            if (['openai', 'anthropic', 'groq'].includes(provider)) {
+                cloudGrp.classList.remove('hidden');
+                const keyInput = document.getElementById('llm_api_key');
+                keyInput.placeholder = provider === 'openai' ? 'sk-... (OpenAI API key)' :
+                                      provider === 'anthropic' ? 'sk-ant-... (Anthropic API key)' :
+                                      'gsk_... (Groq API key)';
+            } else if (provider === 'ollama') {
+                ollamaGrp.classList.remove('hidden');
+            }
+            
+            // Hydrate static models curated for standard
+            const selectEl = document.getElementById('llm_model_select');
+            selectEl.innerHTML = '';
+            const staticList = OB_STATIC_LLM[provider] || [];
+            staticList.forEach(m => {
+                const o = document.createElement('option');
+                o.value = o.innerText = m;
+                selectEl.appendChild(o);
+            });
+        }
+
+        // Responsive Embedding input constraints
+        function adjustEmbeddingFields() {
+            const provider = document.getElementById('embedding_provider').value;
+            const cloudGrp = document.getElementById('group-emb-cloud');
+            const ollamaGrp = document.getElementById('group-emb-ollama');
+            const modelWrapper = document.getElementById('group-emb-model-wrapper');
+            
+            cloudGrp.classList.add('hidden');
+            ollamaGrp.classList.add('hidden');
+            modelWrapper.classList.add('hidden');
+            
+            if (provider === 'manotr') {
+                return;
+            }
+            
+            modelWrapper.classList.remove('hidden');
+            
+            if (provider === 'openai') {
+                cloudGrp.classList.remove('hidden');
+            } else if (provider === 'ollama') {
+                ollamaGrp.classList.remove('hidden');
+            }
+            
+            // Hydrate curated list
+            const selectEl = document.getElementById('embedding_model_select');
+            selectEl.innerHTML = '';
+            const staticList = OB_STATIC_EMB[provider] || [];
+            staticList.forEach(m => {
+                const o = document.createElement('option');
+                o.value = o.innerText = m;
+                selectEl.appendChild(o);
+            });
+        }
+
+        // Responsive Vector URL/Key toggle
+        function adjustVectorFields() {
+            const provider = document.getElementById('vector_provider').value;
+            const urlGrp = document.getElementById('group-vector-url');
+            const keyGrp = document.getElementById('group-vector-key');
+            
+            if (['manotr', 'local'].includes(provider)) {
+                urlGrp.classList.add('hidden');
+                keyGrp.classList.add('hidden');
+            } else {
+                urlGrp.classList.remove('hidden');
+                keyGrp.classList.remove('hidden');
+                
+                const urlInput = document.getElementById('vector_url');
+                urlInput.placeholder = provider === 'pinecone' 
+                    ? 'https://your-index.pinecone.io'
+                    : 'https://your-qdrant-server.com:6333';
+            }
+        }
+
+        // Live Provider list API Models
+        async function fetchLiveModels(type) {
+            const provider = document.getElementById(`${type}_provider`).value;
+            const api_key = type === 'llm' 
+                ? document.getElementById('llm_api_key').value 
+                : document.getElementById('embedding_api_key').value;
+                
+            let base_url = '';
+            if (type === 'llm' && provider === 'ollama') {
+                base_url = document.getElementById('llm_base_url').value;
+            } else if (type === 'embedding' && provider === 'ollama') {
+                base_url = document.getElementById('embedding_base_url').value;
+            }
+            
+            showToast(`Connecting to ${provider.toUpperCase()} endpoints...`, 'info');
+            
+            const payload = {
+                provider_type: type,
+                provider: provider,
+                api_key: api_key,
+                base_url: base_url
+            };
+            
+            try {
+                const res = await fetch(`${API_BASE}/api/validate-provider`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                const data = await res.json();
+                if (res.ok && data.valid) {
+                    showToast(data.message, 'success');
+                    
+                    const selectEl = document.getElementById(`${type}_model_select`);
+                    selectEl.innerHTML = '';
+                    
+                    if (data.models && data.models.length > 0) {
+                        data.models.forEach(m => {
+                            const opt = document.createElement('option');
+                            opt.value = m;
+                            opt.innerText = m;
+                            selectEl.appendChild(opt);
+                        });
+                        // Ensure text mode is deactivated
+                        document.getElementById(`${type}_model_fallback_chk`).checked = false;
+                        toggleModelTextMode(type);
+                    } else {
+                        showToast('No models returned. Swapping to manual input entry', 'warning');
+                        document.getElementById(`${type}_model_fallback_chk`).checked = true;
+                        toggleModelTextMode(type);
+                    }
+                } else {
+                    showToast(data.message || 'Validation failed. Check configuration.', 'error');
+                }
+            } catch (ex) {
+                console.error(ex);
+                showToast('Network request timeout trying to validate endpoints', 'error');
+            }
+        }
+
+        // Save settings POST
+        async function saveSettings() {
+            if (!activeUser) {
+                showToast('No active account loaded', 'error');
+                return;
+            }
+            
+            // Build payload settings
+            const mode = currentSettings.mode || 'manotr';
+            const llmProvider = document.getElementById('llm_provider').value;
+            const embProvider = document.getElementById('embedding_provider').value;
+            
+            // Check manual text fallback names
+            const isLlmText = document.getElementById('llm_model_fallback_chk').checked;
+            const llmModel = isLlmText 
+                ? document.getElementById('llm_model_text').value.trim()
+                : document.getElementById('llm_model_select').value;
+                
+            const isEmbText = document.getElementById('embedding_model_fallback_chk').checked;
+            const embModel = isEmbText
+                ? document.getElementById('embedding_model_text').value.trim()
+                : document.getElementById('embedding_model_select').value;
+
+            // Form validation (profile inputs removed)
+            const payload_settings = {
+                mode: mode,
+                
+                run_imap_server: document.getElementById('run_imap_server').checked,
+                imap_email: document.getElementById('imap_email').value.trim(),
+                imap_app_password: document.getElementById('imap_app_password').value.trim(),
+                imap_host: document.getElementById('imap_host').value.trim(),
+                imap_port: parseInt(document.getElementById('imap_port').value) || 993,
+                
+                llm_provider: llmProvider,
+                llm_api_key: document.getElementById('llm_api_key').value.trim(),
+                llm_base_url: document.getElementById('llm_base_url').value.trim(),
+                llm_ollama_api_key: document.getElementById('llm_ollama_api_key').value.trim(),
+                llm_model: llmModel,
+                
+                embedding_provider: embProvider,
+                embedding_api_key: document.getElementById('embedding_api_key').value.trim(),
+                embedding_base_url: document.getElementById('embedding_base_url').value.trim(),
+                embedding_ollama_api_key: document.getElementById('embedding_ollama_api_key').value.trim(),
+                embedding_model: embModel,
+                
+                vector_provider: document.getElementById('vector_provider').value,
+                vector_url: document.getElementById('vector_url').value.trim(),
+                vector_api_key: document.getElementById('vector_api_key').value.trim()
+            };
+            
+            showToast('Writing configurations to SQLite database...', 'info');
+            
+            try {
+                const res = await fetch(`${API_BASE}/api/admin/user/${encodeURIComponent(activeUser)}/settings`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ settings: payload_settings })
+                });
+                
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast('Settings encryption & storage completed successfully!', 'success');
+                    // Reload workspace
+                    loadUserData(activeUser);
+                } else {
+                    showToast(data.detail || 'Could not commit configurations to DB', 'error');
+                }
+            } catch (ex) {
+                console.error(ex);
+                showToast('Failed to save settings. Connection timeout.', 'error');
+            }
+        }
+    </script>
+</body>
+</html>

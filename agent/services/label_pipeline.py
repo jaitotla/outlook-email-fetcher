@@ -330,7 +330,7 @@ Provide the label, category, topic, and subtopic for this email based on the use
             "application shortlisted",
             "talent acquisition"
         ]):
-            return "recruitment"
+            return "Recruitment"
 
         # -------------------------
         # 7. BOOKING

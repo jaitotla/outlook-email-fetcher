@@ -4,11 +4,23 @@ Handles public-key encryption for client-side settings encryption.
 Uses libsodium (NaCl) for asymmetric encryption.
 
 Architecture:
-- Backend generates Ed25519 keypair on startup
-- Private key stored in environment variable (never in code)
-- Public key exposed via /api/public-key endpoint
+- Backend generates per-user Ed25519 keypairs on first settings save
+- Private/public keys stored in SQLite system database (agent/data/system/keys.db) per user
+- Public key exposed via /api/public-key?user_id=<email> endpoint
 - Add-ons encrypt settings client-side before sending
-- Backend decrypts with private key, applies 2nd-layer Fernet encryption
+- Backend decrypts with user's private key using SealedBox.decrypt()
+
+Per-User Key Management:
+- Each user gets their own Ed25519 keypair on first settings submission
+- Latest key is always stored (old keys are replaced)
+- Public key endpoint returns the current key for that user
+- Private key stays on backend, never shared
+
+Key Features:
+- Automatic keypair generation per user on first use
+- Persistent per-user storage in SQLite
+- Replaces old keys (latest always wins to avoid key mismatch)
+- Add-on always fetches fresh public key before saving settings
 """
 
 import os
@@ -16,11 +28,12 @@ import sys
 import json
 import base64
 import logging
+import sqlite3
 from typing import Tuple, Optional, Dict, Any
+from datetime import datetime
 
 try:
-    from nacl.public import PrivateKey, PublicKey
-    from nacl.boxes import SealedBox
+    from nacl.public import PrivateKey, PublicKey, SealedBox
     from nacl.utils import random
 except ImportError as e:
     raise ImportError(
@@ -31,106 +44,178 @@ except ImportError as e:
 logger = logging.getLogger(__name__)
 
 
+
 class EncryptionService:
     """
-    Handles libsodium-based encryption for client-server communication.
+    Handles per-user libsodium-based encryption for client-server communication.
     
-    Public-key encryption workflow:
-    1. Backend generates keypair once, stores private key in env var
-    2. Backend exposes public key via /api/public-key
-    3. Add-on fetches public key, caches locally
-    4. Add-on encrypts settings with public key using box_seal()
-    5. Add-on sends encrypted payload to /api/settings
+    Per-user encryption workflow:
+    1. Add-on calls GET /api/public-key?user_id=<email> to fetch user's public key
+    2. If user has no key yet, backend generates one and stores in SQLite
+    3. Add-on encrypts settings with public key using box_seal()
+    4. Add-on sends encrypted payload to POST /api/settings/encrypted with user_id
+    5. Backend loads user's private key from SQLite
     6. Backend decrypts with private key using SealedBox.decrypt()
+    7. Backend encrypts with Fernet and saves to user's settings database
+    
+    SQLite storage (agent/data/system/keys.db):
+    - Table: encryption_keys(user_id, private_key, public_key, created_at, version)
+    - One row per user (latest key only — old keys replaced automatically)
     """
+    
+    # System database path (shared across all users)
+    SYSTEM_DB_PATH = None  # Will be set dynamically
 
     def __init__(self):
-        """Initialize encryption service by loading private key from environment."""
-        self.private_key: Optional[PrivateKey] = None
-        self.public_key: Optional[PublicKey] = None
-        self._load_keypair()
-
-    def _load_keypair(self) -> None:
-        """Load keypair from environment variables. Generate if not present."""
-        private_key_b64 = os.environ.get("ENCRYPTION_PRIVATE_KEY", "")
+        """Initialize encryption service."""
+        # Set up system DB path if not already set
+        if EncryptionService.SYSTEM_DB_PATH is None:
+            agent_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            EncryptionService.SYSTEM_DB_PATH = os.path.join(agent_root, "data", "system", "keys.db")
         
-        if not private_key_b64:
-            # First run - generate keypair
-            logger.warning("⚠️  ENCRYPTION_PRIVATE_KEY not set - generating new keypair")
-            self._generate_and_save_keypair()
-        else:
-            # Load existing keypair from env
+        self._init_db()
+
+    def _get_system_db_path(self) -> str:
+        """Get system database path (creates directory if needed)."""
+        db_path = EncryptionService.SYSTEM_DB_PATH
+        db_dir = os.path.dirname(db_path)
+        
+        # Create directory if it doesn't exist
+        if not os.path.exists(db_dir):
             try:
-                private_key_bytes = base64.b64decode(private_key_b64)
-                self.private_key = PrivateKey(private_key_bytes)
-                self.public_key = self.private_key.public_key
-                logger.info("✅ Encryption keypair loaded from environment")
+                os.makedirs(db_dir, exist_ok=True)
+                logger.info(f"📁 Created system database directory: {db_dir}")
             except Exception as e:
-                logger.error(f"❌ Failed to load encryption keypair: {e}")
-                raise ValueError(
-                    f"Invalid ENCRYPTION_PRIVATE_KEY format: {e}\n"
-                    "Must be a base64-encoded 32-byte private key"
+                logger.error(f"❌ Failed to create directory {db_dir}: {e}")
+                raise
+        
+        return db_path
+
+    def _init_db(self) -> None:
+        """Initialize system database and create encryption_keys table if needed."""
+        db_path = self._get_system_db_path()
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Create encryption_keys table for per-user keys
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS encryption_keys (
+                    user_id TEXT PRIMARY KEY,
+                    private_key TEXT NOT NULL,
+                    public_key TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    version INTEGER DEFAULT 1
                 )
+            """)
+            
+            conn.commit()
+            conn.close()
+            logger.debug(f"✅ System database initialized: {db_path}")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize system database: {e}")
+            raise
 
-    def _generate_and_save_keypair(self) -> None:
-        """Generate new keypair and display for admin to save."""
-        logger.info("🔐 Generating new Ed25519 keypair...")
-        
-        self.private_key = PrivateKey.generate()
-        self.public_key = self.private_key.public_key
-        
-        private_key_b64 = base64.b64encode(bytes(self.private_key)).decode()
-        public_key_b64 = base64.b64encode(bytes(self.public_key)).decode()
-        
-        print("\n" + "="*80, flush=True)
-        print("🔐 NEW ENCRYPTION KEYPAIR GENERATED", flush=True)
-        print("="*80, flush=True)
-        print(f"\n📌 IMPORTANT: Save this to your environment before restarting:\n", flush=True)
-        print(f"export ENCRYPTION_PRIVATE_KEY=\"{private_key_b64}\"\n", flush=True)
-        print(f"Or in .env file:", flush=True)
-        print(f"ENCRYPTION_PRIVATE_KEY={private_key_b64}\n", flush=True)
-        print("="*80, flush=True)
-        print(f"\n📤 Public Key (share with add-ons / bake into code):\n", flush=True)
-        print(f"{public_key_b64}\n", flush=True)
-        print("="*80, flush=True)
-        sys.stdout.flush()
-        
-        # Require admin to set env var before continuing
-        raise EnvironmentError(
-            "ENCRYPTION_PRIVATE_KEY not set. Generated new keypair (see console output above).\n"
-            "Set ENCRYPTION_PRIVATE_KEY environment variable and restart the server."
-        )
-
-    def get_public_key_b64(self) -> str:
+    def get_or_create_user_keys(self, user_id: str) -> Tuple[str, str]:
         """
-        Get public key as base64 string for distribution to add-ons.
+        Get or create encryption keypair for a user.
+        If user has no key, generate new one and replace any old key.
         
+        Args:
+            user_id: User email or unique identifier
+            
         Returns:
-            Base64-encoded public key (32 bytes)
+            Tuple of (private_key_b64, public_key_b64)
         """
-        if not self.public_key:
-            raise RuntimeError("Encryption service not initialized")
-        return base64.b64encode(bytes(self.public_key)).decode()
-
-    def get_public_key_dict(self) -> Dict[str, Any]:
-        """
-        Get public key metadata for /api/public-key endpoint.
+        db_path = self._get_system_db_path()
         
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Check if user has existing key
+            cursor.execute("""
+                SELECT private_key, public_key FROM encryption_keys 
+                WHERE user_id = ?
+            """, (user_id,))
+            
+            row = cursor.fetchone()
+            
+            if row:
+                logger.debug(f"✅ Found existing key for user: {user_id}")
+                conn.close()
+                return row[0], row[1]
+            
+            # Generate new keypair for this user
+            logger.info(f"🔐 Generating new encryption keypair for user: {user_id}")
+            private_key = PrivateKey.generate()
+            public_key = private_key.public_key
+            
+            private_key_b64 = base64.b64encode(bytes(private_key)).decode()
+            public_key_b64 = base64.b64encode(bytes(public_key)).decode()
+            
+            # Insert new keypair (replace old one if exists for this user)
+            cursor.execute("""
+                INSERT OR REPLACE INTO encryption_keys 
+                (user_id, private_key, public_key, created_at, updated_at, version)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+            """, (user_id, private_key_b64, public_key_b64))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Created and saved new encryption key for user: {user_id}")
+            return private_key_b64, public_key_b64
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get/create user keys: {e}")
+            raise
+
+    def get_user_public_key_b64(self, user_id: str) -> str:
+        """
+        Get user's public key as base64 string.
+        Creates new keypair if user doesn't have one yet.
+        
+        Args:
+            user_id: User email or unique identifier
+            
+        Returns:
+            Base64-encoded public key
+        """
+        _, public_key_b64 = self.get_or_create_user_keys(user_id)
+        return public_key_b64
+
+    def get_user_public_key_dict(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get user's public key metadata for /api/public-key?user_id endpoint.
+        
+        Args:
+            user_id: User email or unique identifier
+            
         Returns:
             Dict with public_key, algorithm, key_version, etc.
         """
+        public_key_b64 = self.get_user_public_key_b64(user_id)
+        
+        # Print for logging (helpful for debugging)
+        logger.info(f"📤 Providing public key to user: {user_id}")
+        
         return {
-            "public_key": self.get_public_key_b64(),
+            "user_id": user_id,
+            "public_key": public_key_b64,
             "algorithm": "libsodium/box_seal",
             "key_version": 1,
             "format": "base64"
         }
 
-    def decrypt_settings(self, encrypted_payload_b64: str) -> Dict[str, Any]:
+    def decrypt_settings_for_user(self, user_id: str, encrypted_payload_b64: str) -> Dict[str, Any]:
         """
-        Decrypt client-encrypted settings using private key.
+        Decrypt client-encrypted settings using user's private key.
         
         Args:
+            user_id: User email or unique identifier
             encrypted_payload_b64: Base64-encoded encrypted payload from client
             
         Returns:
@@ -139,30 +224,98 @@ class EncryptionService:
         Raises:
             ValueError: If decryption fails
         """
-        if not self.private_key:
-            raise RuntimeError("Encryption service not initialized")
-        
         try:
-            # Decode from base64
-            encrypted_bytes = base64.b64decode(encrypted_payload_b64)
-            logger.debug(f"📦 Encrypted payload size: {len(encrypted_bytes)} bytes")
+            # Load user's private key from database
+            db_path = self._get_system_db_path()
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
             
-            # Decrypt using SealedBox
-            box = SealedBox(self.private_key)
-            plaintext_bytes = box.decrypt(encrypted_bytes)
+            cursor.execute("""
+                SELECT private_key FROM encryption_keys 
+                WHERE user_id = ?
+            """, (user_id,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if not row:
+                raise ValueError(f"No encryption key found for user: {user_id}")
+            
+            private_key_b64 = row[0]
+            private_key_bytes = base64.b64decode(private_key_b64)
+            private_key = PrivateKey(private_key_bytes)
+            
+            # Decode encrypted payload from base64
+            try:
+                encrypted_bytes = base64.b64decode(encrypted_payload_b64)
+            except Exception as e:
+                logger.error(f"❌ Invalid base64 encoding for user {user_id}: {e}")
+                raise ValueError(f"Payload is not valid base64: {str(e)}")
+            
+            logger.debug(f"📦 Encrypted payload size: {len(encrypted_bytes)} bytes for user {user_id}")
+            
+            # Attempt decryption using SealedBox
+            try:
+                box = SealedBox(private_key)
+                plaintext_bytes = box.decrypt(encrypted_bytes)
+                logger.debug(f"✅ SealedBox.decrypt() succeeded for user {user_id}")
+            except Exception as decrypt_err:
+                # Provide diagnostic information
+                logger.warning(f"⚠️  SealedBox.decrypt() failed for user {user_id}: {decrypt_err}")
+                logger.warning(f"   Payload size: {len(encrypted_bytes)} bytes")
+                logger.warning(f"   This typically indicates a KEY MISMATCH")
+                logger.warning(f"   Hint: Ensure add-on fetched the latest public key")
+                
+                # Check if payload might be plaintext (fallback)
+                try:
+                    plaintext_str = encrypted_bytes.decode('utf-8')
+                    if plaintext_str.startswith('{') and plaintext_str.endswith('}'):
+                        logger.warning(f"📝 Payload appears to be plaintext JSON for user {user_id}")
+                        logger.info("✅ Attempting to parse as plaintext fallback...")
+                        settings = json.loads(plaintext_str)
+                        logger.info("✅ Successfully parsed plaintext fallback")
+                        return settings
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+                
+                # Re-raise with user context
+                raise ValueError(
+                    f"Decryption failed for user {user_id} (likely key mismatch): {str(decrypt_err)}\n"
+                    f"This occurs when:\n"
+                    f"  1. Add-on has cached old public key\n"
+                    f"  2. Backend keys were regenerated\n"
+                    f"  3. Wrong public key was used for encryption\n"
+                    f"Workaround: Fetch fresh public key before saving"
+                )
             
             # Decode to UTF-8 and parse JSON
             plaintext_str = plaintext_bytes.decode('utf-8')
             settings = json.loads(plaintext_str)
             
-            logger.info("✅ Settings decrypted successfully")
+            logger.info(f"✅ Settings decrypted successfully for user {user_id}")
             logger.debug(f"📋 Decrypted settings keys: {list(settings.keys())}")
             
             return settings
         
+        except ValueError as e:
+            logger.error(f"❌ Decryption failed for user {user_id}: {e}")
+            raise
         except Exception as e:
-            logger.error(f"❌ Decryption failed: {e}")
+            logger.error(f"❌ Unexpected error during decryption for user {user_id}: {e}")
             raise ValueError(f"Failed to decrypt settings: {str(e)}")
+    
+    # Legacy methods for backward compatibility (no longer used, but kept for transition)
+    def get_public_key_b64(self) -> str:
+        """Deprecated: Use get_user_public_key_b64(user_id) instead."""
+        raise NotImplementedError("Use get_user_public_key_b64(user_id) for per-user keys")
+
+    def get_public_key_dict(self) -> Dict[str, Any]:
+        """Deprecated: Use get_user_public_key_dict(user_id) instead."""
+        raise NotImplementedError("Use get_user_public_key_dict(user_id) for per-user keys")
+
+    def decrypt_settings(self, encrypted_payload_b64: str) -> Dict[str, Any]:
+        """Deprecated: Use decrypt_settings_for_user(user_id, encrypted_payload_b64) instead."""
+        raise NotImplementedError("Use decrypt_settings_for_user(user_id, encrypted_payload_b64) for per-user keys")
 
 
 # Global singleton instance

@@ -1442,7 +1442,8 @@ function saveOnboardingStep1(e) {
       embedding_base_url: f.embedding_base_url || "",
       embedding_ollama_api_key: f.embedding_ollama_api_key || "",
       vector_provider: f.vector_provider || "manotr",
-      vector_url: f.vector_url || "", vector_api_key: f.vector_api_key || ""
+      vector_url: f.vector_url || "", vector_api_key: f.vector_api_key || "",
+      encryption_public_key: f.encryption_public_key || ""
     }));
     userProps.setProperty("ob_status_msg",   errMsg);
     userProps.setProperty("ob_status_error", "true");

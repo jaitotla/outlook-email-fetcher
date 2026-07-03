@@ -332,6 +332,46 @@
           </div>
         </section>
 
+        <!-- Encryption Settings (Advanced) -->
+        <section class="settings-section">
+          <h2>🔐 Encryption (Advanced)</h2>
+          <p class="help-text"><em>Manually set or update the encryption public key used for secure settings transmission.</em></p>
+          
+          <div class="form-group">
+            <label for="manual_public_key">Public Key (Base64)</label>
+            <p class="help-text">Paste the public key from your backend's <code>/api/public-key</code> endpoint.</p>
+            <textarea id="manual_public_key" name="manual_public_key" rows="3"
+                      placeholder="Base64-encoded public key (e.g., r6n...KzA==)" style="font-family: monospace; font-size: 12px;"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Current Cached Key</label>
+            <div id="cached-key-display" class="readonly-field" style="font-family: monospace; font-size: 11px; max-height: 60px; overflow-y: auto;">
+              <em>None cached</em>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Key Version</label>
+            <div id="key-version-display" class="readonly-field">
+              <em>Not set</em>
+            </div>
+          </div>
+
+          <div class="button-group" style="margin-top: 12px;">
+            <button type="button" id="set-manual-key-btn" class="btn btn-connect">
+              🔐 Set Manual Public Key
+            </button>
+            <button type="button" id="clear-key-cache-btn" class="btn btn-default">
+              🗑️ Clear & Refresh
+            </button>
+            <button type="button" id="refresh-key-btn" class="btn btn-connect">
+              🔄 Refresh from Backend
+            </button>
+          </div>
+          <span id="encryption-status" class="connect-status"></span>
+        </section>
+
         <!-- Action Buttons -->
         <div class="button-group">
           <button type="button" id="back-btn" class="btn btn-default">← Back</button>
