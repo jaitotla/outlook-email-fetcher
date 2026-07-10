@@ -1,12 +1,14 @@
 """
 Email Label Pipeline
 Uses rule-based system first, falls back to LLM for complex cases
-Integrates with graph database storage pipeline for category/topic organization
+Integrates with SQLite storage for label persistence
 """
 import re
 import os
 import sys
 import logging
+import sqlite3
+import json
 from typing import Dict, Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
@@ -14,6 +16,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_groq import ChatGroq
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from datetime import datetime
 
 # Import Ollama for native structured output
 try:
@@ -27,6 +30,13 @@ from agent.services.settings_manager import SettingsManager
 # Import from the same services directory
 # from .store_graph_pipeline import StoreGraphPipeline, ThreadGraphData  # Removed: label storage
 from .ollama_lable_pipline import EmailLabelPipeline as OllamaEmailLabelPipeline
+
+# Base data directory - point to backend/data (same as chat_pipeline.py)
+BASE_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),  # openmailbot/
+    "backend",
+    "data"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +74,7 @@ class EmailLabelPipeline:
     """
     Pipeline for labeling emails using rule-based system and LLM fallback
     Supports multiple LLM providers with structured output
+    Stores labels in SQLite database for persistence
     """
     
     def __init__(self, user_id: Optional[str] = None, effective_settings: Optional[Dict] = None):
@@ -106,6 +117,240 @@ class EmailLabelPipeline:
                 logger.warning(f"⚠️  Failed to initialize LLM: {str(e)}")
                 self.llm = None
                 self.parser = None
+    
+    def ensure_user_db(self, user_id: str):
+        """Ensure per-user SQLite DB and label table exist."""
+        user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+        os.makedirs(os.path.dirname(user_db), exist_ok=True)
+        conn = sqlite3.connect(user_db)
+        cursor = conn.cursor()
+
+        # Create labels table if it doesn't exist
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_labels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                category TEXT,
+                topic TEXT,
+                subtopic TEXT,
+                subject_matter TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, thread_id)
+            )
+        ''')
+
+        conn.commit()
+        conn.close()
+        logger.info(f"✅ Initialized per-user label table at {user_db}")
+    
+    def store_label(self, user_id: str, thread_id: str, label_data: Dict[str, Any]) -> bool:
+        """
+        Store or update label in SQLite database.
+        
+        If (user_id, thread_id) exists: UPDATE the label
+        If (user_id, thread_id) doesn't exist: INSERT new record
+        
+        Args:
+            user_id: User email ID
+            thread_id: Gmail thread ID
+            label_data: Dict with keys: label, category, topic, subtopic, subject_matter
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Ensure per-user DB exists
+            self.ensure_user_db(user_id)
+            
+            user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+            conn = sqlite3.connect(user_db)
+            cursor = conn.cursor()
+            
+            # Extract label data with defaults
+            label = label_data.get('label', 'Other')
+            category = label_data.get('category', 'Unclassified')
+            topic = label_data.get('topic', 'General')
+            subtopic = label_data.get('subtopic')
+            subject_matter = label_data.get('subject_matter', '')
+            
+            # Check if label already exists for this thread
+            cursor.execute('''
+                SELECT id FROM email_labels
+                WHERE user_id = ? AND thread_id = ?
+            ''', (user_id, thread_id))
+            
+            existing = cursor.fetchone()
+            
+            if existing:
+                # UPDATE existing label
+                cursor.execute('''
+                    UPDATE email_labels
+                    SET label = ?, category = ?, topic = ?, subtopic = ?, 
+                        subject_matter = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND thread_id = ?
+                ''', (label, category, topic, subtopic, subject_matter, user_id, thread_id))
+                
+                logger.info(f"📝 Updated label for thread {thread_id} (user: {user_id})")
+                logger.info(f"   Label: {label} | Category: {category} | Topic: {topic}")
+            else:
+                # INSERT new label
+                cursor.execute('''
+                    INSERT INTO email_labels 
+                    (user_id, thread_id, label, category, topic, subtopic, subject_matter)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, thread_id, label, category, topic, subtopic, subject_matter))
+                
+                logger.info(f"✅ Stored new label for thread {thread_id} (user: {user_id})")
+                logger.info(f"   Label: {label} | Category: {category} | Topic: {topic}")
+            
+            conn.commit()
+            conn.close()
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error storing label: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            return False
+    
+    def get_label(self, user_id: str, thread_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve label for a thread from SQLite database.
+        
+        Args:
+            user_id: User email ID
+            thread_id: Gmail thread ID
+            
+        Returns:
+            Dict with label data if found, None otherwise
+        """
+        try:
+            # Ensure per-user DB exists
+            self.ensure_user_db(user_id)
+            
+            user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+            conn = sqlite3.connect(user_db)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT label, category, topic, subtopic, subject_matter, created_at, updated_at
+                FROM email_labels
+                WHERE user_id = ? AND thread_id = ?
+            ''', (user_id, thread_id))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                label_data = {
+                    'label': row[0],
+                    'category': row[1],
+                    'topic': row[2],
+                    'subtopic': row[3],
+                    'subject_matter': row[4],
+                    'created_at': row[5],
+                    'updated_at': row[6]
+                }
+                logger.info(f"✅ Retrieved label for thread {thread_id}: {label_data['label']}")
+                return label_data
+            else:
+                logger.info(f"ℹ️  No label found for thread {thread_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Error retrieving label: {e}")
+            return None
+    
+    def get_all_thread_labels(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Retrieve all labels for a user.
+        
+        Args:
+            user_id: User email ID
+            
+        Returns:
+            List of label records
+        """
+        try:
+            # Ensure per-user DB exists
+            self.ensure_user_db(user_id)
+            
+            user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+            conn = sqlite3.connect(user_db)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT thread_id, label, category, topic, subtopic, subject_matter, created_at, updated_at
+                FROM email_labels
+                WHERE user_id = ?
+                ORDER BY updated_at DESC
+            ''', (user_id,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            labels = [
+                {
+                    'thread_id': row[0],
+                    'label': row[1],
+                    'category': row[2],
+                    'topic': row[3],
+                    'subtopic': row[4],
+                    'subject_matter': row[5],
+                    'created_at': row[6],
+                    'updated_at': row[7]
+                }
+                for row in rows
+            ]
+            
+            logger.info(f"✅ Retrieved {len(labels)} labels for user {user_id}")
+            return labels
+            
+        except Exception as e:
+            logger.error(f"❌ Error retrieving labels: {e}")
+            return []
+    
+    def delete_label(self, user_id: str, thread_id: str) -> bool:
+        """
+        Delete label for a thread.
+        
+        Args:
+            user_id: User email ID
+            thread_id: Gmail thread ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Ensure per-user DB exists
+            self.ensure_user_db(user_id)
+            
+            user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+            conn = sqlite3.connect(user_db)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                DELETE FROM email_labels
+                WHERE user_id = ? AND thread_id = ?
+            ''', (user_id, thread_id))
+            
+            deleted = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            if deleted > 0:
+                logger.info(f"✅ Deleted label for thread {thread_id}")
+                return True
+            else:
+                logger.info(f"ℹ️  No label found to delete for thread {thread_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error deleting label: {e}")
+            return False
     
     def _get_fallback_label(self, email_data: Dict[str, Any]) -> EmailLabelOutput:
         """
@@ -609,17 +854,17 @@ Provide the label, category, topic, and subtopic for this email based on the use
     
     def label_and_store_thread(self, thread_id: str, messages: List[Dict[str, Any]], user_id: str = None) -> Dict[str, Any]:
         """
-        Label a thread and store it in the Neo4j graph database with category/topic hierarchy
+        Label a thread and store it in SQLite database with category/topic hierarchy
         
-        This combines the labeling pipeline with graph database storage for email organization.
+        This combines the labeling pipeline with SQLite storage for label persistence.
         
         Args:
             thread_id: Unique identifier for the thread
             messages: List of email message dictionaries (chronologically ordered)
-            user_id: User ID for context and graph storage (extracted from messages if not provided)
+            user_id: User ID for context and database storage (extracted from messages if not provided)
             
         Returns:
-            Dictionary with label_result and graph_store_result
+            Dictionary with label_result and storage_result
         """
         print(f"\n📧 LABEL AND STORE THREAD: {thread_id}")
         print("="*70)
@@ -659,29 +904,25 @@ Provide the label, category, topic, and subtopic for this email based on the use
         print(f"  Message ID: {message_id}")
         print(f"  Timestamp: {timestamp}")
         
-        # Step 3: Store in graph database (COMMENTED OUT)
-        # print("\nStep 3: Storing in graph database...")
-        # 
-        # # Create ThreadGraphData from label result
-        # graph_data = ThreadGraphData(
-        #     thread_id=thread_id,
-        #     subject=subject,
-        #     participants=participants,
-        #     category=label_result.category,
-        #     topic=label_result.topic,
-        #     user_id=user_id,
-        #     subtopic=label_result.subtopic,
-        #     subject_matter=label_result.subject_matter,
-        #     message_id=message_id,
-        #     timestamp=timestamp
-        # )
-        # 
-        # # Create and run graph pipeline only for specific labels
-        # if label_result.label in ["response", "FYI", "Awaiting Reply"]:
-        #     graph_pipeline = StoreGraphPipeline()
-        #     graph_store_result = graph_pipeline.store_thread_graph(graph_data)
-        # else:
-        #     graph_store_result = {"status": "SKIPPED", "reason": "Label not eligible for graph storage"}
+        # Step 3: Store label in SQLite database
+        print("\nStep 3: Storing label in SQLite database...")
+        
+        label_data = {
+            'label': label_result.label,
+            'category': label_result.category,
+            'topic': label_result.topic,
+            'subtopic': label_result.subtopic,
+            'subject_matter': label_result.subject_matter
+        }
+        
+        storage_result = self.store_label(user_id, thread_id, label_data)
+        
+        if storage_result:
+            print(f"✅ Label stored successfully in SQLite!")
+            storage_status = "SUCCESS"
+        else:
+            print(f"❌ Failed to store label in SQLite!")
+            storage_status = "FAILED"
         
         # Combine results
         combined_result = {
@@ -694,7 +935,11 @@ Provide the label, category, topic, and subtopic for this email based on the use
                 "subtopic": label_result.subtopic,
                 "subject_matter": label_result.subject_matter
             },
-            "status": "SUCCESS"
+            "storage_result": {
+                "status": storage_status,
+                "database_path": os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+            },
+            "status": "SUCCESS" if storage_status == "SUCCESS" else "PARTIAL_SUCCESS"
         }
         
         print("\n" + "="*70)

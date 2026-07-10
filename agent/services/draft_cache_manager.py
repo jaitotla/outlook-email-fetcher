@@ -235,6 +235,62 @@ class DraftCacheManager:
             logger.error(f"❌ Failed to delete draft from cache: {e}")
             return False
     
+    def invalidate_stale_cache(self, thread_id: str, last_message_id: str) -> bool:
+        """
+        Check if cached draft exists for this thread_id, and if the last_message_id 
+        doesn't match, delete the stale cache entry.
+        
+        Args:
+            thread_id: Gmail thread ID (or canonical Message-ID)
+            last_message_id: Current last message ID in the thread
+            
+        Returns:
+            True if stale cache was deleted, False if cache is valid or not found
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if cache exists for this thread
+            cursor.execute("""
+                SELECT last_message_id FROM draft_cache
+                WHERE user_id = ? AND thread_id = ?
+            """, (self.user_id, thread_id))
+            
+            row = cursor.fetchone()
+            
+            if not row:
+                # No cache found - nothing to invalidate
+                conn.close()
+                return False
+            
+            cached_message_id = row[0]
+            
+            # Check if message IDs don't match
+            if cached_message_id != last_message_id:
+                # Stale cache detected - delete it
+                cursor.execute("""
+                    DELETE FROM draft_cache
+                    WHERE user_id = ? AND thread_id = ?
+                """, (self.user_id, thread_id))
+                
+                conn.commit()
+                conn.close()
+                
+                logger.warning(f"🗑️  [Stale Cache] Deleted cached draft for thread {thread_id}")
+                logger.warning(f"   Cached message ID: {cached_message_id}")
+                logger.warning(f"   Current message ID: {last_message_id}")
+                logger.warning(f"   Reason: Last message in thread has changed")
+                return True
+            
+            # Cache is still valid
+            conn.close()
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to validate cache staleness: {e}")
+            return False
+    
     def clear_all_drafts(self) -> bool:
         """
         Delete all cached drafts for this user.

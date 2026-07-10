@@ -1760,23 +1760,30 @@ async def simple_draft(request: SimpleDraftRequest, background_tasks: Background
     if request.last_message_id:
         try:
             cache_manager = DraftCacheManager(request.user_id)
-            cached_draft = cache_manager.get_draft(thread_id, request.last_message_id)
             
-            if cached_draft:
-                logger.info(f"✅ [job {job_id}] CACHE HIT: Returning cached draft")
-                logger.info(f"   User: {request.user_id}")
-                logger.info(f"   Thread: {thread_id}")
-                logger.info(f"   Message ID: {request.last_message_id}")
+            # First, invalidate any stale cache (if message ID has changed)
+            is_stale = cache_manager.invalidate_stale_cache(thread_id, request.last_message_id)
+            if is_stale:
+                logger.info(f"🗑️  [job {job_id}] Stale cache deleted, regenerating draft...")
+            else:
+                # If not stale, try to retrieve cached draft
+                cached_draft = cache_manager.get_draft(thread_id, request.last_message_id)
                 
-                # Set job as done immediately with cached result
-                _set_job(job_id, "done", result={
-                    "success": True,
-                    "draft_content": cached_draft.get('draft_content', ''),
-                    "processing_info": cached_draft.get('processing_info', {}),
-                    "cached": True,
-                })
-                
-                return {"job_id": job_id, "status": "done", "cached": True}
+                if cached_draft:
+                    logger.info(f"✅ [job {job_id}] CACHE HIT: Returning cached draft")
+                    logger.info(f"   User: {request.user_id}")
+                    logger.info(f"   Thread: {thread_id}")
+                    logger.info(f"   Message ID: {request.last_message_id}")
+                    
+                    # Set job as done immediately with cached result
+                    _set_job(job_id, "done", result={
+                        "success": True,
+                        "draft_content": cached_draft.get('draft_content', ''),
+                        "processing_info": cached_draft.get('processing_info', {}),
+                        "cached": True,
+                    })
+                    
+                    return {"job_id": job_id, "status": "done", "cached": True}
         except Exception as cache_err:
             logger.warning(f"⚠️  Cache lookup failed (non-fatal): {cache_err}")
             # Fall through to generate new draft
