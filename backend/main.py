@@ -40,6 +40,7 @@ from agent.services.store_pipeline import CheckAndStoreEmailPipeline, CheckAndSt
 from agent.services.summarization_pipeline import SummarizationPipeline
 from agent.services.encryption_service import get_encryption_service
 from agent.services.email_tone_pipeline import TonePipelineManager
+from agent.services.draft_cache_manager import DraftCacheManager
 #from agent.database.mongodb import MongoDBClient
 from agent.services.simple_draft_pipeline import SimpleDraftPipeline
 
@@ -717,6 +718,7 @@ class EmailMessage(BaseModel):
 class SimpleDraftRequest(BaseModel):
     user_id: str
     thread_id: str
+    last_message_id: Optional[str] = None  # Last message ID for cache validation
     user_preferences: Optional[Dict[str, Any]] = None
 
 
@@ -1700,6 +1702,21 @@ def _run_simple_draft_pipeline(job_id: str, request: SimpleDraftRequest):
         ))
         _set_job(job_id, "done", result=result)
         
+        # ── SAVE DRAFT TO CACHE ──
+        if result.get('success'):
+            try:
+                last_msg_id = request.last_message_id or norm_thread_id
+                cache_manager = DraftCacheManager(request.user_id)
+                cache_manager.save_draft(
+                    thread_id=norm_thread_id,
+                    last_message_id=last_msg_id,
+                    draft_content=result.get('draft_content', ''),
+                    processing_info=result.get('processing_info', {})
+                )
+                logger.info(f"✅ Draft saved to cache for thread {norm_thread_id}")
+            except Exception as cache_err:
+                logger.warning(f"⚠️  Failed to cache draft (non-fatal): {cache_err}")
+        
         # ─ Cleanup stored email data and attachments after pipeline completes ─
         logger.info(f"   [job {job_id}] Simple draft pipeline complete, starting cleanup...")
         clean_thread_data(request.user_id, norm_thread_id)
@@ -1714,14 +1731,19 @@ def _run_simple_draft_pipeline(job_id: str, request: SimpleDraftRequest):
 async def simple_draft(request: SimpleDraftRequest, background_tasks: BackgroundTasks):
     """
     Generate email draft from thread emails (no attachments).
-
-    Returns a job_id immediately; processing runs in background.
+    
+    Checks draft cache first:
+    - If last_message_id matches cached version → return cached draft immediately
+    - Otherwise → generate new draft and cache it
+    
+    Returns a job_id immediately; processing runs in background (if cache miss).
     Poll /api/job-status/{job_id} until status is "done" or "error".
 
     Request:
     {
         "user_id": "user@example.com",
         "thread_id": "thread_123abc",
+        "last_message_id": "msg_id_xyz",  # Optional: for cache validation
         "user_preferences": {
             "name": "Alice",
             "position": "Manager",
@@ -1730,7 +1752,37 @@ async def simple_draft(request: SimpleDraftRequest, background_tasks: Background
         }
     }
     """
+    logger = logging.getLogger(__name__)
     job_id = str(uuid.uuid4())
+    thread_id = normalize_thread_id(request.thread_id)
+    
+    # ── CHECK CACHE FIRST ──
+    if request.last_message_id:
+        try:
+            cache_manager = DraftCacheManager(request.user_id)
+            cached_draft = cache_manager.get_draft(thread_id, request.last_message_id)
+            
+            if cached_draft:
+                logger.info(f"✅ [job {job_id}] CACHE HIT: Returning cached draft")
+                logger.info(f"   User: {request.user_id}")
+                logger.info(f"   Thread: {thread_id}")
+                logger.info(f"   Message ID: {request.last_message_id}")
+                
+                # Set job as done immediately with cached result
+                _set_job(job_id, "done", result={
+                    "success": True,
+                    "draft_content": cached_draft.get('draft_content', ''),
+                    "processing_info": cached_draft.get('processing_info', {}),
+                    "cached": True,
+                })
+                
+                return {"job_id": job_id, "status": "done", "cached": True}
+        except Exception as cache_err:
+            logger.warning(f"⚠️  Cache lookup failed (non-fatal): {cache_err}")
+            # Fall through to generate new draft
+    
+    # ── CACHE MISS: Generate new draft ──
+    logger.info(f"📝 [job {job_id}] Cache miss or no message_id provided — generating new draft")
     _set_job(job_id, "pending")
     background_tasks.add_task(_run_simple_draft_pipeline, job_id, request)
     return {"job_id": job_id, "status": "pending"}
@@ -2523,6 +2575,8 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
 
         # ── AUTO-DRAFT TRIGGER (if label is Escalation or Response) ───────
         auto_draft_result = None
+        last_msg_id = request.messages[-1].message_id if request.messages else thread_id
+        
         if label_name in ["Escalation", "Response"]:
             logger.info(f"")
             logger.info(f"⚡ [job {job_id}] Label '{label_name}' triggers AUTO-DRAFT")
@@ -2534,6 +2588,7 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                 draft_request = SimpleDraftRequest(
                     user_id=request.user_id,
                     thread_id=thread_id,
+                    last_message_id=last_msg_id,
                     user_preferences=request.user_preferences  # May be None
                 )
                 
@@ -2550,6 +2605,19 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                     logger.info(f"✅ [job {job_id}] Auto-draft generated successfully")
                     logger.info(f"   Draft length: {len(auto_draft_result.get('draft_content', ''))} chars")
                     logger.info(f"   Processing info: {auto_draft_result.get('processing_info', {})}")
+                    
+                    # ── SAVE DRAFT TO CACHE ──
+                    try:
+                        cache_manager = DraftCacheManager(request.user_id)
+                        cache_manager.save_draft(
+                            thread_id=thread_id,
+                            last_message_id=last_msg_id,
+                            draft_content=auto_draft_result.get('draft_content', ''),
+                            processing_info=auto_draft_result.get('processing_info', {})
+                        )
+                        logger.info(f"✅ [job {job_id}] Draft saved to cache")
+                    except Exception as cache_err:
+                        logger.warning(f"⚠️  [job {job_id}] Failed to cache draft (non-fatal): {cache_err}")
                 else:
                     logger.warning(f"⚠️  [job {job_id}] Draft generation failed: {auto_draft_result.get('error', 'Unknown error')}")
                     auto_draft_result = {
