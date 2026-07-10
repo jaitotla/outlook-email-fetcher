@@ -937,6 +937,9 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
                 await _applyThunderbirdTag(msg.id, assignedLabel);
               }
 
+              // ── Mark message as processed so monitor doesn't re-label it ──
+              await _markMonitorMsgProcessed(String(msg.id));
+
               state.stats.labeled++;
               totalProcessed++;
             } catch(e) {
