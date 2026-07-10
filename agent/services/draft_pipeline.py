@@ -416,6 +416,18 @@ Your responsibilities:
 - Analyze the full email thread for background and continuity
 - Focus primarily on the MOST RECENT 4–5 emails to determine current topic and intent
 - Draft a professional reply that directly addresses the latest email
+- Detect and personalize the greeting and signature based on recipient(s)
+
+RECIPIENT DETECTION & PERSONALIZATION:
+1. Extract all recipient names from the email thread (look for senders/recipients in the thread)
+2. Greeting Rules:
+   - If ONE recipient: Use personalized greeting "Dear [Recipient Name]," at the start
+   - If MULTIPLE recipients: Use "Dear Team," as the greeting
+   - Always extract the actual names from the email addresses if available
+3. Signature Rules:
+   - Always end with an appropriate closing: "Regards," or "Best regards,"
+   - Follow the closing with the sender's name: {name}
+   - Format: "Regards,\n{name}" or "Best regards,\n{name}"
 
 Guidelines:
 - Tone: {tone}
@@ -432,8 +444,10 @@ Important Rules:
 3. The draft must sound like a natural continuation of the latest exchange
 4. Do NOT recap the entire thread
 5. If attachment data is provided, use it appropriately in the response
+6. Always include personalized greeting at the beginning
+7. Always include signature with {name} at the end
 
-Output: A professional, concise, context-aware email reply addressing the latest discussion."""
+Output: A professional, concise, context-aware email reply with personalized greeting, body addressing the latest discussion, and signature including {name}."""
 
         # Inject tone context if available
         if tone_context:

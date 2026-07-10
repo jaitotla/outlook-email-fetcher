@@ -2448,20 +2448,10 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
             except Exception as att_disk_err:
                 logger.warning(f"   [job {job_id}] Attachment disk-save error (non-fatal): {att_disk_err}")
 
-        # ── Vector store (non-fatal) ──────────────────────────────────────
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(
-                    CheckAndStoreEmailPipeline(user_id=request.user_id).run(request.user_id, thread_id, processed_messages),
-                    CheckAndStoreAttachmentsPipeline(user_id=request.user_id).run(request.user_id, thread_id),
-                    return_exceptions=True,
-                ),
-                timeout=_LABEL_PUSH_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"   [job {job_id}] Vector-store timed out — continuing to label")
-        except Exception as ve:
-            logger.warning(f"   [job {job_id}] Vector-store error (non-fatal): {ve}")
+        # ── Vector store (DISABLED for label process) ──────────────────────────────────────
+        # NOTE: Embedding creation is disabled for label API routes.
+        # Emails are preprocessed and stored to disk, but NOT embedded into vector DB.
+        logger.info(f"   [job {job_id}] Skipping vector store (embedding creation disabled for label process)")
 
         # ── Label pipeline (CPU-bound, run in thread pool) ────────────────
         label_pipeline = EmailLabelPipeline(user_id=request.user_id)
@@ -2531,6 +2521,51 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
             else:
                 logger.warning(f"⚠️ [job {job_id}] No access_token provided — skipping Gmail API push")
 
+        # ── AUTO-DRAFT TRIGGER (if label is Escalation or Response) ───────
+        auto_draft_result = None
+        if label_name in ["Escalation", "Response"]:
+            logger.info(f"")
+            logger.info(f"⚡ [job {job_id}] Label '{label_name}' triggers AUTO-DRAFT")
+            logger.info(f"   Starting draft pipeline...")
+            _set_job(job_id, "processing")  # Update status to show processing
+            
+            try:
+                # Build draft request from label request
+                draft_request = SimpleDraftRequest(
+                    user_id=request.user_id,
+                    thread_id=thread_id,
+                    user_preferences=request.user_preferences  # May be None
+                )
+                
+                # Run draft pipeline inline (awaitable)
+                logger.info(f"   [job {job_id}] Calling SimpleDraftPipeline.process_email_request()...")
+                pipeline = SimpleDraftPipeline(user_id=request.user_id)
+                auto_draft_result = await pipeline.process_email_request(
+                    request.user_id,
+                    thread_id,
+                    request.user_preferences,
+                )
+                
+                if auto_draft_result.get('success'):
+                    logger.info(f"✅ [job {job_id}] Auto-draft generated successfully")
+                    logger.info(f"   Draft length: {len(auto_draft_result.get('draft_content', ''))} chars")
+                    logger.info(f"   Processing info: {auto_draft_result.get('processing_info', {})}")
+                else:
+                    logger.warning(f"⚠️  [job {job_id}] Draft generation failed: {auto_draft_result.get('error', 'Unknown error')}")
+                    auto_draft_result = {
+                        "generated": False,
+                        "error": auto_draft_result.get('error', 'Unknown error')
+                    }
+                
+            except Exception as draft_err:
+                logger.error(f"❌ [job {job_id}] Auto-draft pipeline error: {str(draft_err)}")
+                import traceback
+                logger.error(f"   Traceback: {traceback.format_exc()}")
+                auto_draft_result = {
+                    "generated": False,
+                    "error": str(draft_err)
+                }
+
         # ── Lock-book metrics ─────────────────────────────────────────────
         num_stored = 0  # Graph storage disabled
         for lb in (lockbook, global_lockbook):
@@ -2553,6 +2588,7 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                 "thread_id": thread_id,
                 "messages_processed": len(processed_messages),
                 "gmail_push": gmail_result,
+                "auto_draft": auto_draft_result,  # NEW: Auto-generated draft if triggered
             },
         )
         

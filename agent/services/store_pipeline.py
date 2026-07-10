@@ -240,7 +240,6 @@ class CheckAndStoreEmailPipeline(_BaseStorePipeline):
     async def store_email_to_vector_db_async(self, user_id: str, thread_id: str, message_data: Dict):
         """Async: Embed a single preprocessed message and persist in ChromaDB."""
         message_id = message_data.get("message_id", "unknown")
-        logger.info(f"  ➕ Embedding message {message_id}")
 
         subject = message_data.get("subject", "")
         body = message_data.get("body", "")
@@ -282,7 +281,6 @@ class CheckAndStoreEmailPipeline(_BaseStorePipeline):
         )
 
         self.mark_message_processed(user_id, thread_id, message_id)
-        logger.info(f"  ✅ Message {message_id} stored in vector DB")
 
     # ------------------------------------------------------------------
     # Entry point (async)
@@ -302,16 +300,12 @@ class CheckAndStoreEmailPipeline(_BaseStorePipeline):
         -------
         dict with keys: total, already_stored, newly_stored, errors
         """
-        logger.info(
-            f"🚀 CheckAndStoreEmailPipeline.run | user={user_id} thread={thread_id} msgs={len(messages)}"
-        )
         result = {"total": len(messages), "already_stored": 0, "newly_stored": 0, "errors": []}
 
         for msg in messages:
             message_id = msg.get("message_id", "unknown")
             try:
                 if self.is_message_processed(user_id, thread_id, message_id):
-                    logger.info(f"  ⏭️  Message {message_id} already stored, skipping")
                     result["already_stored"] += 1
                     continue
 
@@ -320,11 +314,8 @@ class CheckAndStoreEmailPipeline(_BaseStorePipeline):
 
             except Exception as exc:
                 err = f"message {message_id}: {exc}"
-                logger.error(f"  ✗ {err}")
-                logger.error(traceback.format_exc())
                 result["errors"].append(err)
 
-        logger.info(f"✅ CheckAndStoreEmailPipeline done: {result}")
         return result
 
 
@@ -446,15 +437,12 @@ class CheckAndStoreAttachmentsPipeline(_BaseStorePipeline):
         attachment_id: str,
     ):
         """Async: Extract text from an attachment file, embed each chunk, and store."""
-        logger.info(f"  ➕ Processing attachment {attachment_id}")
-
         documents = SimpleDirectoryReader(
             input_files=[attachment_path],
             file_extractor=FILE_EXTRACTOR,
         ).load_data()
 
         if not documents:
-            logger.warning(f"  ⚠️  No content extracted from {attachment_path}")
             return
 
         namespace = sanitize_namespace(f"{user_id}_email_threads")
@@ -486,18 +474,14 @@ class CheckAndStoreAttachmentsPipeline(_BaseStorePipeline):
                     vector_id=doc_id,
                 )
                 chunk_count += 1
-                logger.info(f"  ✓ Stored chunk {idx} (id: {doc_id})")
 
             except Exception as exc:
-                logger.error(f"  ✗ Failed to embed chunk {idx}: {exc}")
                 raise
 
         if chunk_count == 0:
-            logger.warning(f"  ⚠️  No chunks stored for {attachment_id}")
             return
 
         self.mark_attachment_processed(user_id, thread_id, message_id, attachment_id)
-        logger.info(f"  ✅ Attachment {attachment_id}: {chunk_count} chunks stored")
 
     # ------------------------------------------------------------------
     # Entry point (async)
@@ -512,9 +496,6 @@ class CheckAndStoreAttachmentsPipeline(_BaseStorePipeline):
         -------
         dict with keys: found, already_stored, newly_stored, errors
         """
-        logger.info(
-            f"🚀 CheckAndStoreAttachmentsPipeline.run | user={user_id} thread={thread_id}"
-        )
         result = {"found": 0, "already_stored": 0, "newly_stored": 0, "errors": []}
 
         attachments = self.get_thread_attachments(user_id, thread_id)
@@ -526,13 +507,11 @@ class CheckAndStoreAttachmentsPipeline(_BaseStorePipeline):
             message_id = att.get("message_id", thread_id)
 
             if not attachment_path or not os.path.exists(attachment_path):
-                logger.warning(f"  ⚠️  File not found: {attachment_path}")
                 result["errors"].append(f"file not found: {attachment_path}")
                 continue
 
             try:
                 if self.is_attachment_processed(user_id, thread_id, attachment_id):
-                    logger.info(f"  ⏭️  Attachment {attachment_id} already stored, skipping")
                     result["already_stored"] += 1
                     continue
 
@@ -543,9 +522,6 @@ class CheckAndStoreAttachmentsPipeline(_BaseStorePipeline):
 
             except Exception as exc:
                 err = f"attachment {attachment_id}: {exc}"
-                logger.error(f"  ✗ {err}")
-                logger.error(traceback.format_exc())
                 result["errors"].append(err)
 
-        logger.info(f"✅ CheckAndStoreAttachmentsPipeline done: {result}")
         return result
