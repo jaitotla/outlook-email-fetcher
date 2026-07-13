@@ -67,6 +67,11 @@ class EmailLabelOutput(BaseModel):
     topic: str = Field(description="Primary topic being discussed")
     subtopic: Optional[str] = Field(default=None, description="Subtopic if applicable")
     subject_matter: str = Field(description="One-line concise summary of the main subject/topic of the email")
+
+
+def normalize_thread_id(thread_id: str) -> str:
+    """Normalize thread_id to lowercase and strip whitespace for consistent storage"""
+    return str(thread_id).lower().strip() if thread_id else thread_id
   
 
 
@@ -132,10 +137,7 @@ class EmailLabelPipeline:
                 user_id TEXT NOT NULL,
                 thread_id TEXT NOT NULL,
                 label TEXT NOT NULL,
-                category TEXT,
-                topic TEXT,
-                subtopic TEXT,
-                subject_matter TEXT,
+                last_process_message_id TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, thread_id)
@@ -148,20 +150,23 @@ class EmailLabelPipeline:
     
     def store_label(self, user_id: str, thread_id: str, label_data: Dict[str, Any]) -> bool:
         """
-        Store or update label in SQLite database.
+        Store or update label in SQLite database with message_id tracking.
         
         If (user_id, thread_id) exists: UPDATE the label
         If (user_id, thread_id) doesn't exist: INSERT new record
         
         Args:
             user_id: User email ID
-            thread_id: Gmail thread ID
-            label_data: Dict with keys: label, category, topic, subtopic, subject_matter
+            thread_id: Gmail thread ID (will be normalized)
+            label_data: Dict with keys: label, last_process_message_id
             
         Returns:
             True if successful, False otherwise
         """
         try:
+            # Normalize thread_id
+            thread_id = normalize_thread_id(thread_id)
+            
             # Ensure per-user DB exists
             self.ensure_user_db(user_id)
             
@@ -171,10 +176,7 @@ class EmailLabelPipeline:
             
             # Extract label data with defaults
             label = label_data.get('label', 'Other')
-            category = label_data.get('category', 'Unclassified')
-            topic = label_data.get('topic', 'General')
-            subtopic = label_data.get('subtopic')
-            subject_matter = label_data.get('subject_matter', '')
+            last_process_message_id = label_data.get('last_process_message_id', '')
             
             # Check if label already exists for this thread
             cursor.execute('''
@@ -188,23 +190,22 @@ class EmailLabelPipeline:
                 # UPDATE existing label
                 cursor.execute('''
                     UPDATE email_labels
-                    SET label = ?, category = ?, topic = ?, subtopic = ?, 
-                        subject_matter = ?, updated_at = CURRENT_TIMESTAMP
+                    SET label = ?, last_process_message_id = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE user_id = ? AND thread_id = ?
-                ''', (label, category, topic, subtopic, subject_matter, user_id, thread_id))
+                ''', (label, last_process_message_id, user_id, thread_id))
                 
                 logger.info(f"📝 Updated label for thread {thread_id} (user: {user_id})")
-                logger.info(f"   Label: {label} | Category: {category} | Topic: {topic}")
+                logger.info(f"   Label: {label} | Last Message ID: {last_process_message_id}")
             else:
                 # INSERT new label
                 cursor.execute('''
                     INSERT INTO email_labels 
-                    (user_id, thread_id, label, category, topic, subtopic, subject_matter)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (user_id, thread_id, label, category, topic, subtopic, subject_matter))
+                    (user_id, thread_id, label, last_process_message_id)
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, thread_id, label, last_process_message_id))
                 
                 logger.info(f"✅ Stored new label for thread {thread_id} (user: {user_id})")
-                logger.info(f"   Label: {label} | Category: {category} | Topic: {topic}")
+                logger.info(f"   Label: {label} | Last Message ID: {last_process_message_id}")
             
             conn.commit()
             conn.close()
@@ -222,12 +223,15 @@ class EmailLabelPipeline:
         
         Args:
             user_id: User email ID
-            thread_id: Gmail thread ID
+            thread_id: Gmail thread ID (will be normalized)
             
         Returns:
             Dict with label data if found, None otherwise
         """
         try:
+            # Normalize thread_id
+            thread_id = normalize_thread_id(thread_id)
+            
             # Ensure per-user DB exists
             self.ensure_user_db(user_id)
             
@@ -236,7 +240,7 @@ class EmailLabelPipeline:
             cursor = conn.cursor()
             
             cursor.execute('''
-                SELECT label, category, topic, subtopic, subject_matter, created_at, updated_at
+                SELECT label, last_process_message_id, created_at, updated_at
                 FROM email_labels
                 WHERE user_id = ? AND thread_id = ?
             ''', (user_id, thread_id))
@@ -247,12 +251,9 @@ class EmailLabelPipeline:
             if row:
                 label_data = {
                     'label': row[0],
-                    'category': row[1],
-                    'topic': row[2],
-                    'subtopic': row[3],
-                    'subject_matter': row[4],
-                    'created_at': row[5],
-                    'updated_at': row[6]
+                    'last_process_message_id': row[1],
+                    'created_at': row[2],
+                    'updated_at': row[3]
                 }
                 logger.info(f"✅ Retrieved label for thread {thread_id}: {label_data['label']}")
                 return label_data
@@ -283,7 +284,7 @@ class EmailLabelPipeline:
             cursor = conn.cursor()
             
             cursor.execute('''
-                SELECT thread_id, label, category, topic, subtopic, subject_matter, created_at, updated_at
+                SELECT thread_id, label, last_process_message_id, created_at, updated_at
                 FROM email_labels
                 WHERE user_id = ?
                 ORDER BY updated_at DESC
@@ -296,12 +297,9 @@ class EmailLabelPipeline:
                 {
                     'thread_id': row[0],
                     'label': row[1],
-                    'category': row[2],
-                    'topic': row[3],
-                    'subtopic': row[4],
-                    'subject_matter': row[5],
-                    'created_at': row[6],
-                    'updated_at': row[7]
+                    'last_process_message_id': row[2],
+                    'created_at': row[3],
+                    'updated_at': row[4]
                 }
                 for row in rows
             ]
@@ -319,12 +317,15 @@ class EmailLabelPipeline:
         
         Args:
             user_id: User email ID
-            thread_id: Gmail thread ID
+            thread_id: Gmail thread ID (will be normalized)
             
         Returns:
             True if successful, False otherwise
         """
         try:
+            # Normalize thread_id
+            thread_id = normalize_thread_id(thread_id)
+            
             # Ensure per-user DB exists
             self.ensure_user_db(user_id)
             
@@ -351,6 +352,79 @@ class EmailLabelPipeline:
         except Exception as e:
             logger.error(f"❌ Error deleting label: {e}")
             return False
+    
+    def get_cached_label_if_exists(self, user_id: str, thread_id: str, 
+                                   last_message_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Cache lookup: Check if label exists for thread with matching last_process_message_id
+        
+        This optimizes the pipeline by returning cached labels if:
+        1. Thread exists in database
+        2. Last processed message ID matches the one being processed
+        
+        If the message_id doesn't match (new message in thread), returns None and 
+        triggers full re-processing through the pipeline.
+        
+        Args:
+            user_id: User email ID
+            thread_id: Gmail thread ID (will be normalized)
+            last_message_id: Last message ID being processed
+            
+        Returns:
+            Dict with cached label if found and message_id matches, None otherwise
+        """
+        try:
+            # Normalize thread_id
+            thread_id = normalize_thread_id(thread_id)
+            
+            # Ensure per-user DB exists
+            self.ensure_user_db(user_id)
+            
+            user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+            conn = sqlite3.connect(user_db)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT label, last_process_message_id, created_at, updated_at
+                FROM email_labels
+                WHERE user_id = ? AND thread_id = ?
+            ''', (user_id, thread_id))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                stored_label = row[0]
+                stored_message_id = row[1]
+                created_at = row[2]
+                updated_at = row[3]
+                
+                # Check if the last_process_message_id matches
+                if stored_message_id == last_message_id:
+                    logger.info(f"✅ CACHE HIT: Found cached label for thread {thread_id}")
+                    logger.info(f"   Message ID matched: {last_message_id}")
+                    logger.info(f"   Returning cached label: {stored_label}")
+                    
+                    return {
+                        'label': stored_label,
+                        'last_process_message_id': stored_message_id,
+                        'created_at': created_at,
+                        'updated_at': updated_at,
+                        'cached': True
+                    }
+                else:
+                    logger.info(f"⚠️  CACHE MISS: Message ID mismatch for thread {thread_id}")
+                    logger.info(f"   Stored message ID: {stored_message_id}")
+                    logger.info(f"   Current message ID: {last_message_id}")
+                    logger.info(f"   Requires full re-processing")
+                    return None
+            else:
+                logger.info(f"ℹ️  No cached label found for thread {thread_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Error checking cache: {e}")
+            return None
     
     def _get_fallback_label(self, email_data: Dict[str, Any]) -> EmailLabelOutput:
         """
@@ -854,38 +928,35 @@ Provide the label, category, topic, and subtopic for this email based on the use
     
     def label_and_store_thread(self, thread_id: str, messages: List[Dict[str, Any]], user_id: str = None) -> Dict[str, Any]:
         """
-        Label a thread and store it in SQLite database with category/topic hierarchy
+        Label a thread with cache optimization and store it in SQLite database.
         
-        This combines the labeling pipeline with SQLite storage for label persistence.
+        FLOW:
+        1. Normalize thread_id
+        2. Extract user_id and last_message_id from messages
+        3. Check cache: if thread exists with matching last_message_id, return cached label immediately
+        4. If not cached: Process through full pipeline (rule-based + LLM)
+        5. Store label with last_process_message_id for future cache lookups
         
         Args:
-            thread_id: Unique identifier for the thread
+            thread_id: Unique identifier for the thread (will be normalized)
             messages: List of email message dictionaries (chronologically ordered)
             user_id: User ID for context and database storage (extracted from messages if not provided)
             
         Returns:
-            Dictionary with label_result and storage_result
+            Dictionary with label and processing info, or cached label if found
         """
+        # Step 0: Normalize thread_id
+        thread_id = normalize_thread_id(thread_id)
+        
         print(f"\n📧 LABEL AND STORE THREAD: {thread_id}")
         print("="*70)
         
-        # Step 1: Label the thread using Ollama
-        print("Step 1: Labeling thread with Ollama...")
-        ollama_pipeline = OllamaEmailLabelPipeline()
-        label_result = ollama_pipeline.label_thread(messages)
-        print(f"✓ Label: {label_result.label}")
-        print(f"  Category: {label_result.category}")
-        print(f"  Topic: {label_result.topic}")
-        if label_result.subtopic:
-            print(f"  Subtopic: {label_result.subtopic}")
-        print(f"  Subject Matter: {label_result.subject_matter}")
-        
-        # Step 2: Extract thread metadata
-        print("\nStep 2: Extracting thread metadata...")
+        # Step 1: Extract thread metadata and message_id
+        print("Step 1: Extracting thread metadata...")
         last_message = messages[-1]
         subject = last_message.get('subject', 'No subject')
         participants = last_message.get('to', [])
-        message_id = last_message.get('message_id', None)
+        last_message_id = last_message.get('message_id', None)
         timestamp = last_message.get('timestamp', None)
         
         # Extract user_id if not provided
@@ -901,18 +972,42 @@ Provide the label, category, topic, and subtopic for this email based on the use
         print(f"  Subject: {subject}")
         print(f"  Participants: {len(participants)}")
         print(f"  User ID: {user_id}")
-        print(f"  Message ID: {message_id}")
+        print(f"  Last Message ID: {last_message_id}")
         print(f"  Timestamp: {timestamp}")
         
-        # Step 3: Store label in SQLite database
-        print("\nStep 3: Storing label in SQLite database...")
+        # Step 2: CHECK CACHE - Return cached label if exists with matching message_id
+        print("\nStep 2: Checking cache for existing label...")
+        if last_message_id:
+            cached_label = self.get_cached_label_if_exists(user_id, thread_id, last_message_id)
+            if cached_label:
+                print("✅ CACHE HIT - Returning stored label immediately!")
+                combined_result = {
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "label": cached_label['label'],
+                    "last_process_message_id": cached_label['last_process_message_id'],
+                    "created_at": cached_label['created_at'],
+                    "updated_at": cached_label['updated_at'],
+                    "source": "cache",
+                    "status": "SUCCESS_CACHED"
+                }
+                print("\n" + "="*70)
+                print("✅ Returned cached label!")
+                print("="*70)
+                return combined_result
+        
+        # Step 3: CACHE MISS - Process through full pipeline
+        print("\nStep 3: CACHE MISS - Processing through label pipeline...")
+        ollama_pipeline = OllamaEmailLabelPipeline()
+        label_result = ollama_pipeline.label_thread(messages)
+        print(f"✓ Label: {label_result.label}")
+        
+        # Step 4: Store label in SQLite database with last_message_id
+        print("\nStep 4: Storing label in SQLite database with message tracking...")
         
         label_data = {
             'label': label_result.label,
-            'category': label_result.category,
-            'topic': label_result.topic,
-            'subtopic': label_result.subtopic,
-            'subject_matter': label_result.subject_matter
+            'last_process_message_id': last_message_id
         }
         
         storage_result = self.store_label(user_id, thread_id, label_data)
@@ -928,17 +1023,13 @@ Provide the label, category, topic, and subtopic for this email based on the use
         combined_result = {
             "thread_id": thread_id,
             "user_id": user_id,
-            "label_result": {
-                "label": label_result.label,
-                "category": label_result.category,
-                "topic": label_result.topic,
-                "subtopic": label_result.subtopic,
-                "subject_matter": label_result.subject_matter
-            },
+            "label": label_result.label,
+            "last_process_message_id": last_message_id,
             "storage_result": {
                 "status": storage_status,
                 "database_path": os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
             },
+            "source": "pipeline",
             "status": "SUCCESS" if storage_status == "SUCCESS" else "PARTIAL_SUCCESS"
         }
         

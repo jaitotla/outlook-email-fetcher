@@ -72,7 +72,7 @@ Provide ONLY the summary in the format above. Be concise and factual.
 # DETAILED SUMMARIZATION PROMPT (for >= 3 emails)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-Breakdown_summarization = f"""
+Breakdown_summarization = """
 You are an expert enterprise communication analyst.
 
 You will receive:

@@ -27,11 +27,14 @@ const MONITOR_ALARM_NAME          = "openmailbot-monitor";
 const MONITOR_INTERVAL_MINS       = 1;       // check every minute (mirrors GAS CONFIG.CHECK_INTERVAL_MINUTES)
 const MONITOR_LAST_CHECK_KEY      = "monitor_last_check_time";
 const MONITOR_PROCESSED_KEY       = "monitor_processed_ids";
-const MONITOR_MAX_IDS             = 100;    // ring-buffer cap for processed-IDs list (reduced to avoid quota issues)
+const MONITOR_MAX_IDS             = 5000;    // ring-buffer cap for processed-IDs list (FIX: increased from 100 to 5000 to avoid re-processing old emails after restart)
 const OFFLINE_QUEUE_KEY           = "monitor_offline_queue"; // messages queued while offline
 const OFFLINE_QUEUE_MAX_AGE_MS    = 7 * 24 * 60 * 60 * 1000; // 7 days (cleanup old offline entries)
 const MONITOR_STARTUP_CATCHUP_HRS = 24;     // hours to look back when no stored lastCheck (first load / storage cleared)
 const STORAGE_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // cleanup every 6 hours
+
+// ─── MONITOR CONCURRENCY CONTROL ──────────────────────────────────────────────
+let _monitorRunning = false; // FIX: prevent concurrent monitorNewEmails() calls on startup
 
 // ─── THUNDERBIRD LABEL COLORS (mirrors backend _GMAIL_LABEL_COLORS) ───────────
 // Key  = lowercase label name (used as Thunderbird tag key)
@@ -937,9 +940,6 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
                 await _applyThunderbirdTag(msg.id, assignedLabel);
               }
 
-              // ── Mark message as processed so monitor doesn't re-label it ──
-              await _markMonitorMsgProcessed(String(msg.id));
-
               state.stats.labeled++;
               totalProcessed++;
             } catch(e) {
@@ -995,6 +995,7 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
  * 3. tags.create() in TB 121+ takes (key, color, label) or (key, label, color) depending on version
  * 4. Wrap each step independently so one failure doesn't kill the other
  * 5. Add detailed logging at every step to pinpoint failures
+ * 6. FIX: Skip re-labeling if message already has ANY OpenMailBot-managed tag (prevents multiple labels)
  *
  * @param {number} messageId  - Thunderbird internal message id
  * @param {string} labelName  - Raw label string returned by /api/label-email (backend label)
@@ -1006,6 +1007,22 @@ async function _applyThunderbirdTag(messageId, labelName) {
   if (!_labelMappingInitialized) {
     console.log(`[OpenMailBot][Tag] Label mapping not initialized, initializing now...`);
     await _initializeLabelMapping();
+  }
+
+  // ── FIX: Check if email already has an OpenMailBot-managed tag ────────────────────
+  // If it does, skip re-labeling to prevent multiple labels on the same email
+  try {
+    const msgMeta     = await browser.messages.get(messageId);
+    const currentTags = Array.isArray(msgMeta.tags) ? msgMeta.tags : [];
+    const hasExistingTag = currentTags.some(t => OPENMAILBOT_MANAGED_TAGS.has(t));
+    
+    if (hasExistingTag) {
+      console.log(`[OpenMailBot][Tag] ✅ Message ${messageId} already has OpenMailBot tag: ${JSON.stringify(currentTags)}`);
+      console.log(`[OpenMailBot][Tag] ⊘ Skipping re-label with "${labelName}" to prevent multiple labels`);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[OpenMailBot][Tag] Could not check existing tags: ${e.message} — continuing anyway`);
   }
 
   // ── Step 1: Map backend label to Thunderbird tag key ──────────────────────
@@ -1163,80 +1180,86 @@ function _ensureMonitorAlarm() {
  * - Applies domain filter
  * - Sends each new message to /api/label-email-async
  * - Polls for the label result and applies it as a Thunderbird tag
+ * 
+ * FIX: Added concurrency guard to prevent multiple simultaneous runs on startup
+ * This prevents duplicate email processing when onInstalled/onStartup/onNewMailReceived fire together
  */
 async function monitorNewEmails() {
-  // Drain any messages that were queued while offline
-  await _drainOfflineQueue().catch(e => console.warn("[Monitor] drainOfflineQueue:", e.message));
+  // FIX: Concurrency guard — prevent running simultaneously
+  if (_monitorRunning) {
+    console.log("[OpenMailBot][Monitor] ⏸ Monitor already running, skipping this call");
+    return;
+  }
+  _monitorRunning = true;
+  try {
+    // FIX: Drain any messages that were queued while offline (inside the lock)
+    await _drainOfflineQueue().catch(e => console.warn("[Monitor] drainOfflineQueue:", e.message));
 
-  const backendUrl = await getBackendUrl();
-  if (!backendUrl) { console.log("[OpenMailBot][Monitor] No backend URL — skipping"); return; }
+    const backendUrl = await getBackendUrl();
+    if (!backendUrl) { console.log("[OpenMailBot][Monitor] No backend URL — skipping"); return; }
 
-  const stored    = await browser.storage.local.get(MONITOR_LAST_CHECK_KEY);
-  const lastCheck = stored[MONITOR_LAST_CHECK_KEY]
-    ? new Date(stored[MONITOR_LAST_CHECK_KEY])
-    : new Date(Date.now() - MONITOR_STARTUP_CATCHUP_HRS * 60 * 60 * 1000); // default: look back 24 h on fresh load
-  const now = new Date();
-
-  console.log(`[OpenMailBot][Monitor] === EMAIL MONITOR START ===`);
-  console.log(`[OpenMailBot][Monitor] Last check : ${lastCheck.toISOString()}`);
-  console.log(`[OpenMailBot][Monitor] Now        : ${now.toISOString()}`);
-
-  const filters  = await _getMergedDomainFilters();
-  const allAccounts = await browser.accounts.list();
-  // Skip "Local Folders" and other non-mail virtual accounts (type === "none")
-  const accounts = allAccounts.filter(a => a.type !== "none");
-  console.log(`[OpenMailBot][Monitor] Domain filters: ${filters.length} | Accounts: ${accounts.length}`);
-
-  let found = 0, processed = 0, filtered = 0, skipped = 0, errors = 0;
-
-  for (const acc of accounts) {
-    // FIX: Get per-account email for correct user_id in multi-account setups
-    let accountEmail = null;
+    // FIX: Save the "now" timestamp immediately as the new check boundary
+    // This prevents other concurrent calls from scanning the same time window again
     try {
-      accountEmail = await getAccountEmail(acc.id);
-      console.log(`[OpenMailBot][Monitor] Processing account: ${acc.name||acc.id} (${accountEmail})`);
+      await _safeStorageSet({ [MONITOR_LAST_CHECK_KEY]: now.toISOString() }, "update monitor last check time at start");
     } catch (e) {
-      console.warn(`[OpenMailBot][Monitor] Could not get email for account ${acc.id}:`, e.message);
+      console.warn(`[Monitor] Could not save initial check time: ${e.message}`);
     }
 
-    const allFolders = _collectAllFolders(acc.folders);
-    for (const folder of allFolders) {
+    const filters  = await _getMergedDomainFilters();
+    const allAccounts = await browser.accounts.list();
+    // Skip "Local Folders" and other non-mail virtual accounts (type === "none")
+    const accounts = allAccounts.filter(a => a.type !== "none");
+    console.log(`[OpenMailBot][Monitor] Domain filters: ${filters.length} | Accounts: ${accounts.length}`);
+
+    let found = 0, processed = 0, filtered = 0, skipped = 0, errors = 0;
+
+    for (const acc of accounts) {
+      // FIX: Get per-account email for correct user_id in multi-account setups
+      let accountEmail = null;
       try {
-        let page = await browser.messages.list(folder);
-        while (page) {
-          const candidates = (page.messages || []).filter(m => {
-            const d = m.date ? new Date(m.date) : null;
-            return d && d > lastCheck && d <= now;
-          });
-          found += candidates.length;
+        accountEmail = await getAccountEmail(acc.id);
+        console.log(`[OpenMailBot][Monitor] Processing account: ${acc.name||acc.id} (${accountEmail})`);
+      } catch (e) {
+        console.warn(`[OpenMailBot][Monitor] Could not get email for account ${acc.id}:`, e.message);
+      }
 
-          for (const msg of candidates) {
-            const outcome = await _processMonitorMessage(msg, filters, accountEmail).catch(e => {
-              console.error(`[Monitor] ❌ Process error msg ${msg.id}: ${e.message}`);
-              return "error";
+      const allFolders = _collectAllFolders(acc.folders);
+      for (const folder of allFolders) {
+        try {
+          let page = await browser.messages.list(folder);
+          while (page) {
+            const candidates = (page.messages || []).filter(m => {
+              const d = m.date ? new Date(m.date) : null;
+              return d && d > lastCheck && d <= now;
             });
-            if      (outcome === "processed") processed++;
-            else if (outcome === "filtered")  filtered++;
-            else if (outcome === "skipped")   skipped++;
-            else                              errors++;
-          }
+            found += candidates.length;
 
-          if (page.id) {
-            try { page = await browser.messages.continueList(page.id); } catch(e) { break; }
-          } else { break; }
+            for (const msg of candidates) {
+              const outcome = await _processMonitorMessage(msg, filters, accountEmail).catch(e => {
+                console.error(`[Monitor] ❌ Process error msg ${msg.id}: ${e.message}`);
+                return "error";
+              });
+              if      (outcome === "processed") processed++;
+              else if (outcome === "filtered")  filtered++;
+              else if (outcome === "skipped")   skipped++;
+              else                              errors++;
+            }
+
+            if (page.id) {
+              try { page = await browser.messages.continueList(page.id); } catch(e) { break; }
+            } else { break; }
+          }
+        } catch(e) {
+          console.warn(`[OpenMailBot][Monitor] Folder error (${folder.name}): ${e.message}`);
         }
-      } catch(e) {
-        console.warn(`[OpenMailBot][Monitor] Folder error (${folder.name}): ${e.message}`);
       }
     }
-  }
 
-  try {
-    await _safeStorageSet({ [MONITOR_LAST_CHECK_KEY]: now.toISOString() }, "update monitor last check time");
-  } catch (e) {
-    console.warn(`[Monitor] Could not save last check time: ${e.message}`);
+    console.log(`[OpenMailBot][Monitor] === COMPLETE | found=${found} processed=${processed} filtered=${filtered} skipped=${skipped} errors=${errors} ===`);
+  } finally {
+    _monitorRunning = false;
   }
-  console.log(`[OpenMailBot][Monitor] === COMPLETE | found=${found} processed=${processed} filtered=${filtered} skipped=${skipped} errors=${errors} ===`);
 }
 
 /**
@@ -1669,27 +1692,9 @@ browser.runtime.onInstalled.addListener(async () => {
   _cleanupStorageQuota().catch(e => console.warn("[Storage] Initial cleanup failed:", e.message));
   _scheduleStorageCleanup();
 
-  // Start background monitor ONLY if onboarding is already complete and backend URL is configured
-  const onboardingCheck = await browser.storage.local.get("onboarding_complete");
-  if (onboardingCheck.onboarding_complete) {
-    const backendUrl = await getBackendUrl();
-    if (backendUrl) {
-      _ensureMonitorAlarm();
-      console.log("[OpenMailBot][Install] ▶ Background monitor enabled (onboarding complete)");
-      
-      // Immediate catch-up scan — fires on every install/reload (covers temporary add-on reloads)
-      const monR = await browser.storage.local.get(MONITOR_ENABLED_KEY);
-      if (monR[MONITOR_ENABLED_KEY] !== false) {
-        monitorNewEmails().catch(e =>
-          console.error("[OpenMailBot][Monitor] Post-install catch-up error:", e.message)
-        );
-      }
-    } else {
-      console.log("[OpenMailBot][Install] ⏸ Background monitor not started (no backend URL configured)");
-    }
-  } else {
-    console.log("[OpenMailBot][Install] ⏸ Background monitor not started (onboarding incomplete)");
-  }
+  // FIX: Do NOT call monitorNewEmails() here to avoid duplicate processing
+  // It will be called from onStartup instead (which is the proper event for this)
+  console.log("[OpenMailBot][Install] ℹ️ Monitor will be started on next Thunderbird startup");
 });
 
 // Re-register alarm on every Thunderbird startup (alarms don't persist across restarts in MV2)
