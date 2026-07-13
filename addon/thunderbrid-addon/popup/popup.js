@@ -633,6 +633,7 @@ function renderOnboardingPage() {
   setVal("ob-user-position", "");
   setVal("ob-user-tone", "professional");
   setVal("ob-system-prompt", "");
+  setVal("ob-draft-font", "arial");
   
   // Reset UI state
   hideStatus("ob-backend-status");
@@ -960,6 +961,7 @@ function handleUseBackendSettings() {
   setVal("ob-user-position", backendSettings.user_position       || "");
   setVal("ob-user-tone",     backendSettings.user_tone           || "professional");
   setVal("ob-system-prompt", backendSettings.system_prompt       || "");
+  setVal("ob-draft-font",    backendSettings.draft_font          || "arial");
   
   updateModeVisibility("ob");
   setStatus("ob-backend-status", "✅ Settings loaded into form!", false);
@@ -1194,7 +1196,8 @@ async function handleOnboardingSave() {
     user_name          : getVal("ob-user-name"),
     user_position      : getVal("ob-user-position"),
     user_tone          : getVal("ob-user-tone")          || "professional",
-    system_prompt      : getVal("ob-system-prompt")
+    system_prompt      : getVal("ob-system-prompt"),
+    draft_font         : getVal("ob-draft-font")         || "arial"
   };
 
   // Apply provider-specific model defaults if models are empty
@@ -1314,6 +1317,7 @@ function _populateSettingsForm(s) {
   setVal("s-user-name",    s.user_name           || "");
   setVal("s-user-position",s.user_position       || "");
   setVal("s-user-tone",    s.user_tone           || "professional");
+  setVal("s-draft-font",   s.draft_font          || "arial");
   setVal("s-system-prompt",s.system_prompt       || "");
   updateModeVisibility("s");
 }
@@ -1394,6 +1398,7 @@ async function handleSaveSettings() {
     user_name         : getVal("s-user-name"),
     user_position     : getVal("s-user-position"),
     user_tone         : getVal("s-user-tone"),
+    draft_font        : getVal("s-draft-font")   || "arial",
     system_prompt     : getVal("s-system-prompt")
   };
 

@@ -2021,11 +2021,12 @@ async function handleDraftWithAttachments({ messageId, accountId, userEmail }) {
   const threadId  = _getCanonicalThreadId(firstMeta, items[0].full);
   console.log(`[DraftWithAttachments] ⚡ Init in ${(performance.now()-_t0).toFixed(0)}ms — user=${userId}`);
 
-  // Log thread + fetch prefs in parallel
-  const [, prefs] = await Promise.all([
+  // Log thread + fetch prefs + draft font in parallel
+  const [, prefs, draftFont] = await Promise.all([
     _logEmailsToServer(backendUrl, userId, threadId, items.map(({meta,full})=>_fmtMsg(meta,full)))
       .catch(e => console.warn("logEmail:", e.message)),
     getUserPreferences(userId),
+    (async () => { const r = await browser.storage.local.get("user_settings"); return (r.user_settings?.draft_font || "arial"); })(),
   ]);
 
   // Store attachments in parallel with the draft API call
@@ -2055,8 +2056,10 @@ async function handleDraftWithAttachments({ messageId, accountId, userEmail }) {
   const lastMeta       = items[items.length-1].meta;
   const subject        = lastMeta.subject.match(/^Re:/i) ? lastMeta.subject : `Re: ${lastMeta.subject}`;
 
+  // Note: draftFont preference is stored for future use with richer formatting APIs
+  // Thunderbird's compose.beginNew() currently only supports plainTextBody
   await browser.compose.beginNew({ to:[lastMeta.author], subject, plainTextBody:draftContent, isPlainText:true });
-  return { success:true, draftContent, processingInfo, attachmentCount:totalAtts };
+  return { success:true, draftContent, processingInfo, attachmentCount:totalAtts, selectedFont:draftFont };
 }
 
 async function handleSimpleDraft({ messageId, accountId, userEmail }) {
@@ -2075,11 +2078,12 @@ async function handleSimpleDraft({ messageId, accountId, userEmail }) {
   const threadId  = _getCanonicalThreadId(firstMeta, items[0].full);
   console.log(`[SimpleDraft] ⚡ Init in ${(performance.now()-_t0).toFixed(0)}ms — user=${userId}`);
 
-  // Log emails + fetch prefs in parallel, then call draft API
-  const [, prefs] = await Promise.all([
+  // Log emails + fetch prefs + draft font in parallel, then call draft API
+  const [, prefs, draftFont] = await Promise.all([
     _logEmailsToServer(backendUrl, userId, threadId, items.map(({meta, full}) => _fmtMsg(meta, full)))
       .catch(e => console.warn("[SimpleDraft] logEmail:", e.message)),
     getUserPreferences(userId),
+    (async () => { const r = await browser.storage.local.get("user_settings"); return (r.user_settings?.draft_font || "arial"); })(),
   ]);
 
   console.log(`[SimpleDraft] ⚡ Firing draft API at ${(performance.now()-_t0).toFixed(0)}ms`);
@@ -2096,8 +2100,11 @@ async function handleSimpleDraft({ messageId, accountId, userEmail }) {
   const draftContent = result.draft_content || result.response || "No draft content received";
   const lastMeta     = items[items.length - 1].meta;
   const subject      = lastMeta.subject.match(/^Re:/i) ? lastMeta.subject : `Re: ${lastMeta.subject}`;
+  
+  // Note: draftFont preference is stored for future use with richer formatting APIs
+  // Thunderbird's compose.beginNew() currently only supports plainTextBody
   await browser.compose.beginNew({ to: [lastMeta.author], subject, plainTextBody: draftContent, isPlainText: true });
-  return { success: true, draftContent };
+  return { success: true, draftContent, selectedFont: draftFont };
 }
 
 async function handleChatWithThread({ messageId, question, accountId, userEmail }) {
