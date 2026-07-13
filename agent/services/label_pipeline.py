@@ -124,7 +124,7 @@ class EmailLabelPipeline:
                 self.parser = None
     
     def ensure_user_db(self, user_id: str):
-        """Ensure per-user SQLite DB and label table exist."""
+        """Ensure per-user SQLite DB and label table exist with schema migration."""
         user_db = os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
         os.makedirs(os.path.dirname(user_db), exist_ok=True)
         conn = sqlite3.connect(user_db)
@@ -143,6 +143,18 @@ class EmailLabelPipeline:
                 UNIQUE(user_id, thread_id)
             )
         ''')
+        
+        # Schema migration: Add last_process_message_id column if it doesn't exist
+        cursor.execute("PRAGMA table_info(email_labels)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'last_process_message_id' not in columns:
+            logger.info("🔧 Migrating schema: Adding last_process_message_id column...")
+            cursor.execute('''
+                ALTER TABLE email_labels
+                ADD COLUMN last_process_message_id TEXT
+            ''')
+            logger.info("✅ Schema migration complete: last_process_message_id column added")
 
         conn.commit()
         conn.close()
@@ -1019,18 +1031,20 @@ Provide the label, category, topic, and subtopic for this email based on the use
             print(f"❌ Failed to store label in SQLite!")
             storage_status = "FAILED"
         
-        # Combine results
+        # Combine results - wrap in label_result for backend compatibility
         combined_result = {
-            "thread_id": thread_id,
-            "user_id": user_id,
-            "label": label_result.label,
-            "last_process_message_id": last_message_id,
-            "storage_result": {
-                "status": storage_status,
-                "database_path": os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
-            },
-            "source": "pipeline",
-            "status": "SUCCESS" if storage_status == "SUCCESS" else "PARTIAL_SUCCESS"
+            "label_result": {
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "label": label_result.label,
+                "last_process_message_id": last_message_id,
+                "storage_result": {
+                    "status": storage_status,
+                    "database_path": os.path.join(BASE_DATA_DIR, user_id, "sql_data", "chat_thread_processing.db")
+                },
+                "source": "pipeline",
+                "status": "SUCCESS" if storage_status == "SUCCESS" else "PARTIAL_SUCCESS"
+            }
         }
         
         print("\n" + "="*70)
