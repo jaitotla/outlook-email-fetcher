@@ -45,6 +45,52 @@ from agent.services.draft_cache_manager import DraftCacheManager
 from agent.services.simple_draft_pipeline import SimpleDraftPipeline
 
 import logging
+from logging.handlers import RotatingFileHandler
+
+# ── Rotating File Logger Setup ──────────────────────────────────────────────
+# Configure logging with rotating file handler (max 5 files, 10MB each)
+def setup_logger():
+    """Setup rotating file logger for backend/main.py"""
+    logs_dir = os.path.join(os.path.dirname(__file__), "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    # Create logger
+    logger = logging.getLogger("openmailbot.backend")
+    logger.setLevel(logging.DEBUG)
+    
+    # Remove existing handlers to avoid duplicates
+    logger.handlers = []
+    
+    # Rotating file handler: 10MB per file, keep 5 files
+    log_file = os.path.join(logs_dir, "app.log")
+    rotating_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=4  # Keeps log, log.1, log.2, log.3, log.4 (5 total)
+    )
+    rotating_handler.setLevel(logging.DEBUG)
+    
+    # Console handler for stdout
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    
+    # Formatter
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    rotating_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Add handlers to logger
+    logger.addHandler(rotating_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+# Initialize the logger
+logger = setup_logger()
+logger.info("🚀 OpenMailBot Backend Starting - Logging initialized")
 
 # # ── Startup diagnostic logger ──────────────────────────────────────────────
 # logging.basicConfig(
@@ -185,6 +231,7 @@ app = FastAPI(
     description="AI processing backend for OpenMailBot",
     version="1.0.0"
 )
+logger.info("✅ FastAPI app initialized")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # REQUEST LOGGING MIDDLEWARE - Log all incoming requests
@@ -202,9 +249,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         query_string = request.url.query
         
-        print(f"\n📨 [{method}] {path}", flush=True)
+        log_msg = f"📨 [{method}] {path}"
         if query_string:
-            print(f"   Query: {query_string}", flush=True)
+            log_msg += f" | Query: {query_string}"
+        print(f"\n{log_msg}", flush=True)
+        logger.debug(log_msg)
         
         # For POST/PUT/PATCH, try to log body info without consuming it
         if method in ["POST", "PUT", "PATCH"] and "/api/settings" in path:
@@ -215,7 +264,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     body_data = json.loads(body)
                     user_id = body_data.get("user_id", "unknown")
                     settings_count = len(body_data.get("settings", {})) if isinstance(body_data.get("settings"), dict) else 0
-                    print(f"   📋 User: {user_id}, Settings: {settings_count}", flush=True)
+                    body_log = f"📋 User: {user_id}, Settings: {settings_count}"
+                    print(f"   {body_log}", flush=True)
+                    logger.debug(body_log)
                     
                     # Important: Receive the body again for the endpoint handler
                     # We need to create a new receive callable that returns the cached body
@@ -223,7 +274,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                         return {"type": "http.request", "body": body}
                     request._receive = receive
             except Exception as e:
-                print(f"   ⚠️  Could not parse body: {e}", flush=True)
+                error_msg = f"⚠️  Could not parse body: {e}"
+                print(f"   {error_msg}", flush=True)
+                logger.warning(error_msg)
         
         # Call the actual route handler
         response = await call_next(request)
@@ -232,7 +285,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         process_time = time.time() - start_time
         status = response.status_code
         status_emoji = "✅" if status == 200 else "⚠️ " if status >= 400 else "ℹ️ "
-        print(f"   {status_emoji} Status {status} ({process_time:.3f}s)", flush=True)
+        response_log = f"{status_emoji} Status {status} ({process_time:.3f}s)"
+        print(f"   {response_log}", flush=True)
+        logger.info(f"[{method}] {path} - Status {status} ({process_time:.3f}s)")
         
         return response
 
@@ -248,10 +303,12 @@ if _imap_available:
             agent_url=os.getenv("AGENT_URL", "http://localhost:5051"),
             enable_label_classification=os.getenv("ENABLE_LABEL_CLASSIFICATION", "true").lower() == "true"
         )
-        print("✅ IMAP Fetcher Service initialized")
+        logger.info("✅ IMAP Fetcher Service initialized successfully")
     except Exception as e:
-        print(f"⚠️  Failed to initialize IMAP Fetcher Service: {e}")
+        logger.error(f"❌ Failed to initialize IMAP Fetcher: {e}", exc_info=True)
         _imap_fetcher = None
+else:
+    logger.warning("⚠️  IMAP services not available")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -269,13 +326,14 @@ def _start_continuous_imap_monitoring():
     global _imap_monitoring_active, _imap_monitoring_thread
     
     if not _imap_available or _imap_fetcher is None:
-        print("⚠️  IMAP monitoring not started: IMAP service not available")
+        logger.warning("⚠️  IMAP monitoring not started: IMAP service not available")
         return
     
     def imap_monitor_loop():
         """Continuous monitoring loop - runs every 60 seconds"""
         import time
         
+        logger.info("🔄 IMAP Background Monitor Started (runs every 60 seconds)")
         print("🔄 IMAP Background Monitor Started (runs every 60 seconds)")
         _imap_monitoring_active = True
         
@@ -285,7 +343,9 @@ def _start_continuous_imap_monitoring():
                 enabled_users = _imap_fetcher.db.get_all_enabled_users()
                 
                 if enabled_users:
-                    print(f"\n📧 [IMAP MONITOR] Checking {len(enabled_users)} enabled user(s)")
+                    msg = f"📧 [IMAP MONITOR] Checking {len(enabled_users)} enabled user(s)"
+                    logger.info(msg)
+                    print(f"\n{msg}")
                     
                     for user_record in enabled_users:
                         try:
@@ -298,15 +358,19 @@ def _start_continuous_imap_monitoring():
                                 user_id = str(user_record)
                             
                             if not user_id:
+                                logger.warning(f"⚠️  Could not extract user_id from: {user_record}")
                                 print(f"   ⚠️  Could not extract user_id from: {user_record}")
                                 continue
                             
                             count, error = _imap_fetcher.fetch_and_process_for_user(user_id)
                             if error:
+                                logger.error(f"⚠️  {user_id}: {error}")
                                 print(f"   ⚠️  {user_id}: {error}")
                             else:
+                                logger.info(f"✅ {user_id}: {count} email(s)")
                                 print(f"   ✅ {user_id}: {count} email(s)")
                         except Exception as e:
+                            logger.error(f"❌ Error processing user: {str(e)}", exc_info=True)
                             print(f"   ❌ Error processing user: {str(e)}")
                 
                 # Sleep for 60 seconds before next check
@@ -316,6 +380,7 @@ def _start_continuous_imap_monitoring():
                     time.sleep(1)
                     
             except Exception as e:
+                logger.error(f"❌ IMAP Monitor Error: {str(e)}", exc_info=True)
                 print(f"❌ IMAP Monitor Error: {str(e)}")
                 time.sleep(5)  # Wait 5 seconds before retrying
     
@@ -326,6 +391,7 @@ def _start_continuous_imap_monitoring():
         name="IMAPMonitor"
     )
     _imap_monitoring_thread.start()
+    logger.info("✅ IMAP Continuous Monitor Thread Started")
     print("✅ IMAP Continuous Monitor Thread Started")
 
 
@@ -3720,6 +3786,13 @@ async def admin_save_user_settings(user_id: str, request: AdminSaveSettingsReque
 
 
 if __name__ == "__main__":
+    logger.info(f"🚀 Starting OpenMailBot Backend Server")
+    logger.info(f"   Host: {settings.HOST}")
+    logger.info(f"   Port: {settings.PORT}")
+    logger.info(f"   Logs: d:/manotr/openmailbot/backend/logs/app.log")
+    logger.info(f"   Retention: 5 files x 10MB each")
+    print(f"\n🚀 Starting OpenMailBot Backend Server on {settings.HOST}:{settings.PORT}")
+    print(f"   Logs will be saved to: backend/logs/app.log\n")
     uvicorn.run(
         "main:app",
         host=settings.HOST,
