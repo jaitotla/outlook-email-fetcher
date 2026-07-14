@@ -11,6 +11,9 @@ import requests
 from typing import Dict, Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 
+# Import the chat_structure function from utils
+from agent.utils import chat_structure
+
 # Import from the same services directory (if needed)
 # from .store_graph_pipeline import StoreGraphPipeline, ThreadGraphData
 
@@ -45,37 +48,43 @@ class EmailLabelOutput(BaseModel):
 class EmailLabelPipeline:
     """
     Pipeline for labeling emails using rule-based system and Ollama LLM fallback
+    Now uses the chat_structure() function from utils.py for structured output
     """
     
-    def __init__(self, ollama_url: str = None, model: str = "llama3.2"):
+    def __init__(self, model: str = "llama3.2"):
         """
         Initialize the label pipeline with Ollama
         
         Args:
-            ollama_url: Ollama API endpoint URL (default: https://lsdiedb39c.pagekite.me/chat_structure)
             model: Ollama model to use (default: llama3.2)
+                   The Ollama URL is now loaded from MANOTR_OLLAMA environment variable
         """
-        # Set default Ollama URL if not provided
-        self.ollama_url = ollama_url or "https://lsdiedb39c.pagekite.me/chat_structure"
         self.model = model
         
-        # Test Ollama connection
+        # Test Ollama connection using chat_structure
         try:
             self._test_ollama_connection()
             self.ollama_available = True
-            print(f"✓ Ollama connection successful at {self.ollama_url}")
+            print(f"✓ Ollama connection successful with model: {self.model}")
         except Exception as e:
             print(f"⚠️  Warning: Ollama not available: {str(e)}")
             self.ollama_available = False
     
     def _test_ollama_connection(self):
-        """Test if Ollama endpoint is reachable"""
-        test_payload = {
-            "query": "Test",
-            "schema": {"type": "object", "properties": {"test": {"type": "string"}}}
+        """Test if Ollama endpoint is reachable with structured output"""
+        test_query = "Respond with a valid JSON object: {\"status\": \"ok\"}"
+        test_schema = {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"}
+            },
+            "required": ["status"]
         }
-        response = requests.post(self.ollama_url, json=test_payload, timeout=5)
-        response.raise_for_status()
+        
+        result = chat_structure(test_query, test_schema, model=self.model, timeout_seconds=10)
+        
+        if "error" in result:
+            raise Exception(f"Ollama connection test failed: {result['error']}")
     
     def _create_system_prompt(self) -> str:
         """Create the system prompt for email classification"""
@@ -315,42 +324,38 @@ Other - other types of emails that don't fit the above categories"""
                 body = body[:1000] + "..."
             
             # Create user query
-            user_query = f"""Classify and analyze this email perspective of this user ({user_id}
-
+            user_query = f"""Classify and analyze this email from the perspective of user ({user_id})
 
 From: {from_address}
 To: {to_addresses}
 Subject: {subject}
 Body: {body}
 
+{self._create_system_prompt()}
 
-Provide the label, category, topic, and subtopic for this email based on the user's context and priorities.
-
-{self._create_system_prompt()}"""
+Respond with a JSON object containing: label, category, topic, subtopic, subject_matter"""
             
-            # Prepare Ollama payload
-            payload = {
-                "query": user_query,
-                "schema": EmailLabelOutput.model_json_schema()
-            }
+            # Call chat_structure with EmailLabelOutput schema
+            result = chat_structure(
+                query=user_query,
+                json_schema=EmailLabelOutput.model_json_schema(),
+                model=self.model,
+                timeout_seconds=30
+            )
             
-            # Make request to Ollama
-            response = requests.post(self.ollama_url, json=payload, timeout=30)
-            response.raise_for_status()
-            
-            # Parse response
-            response_json = response.json()
-            
-            # Extract the data field if it exists (Ollama wraps response in data/status)
-            if 'data' in response_json:
-                result_data = response_json['data']
-            else:
-                result_data = response_json
+            # Check for errors
+            if "error" in result:
+                print(f"⚠️  Ollama classification error: {result['error']}")
+                return self._fallback_output(email_data)
             
             # Validate and create EmailLabelOutput
-            result = EmailLabelOutput(**result_data)
-            
-            return result
+            try:
+                parsed_output = EmailLabelOutput(**result)
+                print(f"✓ Ollama classification successful: {parsed_output.label}")
+                return parsed_output
+            except Exception as e:
+                print(f"⚠️  Failed to validate output schema: {e}")
+                return self._fallback_output(email_data)
             
         except requests.exceptions.RequestException as e:
             print(f"Error in Ollama API request: {str(e)}")
@@ -442,10 +447,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
 # # Example usage
 # if __name__ == "__main__":
 #     # Initialize pipeline
-#     pipeline = EmailLabelPipeline(
-#         ollama_url="https://lsdiedb39c.pagekite.me/chat_structure",
-#         model="llama3.2"
-#     )
+#     # Make sure MANOTR_OLLAMA is set in .env file
+#     pipeline = EmailLabelPipeline(model="llama3.2")
     
 #     # Test email
 #     test_email = {

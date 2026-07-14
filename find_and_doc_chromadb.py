@@ -60,7 +60,7 @@ def get_collection(client: chromadb.PersistentClient, collection_name: str) -> c
     try:
         collection = client.get_collection(name=collection_name)
     except Exception:
-        collection = client.get_or_create_collection(
+        collection = client.create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"}
         )

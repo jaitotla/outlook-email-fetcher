@@ -306,10 +306,13 @@ def init_chroma(db_path: str):
 
     try:
         client = chromadb.PersistentClient(path=db_path)
-        collection = client.get_or_create_collection(
-            name=CHROMA_COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+        try:
+            collection = client.get_collection(name=CHROMA_COLLECTION_NAME)
+        except Exception:
+            collection = client.create_collection(
+                name=CHROMA_COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
         logger.info("ChromaDB initialized with default embedding")
         return client, collection
     except Exception as e:

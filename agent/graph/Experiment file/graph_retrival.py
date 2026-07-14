@@ -83,11 +83,14 @@ def get_chroma_collection(persist_directory: str = "./chroma_db"):
     except:
         pass  # Collection doesn't exist yet
     
-    return client.get_or_create_collection(
-        name=CHROMA_COLLECTION_NAME,
-        embedding_function=ef,
-        metadata={"hnsw:space": "cosine"}
-    )
+    try:
+        return client.get_collection(name=CHROMA_COLLECTION_NAME)
+    except Exception:
+        return client.create_collection(
+            name=CHROMA_COLLECTION_NAME,
+            embedding_function=ef,
+            metadata={"hnsw:space": "cosine"}
+        )
 
 
 def ingest_topic_documents(collection, topic_docs: list[dict]):

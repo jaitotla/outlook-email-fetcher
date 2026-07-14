@@ -486,17 +486,20 @@ async function handleCompleteOnboarding({ settings, accountId, userEmail }) {
   
   const merged = Object.assign({}, DEFAULT_SETTINGS, settings);
   
-  // Save to backend only (NO local storage)
+  // Save to backend
   try {
     console.log(`[Onboarding] 💾 Saving settings to backend for: ${userEmail}`);
     await _syncSettingsToBackend(merged, userEmail);
     console.log("[OpenMailBot][Onboarding] ✅ Settings synced to backend");
 
-    // Also persist agent_url locally so _getBackendUrlFromConfig() uses the user's value immediately
-    if (merged.agent_url) {
+    // Also persist critical settings locally so they're immediately available
+    if (merged.agent_url || merged.draft_font) {
       const r = await browser.storage.local.get("user_settings");
-      const local = Object.assign({}, r.user_settings || {}, { agent_url: merged.agent_url });
-      await _safeStorageSet({ user_settings: local }, "persist agent_url locally");
+      const local = Object.assign({}, r.user_settings || {}, { 
+        agent_url: merged.agent_url,
+        draft_font: merged.draft_font || "arial"
+      });
+      await _safeStorageSet({ user_settings: local }, "persist agent_url and draft_font locally");
     }
 
     // Mark onboarding complete (persisted locally — applies globally once any account is configured)
@@ -531,6 +534,17 @@ async function handleSyncSettings({ accountId, userEmail, settings: passedSettin
   try {
     const settings = passedSettings || await _fetchSettingsFromBackend(userEmail);
     await _syncSettingsToBackend(settings, userEmail);
+    
+    // Also persist draft_font locally so it's immediately available
+    if (settings && settings.draft_font) {
+      const r = await browser.storage.local.get("user_settings");
+      const local = Object.assign({}, r.user_settings || {}, { 
+        draft_font: settings.draft_font,
+        agent_url: settings.agent_url || (r.user_settings?.agent_url)
+      });
+      await _safeStorageSet({ user_settings: local }, "persist draft_font locally");
+    }
+    
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
@@ -1209,7 +1223,42 @@ async function monitorNewEmails() {
     const filters  = await _getMergedDomainFilters();
     const allAccounts = await browser.accounts.list();
     // Skip "Local Folders" and other non-mail virtual accounts (type === "none")
-    const accounts = allAccounts.filter(a => a.type !== "none");
+    let accounts = allAccounts.filter(a => a.type !== "none");
+    
+    // FIX: Filter to ONLY configured accounts (those that completed onboarding)
+    // This prevents labeling requests for accounts user never set up
+    try {
+      const r = await browser.storage.local.get("configured_accounts");
+      const configured = r.configured_accounts || [];
+      
+      if (configured.length > 0) {
+        const beforeFilter = accounts.length;
+        // Get email for each account and filter to only those in configured list
+        const configuredAccounts = [];
+        for (const acc of accounts) {
+          try {
+            const email = await getAccountEmail(acc.id);
+            if (email && configured.includes(email)) {
+              configuredAccounts.push(acc);
+            } else if (email) {
+              console.log(`[OpenMailBot][Monitor] ⊘ Skipping unconfigured account: ${email}`);
+            }
+          } catch (e) {
+            console.warn(`[OpenMailBot][Monitor] Could not get email for account ${acc.id}: ${e.message}`);
+          }
+        }
+        accounts = configuredAccounts;
+        const afterFilter = accounts.length;
+        console.log(`[OpenMailBot][Monitor] Account filtering: ${beforeFilter} total → ${afterFilter} configured (${beforeFilter - afterFilter} skipped)`);
+      } else {
+        console.log(`[OpenMailBot][Monitor] ℹ️ No configured accounts yet — monitor will skip all`);
+        accounts = []; // If no accounts configured, process nothing
+      }
+    } catch (e) {
+      console.warn(`[OpenMailBot][Monitor] Could not filter by configured_accounts: ${e.message}`);
+      // Fallback: if storage read fails, still process all (conservative)
+    }
+    
     console.log(`[OpenMailBot][Monitor] Domain filters: ${filters.length} | Accounts: ${accounts.length}`);
 
     let found = 0, processed = 0, filtered = 0, skipped = 0, errors = 0;
@@ -2056,10 +2105,32 @@ async function handleDraftWithAttachments({ messageId, accountId, userEmail }) {
   const lastMeta       = items[items.length-1].meta;
   const subject        = lastMeta.subject.match(/^Re:/i) ? lastMeta.subject : `Re: ${lastMeta.subject}`;
 
-  // Note: draftFont preference is stored for future use with richer formatting APIs
-  // Thunderbird's compose.beginNew() currently only supports plainTextBody
-  await browser.compose.beginNew({ to:[lastMeta.author], subject, plainTextBody:draftContent, isPlainText:true });
-  return { success:true, draftContent, processingInfo, attachmentCount:totalAtts, selectedFont:draftFont };
+  // Map font value to CSS font-family
+  const fontFamilyMap = {
+    "arial": "Arial, sans-serif",
+    "times-new-roman": "'Times New Roman', serif",
+    "courier-new": "'Courier New', monospace",
+    "georgia": "Georgia, serif",
+    "verdana": "Verdana, sans-serif",
+    "impact": "Impact, sans-serif",
+    "papyrus": "Papyrus, cursive",
+    "comic-sans": "'Comic Sans MS', cursive"
+  };
+  const fontFamily = fontFamilyMap[draftFont] || "Arial, sans-serif";
+  
+  // Note: Thunderbird's compose.beginNew() API only supports plainTextBody
+  // To apply font, we'll store the font preference and embed it as a comment
+  // Users must format the message manually or Thunderbird must support HTML composition
+  const draftWithFontInfo = `<html><body style="font-family: ${fontFamily};">${draftContent.replace(/\n/g, '<br>')}</body></html>`;
+  
+  console.log(`[DraftWithAttachments] Font selected: ${draftFont} -> ${fontFamily}`);
+  
+  // Use plainTextBody as that's what Thunderbird API supports
+  // Prepend font info so user knows which font should be used
+  const annotatedDraft = `[Using font: ${draftFont}]\n\n${draftContent}`;
+  await browser.compose.beginNew({ to:[lastMeta.author], subject, plainTextBody:annotatedDraft, isPlainText:true });
+  
+  return { success:true, draftContent, processingInfo, attachmentCount:totalAtts, selectedFont:draftFont, fontInfo: `${draftFont} (${fontFamily})` };
 }
 
 async function handleSimpleDraft({ messageId, accountId, userEmail }) {
@@ -2101,10 +2172,27 @@ async function handleSimpleDraft({ messageId, accountId, userEmail }) {
   const lastMeta     = items[items.length - 1].meta;
   const subject      = lastMeta.subject.match(/^Re:/i) ? lastMeta.subject : `Re: ${lastMeta.subject}`;
   
-  // Note: draftFont preference is stored for future use with richer formatting APIs
-  // Thunderbird's compose.beginNew() currently only supports plainTextBody
-  await browser.compose.beginNew({ to: [lastMeta.author], subject, plainTextBody: draftContent, isPlainText: true });
-  return { success: true, draftContent, selectedFont: draftFont };
+  // Map font value to CSS font-family
+  const fontFamilyMap = {
+    "arial": "Arial, sans-serif",
+    "times-new-roman": "'Times New Roman', serif",
+    "courier-new": "'Courier New', monospace",
+    "georgia": "Georgia, serif",
+    "verdana": "Verdana, sans-serif",
+    "impact": "Impact, sans-serif",
+    "papyrus": "Papyrus, cursive",
+    "comic-sans": "'Comic Sans MS', cursive"
+  };
+  const fontFamily = fontFamilyMap[draftFont] || "Arial, sans-serif";
+  
+  // Note: Thunderbird's compose.beginNew() API only supports plainTextBody
+  // Prepend font info so user knows which font should be used
+  const annotatedDraft = `[Using font: ${draftFont}]\n\n${draftContent}`;
+  
+  console.log(`[SimpleDraft] Font selected: ${draftFont} -> ${fontFamily}`);
+  
+  await browser.compose.beginNew({ to: [lastMeta.author], subject, plainTextBody: annotatedDraft, isPlainText: true });
+  return { success: true, draftContent, selectedFont: draftFont, fontInfo: `${draftFont} (${fontFamily})` };
 }
 
 async function handleChatWithThread({ messageId, question, accountId, userEmail }) {

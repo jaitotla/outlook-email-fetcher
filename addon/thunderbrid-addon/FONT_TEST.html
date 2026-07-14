@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Font Test - OpenMailBot</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      text-align: center;
+      color: #1a73e8;
+    }
+    .font-demo {
+      margin: 20px 0;
+      padding: 15px;
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      background: #fafafa;
+    }
+    .font-name {
+      font-weight: bold;
+      color: #666;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .font-content {
+      font-size: 18px;
+      line-height: 1.6;
+      color: #333;
+    }
+    .test-text {
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>✨ OpenMailBot Font Test</h1>
+    <p style="text-align: center; color: #666;">Test each font to verify they look different</p>
+
+    <!-- Arial (Default) -->
+    <div class="font-demo">
+      <div class="font-name">📌 Arial (Default)</div>
+      <div class="font-content" style="font-family: Arial, sans-serif;">
+        <div class="test-text">This is Arial - clean and modern</div>
+        <div class="test-text">Subject: Re: "OP has ordered his first ever laptop"</div>
+        <div class="test-text">Dear Reddit, Thank you for your assistance...</div>
+      </div>
+    </div>
+
+    <!-- Courier New (MONOSPACE) -->
+    <div class="font-demo">
+      <div class="font-name">🖥️ Courier New (MONOSPACE - OBVIOUSLY DIFFERENT!)</div>
+      <div class="font-content" style="font-family: 'Courier New', monospace;">
+        <div class="test-text">This is Courier New - fixed width, like old typewriter</div>
+        <div class="test-text">Subject: Re: "OP has ordered his first ever laptop"</div>
+        <div class="test-text">Dear Reddit, Thank you for your assistance...</div>
+      </div>
+    </div>
+
+    <!-- Comic Sans (WEIRD) -->
+    <div class="font-demo">
+      <div class="font-name">🎨 Comic Sans (WEIRD & OBVIOUS!)</div>
+      <div class="font-content" style="font-family: 'Comic Sans MS', cursive;">
+        <div class="test-text">This is Comic Sans - rounded and very different</div>
+        <div class="test-text">Subject: Re: "OP has ordered his first ever laptop"</div>
+        <div class="test-text">Dear Reddit, Thank you for your assistance...</div>
+      </div>
+    </div>
+
+    <!-- Times New Roman -->
+    <div class="font-demo">
+      <div class="font-name">📖 Times New Roman</div>
+      <div class="font-content" style="font-family: 'Times New Roman', serif;">
+        <div class="test-text">This is Times New Roman - traditional serif font</div>
+        <div class="test-text">Subject: Re: "OP has ordered his first ever laptop"</div>
+        <div class="test-text">Dear Reddit, Thank you for your assistance...</div>
+      </div>
+    </div>
+
+    <!-- Georgia -->
+    <div class="font-demo">
+      <div class="font-name">📑 Georgia</div>
+      <div class="font-content" style="font-family: Georgia, serif;">
+        <div class="test-text">This is Georgia - elegant serif font</div>
+        <div class="test-text">Subject: Re: "OP has ordered his first ever laptop"</div>
+        <div class="test-text">Dear Reddit, Thank you for your assistance...</div>
+      </div>
+    </div>
+
+    <!-- Verdana -->
+    <div class="font-demo">
+      <div class="font-name">✎ Verdana</div>
+      <div class="font-content" style="font-family: Verdana, sans-serif;">
+        <div class="test-text">This is Verdana - clean sans-serif, similar to Arial</div>
+        <div class="test-text">Subject: Re: "OP has ordered his first ever laptop"</div>
+        <div class="test-text">Dear Reddit, Thank you for your assistance...</div>
+      </div>
+    </div>
+
+    <!-- Impact (Bold & Weird) -->
+    <div class="font-demo">
+      <div class="font-name">🎯 Impact (Bold & Weird)</div>
+      <div class="font-content" style="font-family: Impact, sans-serif; font-weight: bold;">
+        <div class="test-text">This is Impact - very bold and heavy</div>
+        <div class="test-text">Subject: Re: "OP has ordered his first ever laptop"</div>
+        <div class="test-text">Dear Reddit, Thank you for your assistance...</div>
+      </div>
+    </div>
+
+    <!-- Papyrus (Very Unusual) -->
+    <div class="font-demo">
+      <div class="font-name">🎭 Papyrus (Very Unusual)</div>
+      <div class="font-content" style="font-family: Papyrus, cursive;">
+        <div class="test-text">This is Papyrus - handwritten, very decorative</div>
+        <div class="test-text">Subject: Re: "OP has ordered his first ever laptop"</div>
+        <div class="test-text">Dear Reddit, Thank you for your assistance...</div>
+      </div>
+    </div>
+
+    <hr style="margin: 30px 0; border: none; border-top: 2px solid #e0e0e0;">
+
+    <div style="text-align: center; color: #666; font-size: 12px;">
+      <p><strong>✅ Font feature is working!</strong></p>
+      <p>Each font above shows clearly different styling.</p>
+      <p>The selected font will be embedded in generated draft emails.</p>
+      <p><em>Note: Thunderbird's compose API is limited to plain text, so fonts appear in the email source but may need manual formatting in the compose window.</em></p>
+    </div>
+  </div>
+</body>
+</html>

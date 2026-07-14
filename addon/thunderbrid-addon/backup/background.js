@@ -719,7 +719,40 @@ async function monitorNewEmails() {
   console.log(`[OpenMailBot][Monitor] Now        : ${now.toISOString()}`);
 
   const filters  = await _getMergedDomainFilters();
-  const accounts = await browser.accounts.list();
+  let accounts = await browser.accounts.list();
+  
+  // FIX: Filter to ONLY configured accounts (those that completed onboarding)
+  // This prevents labeling requests for accounts user never set up
+  try {
+    const r = await browser.storage.local.get("configured_accounts");
+    const configured = r.configured_accounts || [];
+    
+    if (configured.length > 0) {
+      const beforeFilter = accounts.length;
+      const configuredAccounts = [];
+      for (const acc of accounts) {
+        try {
+          const email = await getAccountEmail(acc.id);
+          if (email && configured.includes(email)) {
+            configuredAccounts.push(acc);
+          } else if (email) {
+            console.log(`[OpenMailBot][Monitor] ⊘ Skipping unconfigured account: ${email}`);
+          }
+        } catch (e) {
+          console.warn(`[OpenMailBot][Monitor] Could not get email for account ${acc.id}: ${e.message}`);
+        }
+      }
+      accounts = configuredAccounts;
+      const afterFilter = accounts.length;
+      console.log(`[OpenMailBot][Monitor] Account filtering: ${beforeFilter} total → ${afterFilter} configured (${beforeFilter - afterFilter} skipped)`);
+    } else {
+      console.log(`[OpenMailBot][Monitor] ℹ️ No configured accounts yet — monitor will skip all`);
+      accounts = [];
+    }
+  } catch (e) {
+    console.warn(`[OpenMailBot][Monitor] Could not filter by configured_accounts: ${e.message}`);
+  }
+  
   console.log(`[OpenMailBot][Monitor] Domain filters: ${filters.length} | Accounts: ${accounts.length}`);
 
   let found = 0, processed = 0, filtered = 0, skipped = 0, errors = 0;

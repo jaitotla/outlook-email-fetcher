@@ -99,7 +99,7 @@ class ChromaDBClient(BaseVectorStore):
                 )
             except Exception:
                 # Collection doesn't exist, create it
-                self.collections[namespace] = self.client.get_or_create_collection(
+                self.collections[namespace] = self.client.create_collection(
                     name=namespace,
                     metadata={"hnsw:space": "cosine"}
                 )

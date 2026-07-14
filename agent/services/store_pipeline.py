@@ -174,10 +174,13 @@ class _BaseStorePipeline:
 
     def get_user_collection(self, user_id: str, collection_name: str = "email_threads"):
         client = self.get_user_chroma_client(user_id)
-        return client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
+        try:
+            return client.get_collection(name=collection_name)
+        except Exception:
+            return client.create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"},
+            )
 
 
 # ===========================================================================

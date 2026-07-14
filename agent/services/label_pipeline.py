@@ -18,11 +18,8 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from datetime import datetime
 
-# Import Ollama for native structured output
-try:
-    from ollama import chat as ollama_chat
-except ImportError:
-    ollama_chat = None
+# Import chat_structure from utils for Ollama structured output
+from agent.utils import chat_structure
 
 # Import settings manager
 from agent.services.settings_manager import SettingsManager
@@ -456,13 +453,10 @@ class EmailLabelPipeline:
         """Initialize LLM client based on provider settings"""
         
         if self.llm_provider == "ollama":
-            # Use Ollama native structured output if available
-            if ollama_chat is not None:
-                self.use_ollama_native = True
-                logger.info(f"Using Ollama native structured output at {self.llm_base_url}")
-            else:
-                logger.warning("Ollama library not installed. Install with: pip install ollama")
-                self.llm = None
+            # Use Ollama native structured output via chat_structure() from utils
+            # No need to initialize ollama_chat library - we use chat_structure() function
+            self.use_ollama_native = True
+            logger.info(f"Using Ollama native structured output via chat_structure()")
                 
         elif self.llm_provider == "openai":
             if not self.llm_api_key:
@@ -766,9 +760,8 @@ Provide the label, category, topic, and subtopic for this email based on the use
             if self.use_ollama_native:
                 logger.info(f"Using Ollama native structured output with {self.llm_model}")
                 
-                # Build system prompt without format_instructions
-                system_content = """
-You are a precise email classification and analysis assistant.
+                # Build complete prompt with system and user instructions
+                system_prompt = """You are a precise email classification and analysis assistant.
 
 Your task is to analyze an email and extract:
 1. LABEL - EXACTLY ONE labels from the allowed labels
@@ -813,35 +806,41 @@ restaurant — Restaurant reservations or inquiries
 booking — Non-travel reservations or appointments  
 bank — Banking or financial matters  
 recruitment — Hiring, interviews, or job applications
-Other - other types of emails that don't fit the above categories
-"""
+Other - other types of emails that don't fit the above categories"""
                 
-                user_content = f"""Classify and analyze this email for User: {user_id}
+                user_query = f"""{system_prompt}
+
+Classify and analyze this email for User: {user_id}
 
 From: {from_address}
 To: {to_addresses}
 Subject: {subject}
 Body: {body}
 
-Provide the label, category, topic, and subtopic for this email based on the user's context and priorities."""
+Respond with a valid JSON object containing: label, category, topic, subtopic, subject_matter"""
                 
-                # Call Ollama with structured output
-                response = ollama_chat(
+                # Call Ollama with structured output using chat_structure()
+                result_data = chat_structure(
+                    query=user_query,
+                    json_schema=EmailLabelOutput.model_json_schema(),
                     model=self.llm_model,
-                    messages=[
-                        {'role': 'system', 'content': system_content},
-                        {'role': 'user', 'content': user_content}
-                    ],
-                    format=EmailLabelOutput.model_json_schema(),
-                    options={
-                        'temperature': 0,
-                    }
+                    timeout_seconds=30
                 )
                 
-                # Parse the response using Pydantic
-                result = EmailLabelOutput.model_validate_json(response.message.content)
-                logger.info(f"✅ Ollama classification: {result.label}")
-                return result
+                # Check for errors
+                if "error" in result_data:
+                    logger.warning(f"⚠️  Ollama error: {result_data['error']}")
+                    # Return fallback
+                    return self._get_fallback_label({'subject': subject})
+                
+                # Parse and validate the result
+                try:
+                    result = EmailLabelOutput(**result_data)
+                    logger.info(f"✅ Ollama classification: {result.label}")
+                    return result
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed to validate Ollama response: {e}")
+                    return self._get_fallback_label({'subject': subject})
             
             else:
                 # Use PydanticOutputParser for OpenAI, Anthropic, Groq

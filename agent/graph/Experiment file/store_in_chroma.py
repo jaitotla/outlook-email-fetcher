@@ -148,7 +148,10 @@ from llama_index.core.schema import Document
 print("✓ Step 3: Initializing Chroma vector store...")
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-collection = chroma_client.get_or_create_collection("threads")
+try:
+    collection = chroma_client.get_collection("threads")
+except Exception:
+    collection = chroma_client.create_collection("threads")
 print(f"  - Collection created/retrieved: {collection.name}")
 
 vector_store = ChromaVectorStore(chroma_collection=collection)

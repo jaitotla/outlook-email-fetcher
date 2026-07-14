@@ -264,10 +264,13 @@ class SummarizationPipeline:
     def get_summary_collection(self, user_id: str, collection_name: str = "thread_summaries"):
         """Get or create ChromaDB collection for storing thread summaries"""
         client = self.get_user_chroma_client(user_id)
-        return client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
+        try:
+            return client.get_collection(name=collection_name)
+        except Exception:
+            return client.create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
     
     def get_existing_message_ids_from_thread(self, thread_data: Dict) -> Set[str]:
         """Extract all message IDs from thread JSON data"""
