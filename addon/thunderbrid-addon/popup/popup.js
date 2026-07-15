@@ -729,6 +729,7 @@ function bindEvents() {
 
   // Advanced view
   on("adv-monitor-toggle", "change", handleMonitorToggle);
+  on("adv-monitor-inactivity-hours", "change", handleSaveInactivityHours);
   on("adv-add-filter-btn",   "click", handleAddFilter);
   on("adv-save-filters-btn", "click", handleSaveFilters);
   on("adv-test-filters-btn", "click", handleTestFilters);
@@ -740,9 +741,16 @@ function bindEvents() {
 
   // Bulk status view
   on("bs-refresh-btn",       "click", handleRefreshBulkStatus);
+  on("bs-pause-btn",         "click", handlePauseBulk);
+  on("bs-pause-ok-btn",      "click", handlePauseBulkOk);
+  on("bs-resume-btn",        "click", handleResumeBulk);
+  on("bs-resume-ok-btn",     "click", handleResumeBulkOk);
   on("bs-cancel-btn",        "click", handleCancelBulk);
+  on("bs-cancel-paused-btn", "click", handleCancelBulk);
   on("bs-cancel-ok-btn",     "click", handleCancelBulkOk);
+  on("bs-refresh-paused-btn","click", handleRefreshBulkStatus);
   on("back-from-bulk-btn",   "click", handleOpenHistory);
+  on("back-from-paused-btn", "click", handleOpenHistory);
 
   // History view
   on("back-from-history-btn", "click", showMainMenu);
@@ -1482,9 +1490,10 @@ async function handleOpenHistory() {
 async function handleOpenAdvanced() {
   try {
     showLoading("Loading advanced settings…");
-    const [filtersResp, monitorResp] = await Promise.all([
+    const [filtersResp, monitorResp, storageResp] = await Promise.all([
       send("getDomainFilters", { accountId: currentAccountId, userEmail: currentAccountEmail }),
-      send("getMonitorEnabled", { accountId: currentAccountId, userEmail: currentAccountEmail })
+      send("getMonitorEnabled", { accountId: currentAccountId, userEmail: currentAccountEmail }),
+      browser.storage.local.get(["monitor_inactivity_hours", "user_settings"])
     ]);
     localFilters = filtersResp.filters || [];
     renderFilterList();
@@ -1493,6 +1502,14 @@ async function handleOpenAdvanced() {
     const label   = document.getElementById("adv-monitor-label");
     if (toggle) toggle.checked = enabled;
     if (label)  label.textContent = enabled ? "Enabled" : "Disabled";
+    
+    // Load inactivity hours
+    const inactivityHours = storageResp.monitor_inactivity_hours || 
+                            (storageResp.user_settings && storageResp.user_settings.monitor_inactivity_hours) || 
+                            12;
+    const hoursInput = document.getElementById("adv-monitor-inactivity-hours");
+    if (hoursInput) hoursInput.value = inactivityHours;
+    
     hideStatus("adv-filter-result");
     hideStatus("adv-monitor-status");
     showView("advanced-view");
@@ -1515,6 +1532,51 @@ async function handleMonitorToggle() {
     // Revert toggle on failure
     if (toggle) toggle.checked = !enabled;
     if (label)  label.textContent = !enabled ? "Enabled" : "Disabled";
+  }
+}
+
+async function handleSaveInactivityHours() {
+  const hoursInput = document.getElementById("adv-monitor-inactivity-hours");
+  const hours = hoursInput ? parseInt(hoursInput.value, 10) : 12;
+  
+  // Validate input
+  if (isNaN(hours) || hours < 1 || hours > 720) {
+    setStatus("adv-monitor-status", "❌ Invalid hours (must be 1-720)", true);
+    return;
+  }
+  
+  try {
+    // Save to addon storage
+    await browser.storage.local.set({
+      monitor_inactivity_hours: hours
+    });
+    
+    // Also update user_settings
+    const r = await browser.storage.local.get("user_settings");
+    const settings = r.user_settings || {};
+    settings.monitor_inactivity_hours = String(hours);
+    await browser.storage.local.set({ user_settings: settings });
+    
+    // Sync to backend
+    try {
+      const userId = currentAccountEmail || await getUserId();
+      const backendUrl = await getAgentUrl();
+      await fetch(`${backendUrl}/api/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          user_id: userId, 
+          settings: { monitor_inactivity_hours: hours }
+        }),
+      });
+    } catch (syncErr) {
+      console.warn("Could not sync inactivity hours to backend:", syncErr.message);
+    }
+    
+    setStatus("adv-monitor-status",
+      `✅ Inactivity cap set to ${hours} hours.`, false);
+  } catch (e) {
+    setStatus("adv-monitor-status", "❌ Failed to save: " + e.message, true);
   }
 }
 
@@ -1633,10 +1695,21 @@ async function handleRefreshBulkStatus() {
       setText("bs-skipped",  "—");
       setText("bs-filtered", "—");
       setText("bs-errors",   "—");
+      
+      // Hide pause/resume UI
+      const pauseInfo = document.getElementById("bs-pause-info");
+      if (pauseInfo) pauseInfo.classList.add("hidden");
+      
+      // Show running buttons by default
+      const runningBtns = document.getElementById("bs-buttons-running");
+      const pausedBtns = document.getElementById("bs-buttons-paused");
+      if (runningBtns) runningBtns.style.display = "flex";
+      if (pausedBtns) pausedBtns.style.display = "none";
     } else {
       const st = state.stats || {};
       let statusTxt = state.status || "unknown";
       if (statusTxt === "running")      statusTxt = "⏳ Running\u2026";
+      else if (statusTxt === "paused")      statusTxt = "⏸ Paused";
       else if (statusTxt === "done")        statusTxt = "✅ Done";
       else if (statusTxt === "done_limit") statusTxt = "✅ Done (limit reached — run again to continue)";
       else if (statusTxt === "cancelled")  statusTxt = "⛔ Cancelled";
@@ -1648,6 +1721,30 @@ async function handleRefreshBulkStatus() {
       setText("bs-skipped",  st.skipped    || 0);
       setText("bs-filtered", st.filtered   || 0);
       setText("bs-errors",   st.errors     || 0);
+
+      // ── PAUSE/RESUME UI ──────────────────────────────────────
+      const pauseInfo = document.getElementById("bs-pause-info");
+      const runningBtns = document.getElementById("bs-buttons-running");
+      const pausedBtns = document.getElementById("bs-buttons-paused");
+      
+      if (state.status === "paused") {
+        // Show pause info and pause-specific buttons
+        if (pauseInfo) pauseInfo.classList.remove("hidden");
+        if (runningBtns) runningBtns.style.display = "none";
+        if (pausedBtns) pausedBtns.style.display = "flex";
+        
+        // Display pause checkpoint info
+        const cp = state.checkpoint || {};
+        setText("bs-last-subject", cp.last_subject || "(no messages processed yet)");
+        setText("bs-last-msg-id", cp.last_message_id || "—");
+        setText("bs-paused-at", cp.paused_at ? new Date(cp.paused_at).toLocaleString() : "—");
+        setText("bs-resume-count", state.resume_count || 0);
+      } else {
+        // Show running buttons for running status, hide pause info
+        if (pauseInfo) pauseInfo.classList.add("hidden");
+        if (runningBtns) runningBtns.style.display = "flex";
+        if (pausedBtns) pausedBtns.style.display = "none";
+      }
 
       const total = (st.labeled || 0) + (st.errors || 0);
       const wrap  = document.getElementById("bs-progress-wrap");
@@ -1695,6 +1792,57 @@ function handleCancelBulkOk() {
   if (banner) banner.classList.add("hidden");
   const btn = document.getElementById("bs-cancel-btn");
   if (btn) { btn.disabled = false; btn.textContent = "⛔ Cancel"; }
+}
+
+async function handlePauseBulk() {
+  try {
+    const btn = document.getElementById("bs-pause-btn");
+    if (btn) { btn.disabled = true; btn.textContent = "Pausing…"; }
+    await send("pauseBulkJob", { accountId: currentAccountId, userEmail: currentAccountEmail });
+    console.log("[Popup] Pause requested");
+    // Show confirmation banner
+    const banner = document.getElementById("bs-pause-confirm");
+    if (banner) banner.classList.remove("hidden");
+    // Refresh status after a short delay so UI updates
+    setTimeout(handleRefreshBulkStatus, 1000);
+  } catch (e) {
+    console.error("Pause error:", e);
+    const btn = document.getElementById("bs-pause-btn");
+    if (btn) { btn.disabled = false; btn.textContent = "⏸ Pause"; }
+  }
+}
+
+function handlePauseBulkOk() {
+  const banner = document.getElementById("bs-pause-confirm");
+  if (banner) banner.classList.add("hidden");
+  const btn = document.getElementById("bs-pause-btn");
+  if (btn) { btn.disabled = false; btn.textContent = "⏸ Pause"; }
+}
+
+async function handleResumeBulk() {
+  try {
+    const btn = document.getElementById("bs-resume-btn");
+    if (btn) { btn.disabled = true; btn.textContent = "Resuming…"; }
+    const resp = await send("resumeBulkJob", { accountId: currentAccountId, userEmail: currentAccountEmail });
+    console.log("[Popup] Resume response:", resp);
+    // Show confirmation banner
+    const banner = document.getElementById("bs-resume-confirm");
+    if (banner) banner.classList.remove("hidden");
+    // Refresh status after a short delay
+    setTimeout(handleRefreshBulkStatus, 1000);
+  } catch (e) {
+    console.error("Resume error:", e);
+    showError("Resume failed: " + e.message);
+    const btn = document.getElementById("bs-resume-btn");
+    if (btn) { btn.disabled = false; btn.textContent = "▶️ Resume"; }
+  }
+}
+
+function handleResumeBulkOk() {
+  const banner = document.getElementById("bs-resume-confirm");
+  if (banner) banner.classList.add("hidden");
+  const btn = document.getElementById("bs-resume-btn");
+  if (btn) { btn.disabled = false; btn.textContent = "▶️ Resume"; }
 }
 
 // ── HELPERS ────────────────────────────────────────────

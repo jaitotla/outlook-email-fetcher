@@ -31,6 +31,7 @@ const MONITOR_MAX_IDS             = 5000;    // ring-buffer cap for processed-ID
 const OFFLINE_QUEUE_KEY           = "monitor_offline_queue"; // messages queued while offline
 const OFFLINE_QUEUE_MAX_AGE_MS    = 7 * 24 * 60 * 60 * 1000; // 7 days (cleanup old offline entries)
 const MONITOR_STARTUP_CATCHUP_HRS = 24;     // hours to look back when no stored lastCheck (first load / storage cleared)
+const MONITOR_MAX_INACTIVITY_HRS  = 1;     // 12-hour inactivity cap: if user hasn't checked in 12+ hours, only process last 12 hours to avoid huge backlog
 const STORAGE_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // cleanup every 6 hours
 
 // ─── MONITOR CONCURRENCY CONTROL ──────────────────────────────────────────────
@@ -731,18 +732,88 @@ async function handleGetAccountEmail({ accountId }) {
 
 async function handleGetBulkJobStatus({ accountId, userEmail }) {
   // FIX: Could support per-account job status in future
-  const r = await browser.storage.local.get(["bulk_job_state","bulk_job_abort"]);
-  return { success: true, state: r.bulk_job_state||null, aborted: r.bulk_job_abort===true };
+  const r = await browser.storage.local.get(["bulk_job_state","bulk_job_abort","bulk_job_pause"]);
+  return { 
+    success: true, 
+    state: r.bulk_job_state||null, 
+    aborted: r.bulk_job_abort===true,
+    paused: r.bulk_job_pause===true
+  };
 }
 
 async function handleCancelBulkJob({ accountId, userEmail }) {
   // FIX: Could support per-account bulk jobs in future
   try {
-    await _safeStorageSet({ bulk_job_abort: true }, "cancel bulk job");
+    // Cancel clears both pause and abort, so job won't resume
+    await _safeStorageSet({ 
+      bulk_job_abort: true,
+      bulk_job_pause: false,
+      bulk_job_state: null 
+    }, "cancel bulk job");
   } catch (e) {
     console.warn("[BulkJob] Could not set abort flag:", e.message);
   }
   return { success: true };
+}
+
+async function handlePauseBulkJob({ accountId, userEmail }) {
+  // Pause (different from cancel): preserves state for resuming later
+  try {
+    await _safeStorageSet({ bulk_job_pause: true }, "pause bulk job");
+    console.log("[BulkJob] ⏸ Pause requested - job will save checkpoint and stop");
+  } catch (e) {
+    console.warn("[BulkJob] Could not set pause flag:", e.message);
+  }
+  return { success: true };
+}
+
+async function handleResumeBulkJob({ accountId, userEmail }) {
+  // Resume from paused state
+  const r = await browser.storage.local.get("bulk_job_state");
+  const state = r.bulk_job_state;
+  
+  if (!state) {
+    return { error: "No paused job found to resume" };
+  }
+  
+  if (state.status !== "paused") {
+    return { error: `Cannot resume job with status: ${state.status}. Only paused jobs can be resumed.` };
+  }
+  
+  try {
+    // Clear pause flag and set status to running
+    await _safeStorageSet({ 
+      bulk_job_pause: false,
+      bulk_job_abort: false
+    }, "resume bulk job");
+    
+    // Update state to running and increment resume count
+    const resumedState = Object.assign({}, state, {
+      status: "running",
+      resume_count: (state.resume_count || 0) + 1,
+      paused_at: null
+    });
+    await _safeStorageSet({ bulk_job_state: resumedState }, "update state to resuming");
+    
+    console.log(`[BulkJob] ▶️ Resuming job (resume_count=${resumedState.resume_count})`);
+    
+    // Start async resume process (don't await, let it run in background)
+    _resumeBulkAsync(resumedState, accountId, userEmail).catch(e => {
+      console.error("[BulkJob] Resume process error:", e.message);
+      _safeStorageSet({ 
+        bulk_job_state: Object.assign({}, resumedState, { 
+          status: "error", 
+          error: `Resume failed: ${e.message}` 
+        }) 
+      }, "resume error").catch(err => 
+        console.error("[Storage] Could not save resume error:", err.message)
+      );
+    });
+    
+    return { success: true, state: resumedState };
+  } catch (e) {
+    return { error: `Failed to resume: ${e.message}` };
+  }
 }
 
 async function handleRunBulkProcess({ months, accountId, userEmail }) {
@@ -771,16 +842,42 @@ async function handleRunBulkProcess({ months, accountId, userEmail }) {
   console.log(`[OpenMailBot][BulkStart] Config: ${JSON.stringify(cfg, null, 2)}\n`);
   
   const state = {
-    n: is10Days ? 10 : n, months: is10Days ? "10days" : String(n),
+    n: is10Days ? 10 : n, 
+    months: is10Days ? "10days" : String(n),
     afterStr : after.toLocaleDateString(),
     beforeStr: before.toLocaleDateString(),
     accountId: accountId || null,
     userEmail: userEmail || null,  // FIX: Store user email in state
     status   : "running",
     offset   : 0,
-    stats    : { threadsScanned:0, messagesFound:0, labeled:0, skipped:0, filtered:0, errors:0 }
+    stats    : { threadsScanned:0, messagesFound:0, labeled:0, skipped:0, filtered:0, errors:0 },
+    
+    // ── PAUSE/RESUME CHECKPOINT ──────────────────────────────
+    checkpoint: {
+      from_date: after.toISOString().split('T')[0],
+      to_date: before.toISOString().split('T')[0],
+      account_index: 0,
+      account_id: null,
+      folder_index: 0,
+      folder_path: null,
+      message_page_id: null,
+      message_batch_index: 0,
+      message_offset: 0,
+      last_message_id: null,
+      last_subject: null,
+      last_processed_time: null
+    },
+    
+    // ── PAUSE METADATA ────────────────────────────────────
+    paused_at: null,
+    pause_reason: null,
+    resume_count: 0
   };
-  await _safeStorageSet({ bulk_job_state: state, bulk_job_abort: false }, "start bulk job");
+  await _safeStorageSet({ 
+    bulk_job_state: state, 
+    bulk_job_abort: false,
+    bulk_job_pause: false
+  }, "start bulk job");
   _runBulkAsync(n, after, before, state, accountId, userEmail).catch(e => {
     console.error("\n[OpenMailBot] BULK PROCESS ERROR:", e.message);
     console.error("[OpenMailBot] Stack:", e.stack);
@@ -789,6 +886,252 @@ async function handleRunBulkProcess({ months, accountId, userEmail }) {
     );
   });
   return { success: true, state };
+}
+
+/**
+ * Resume a paused bulk job from saved checkpoint
+ * Restores iteration state and continues processing
+ */
+async function _resumeBulkAsync(state, accountId, userEmail) {
+  const cfg        = await getAddonConfig();
+  const bp         = cfg.bulk_processing || {};
+  const BATCH      = bp.batch_size           || 10;
+  const MAX_MSGS   = bp.max_messages_per_run || 2000;
+  const DELAY_MS   = bp.request_delay_ms     || 200;
+  
+  const checkpoint = state.checkpoint || {};
+  const afterStr = checkpoint.from_date;
+  const beforeStr = checkpoint.to_date;
+  
+  const after = new Date(afterStr + 'T00:00:00Z');
+  const before = new Date(beforeStr + 'T23:59:59Z');
+  
+  console.log(`\n[OpenMailBot][Resume] ▶️ RESUMING from checkpoint`);
+  console.log(`[OpenMailBot][Resume] Date range: ${afterStr} → ${beforeStr}`);
+  console.log(`[OpenMailBot][Resume] Resume count: ${state.resume_count}`);
+  console.log(`[OpenMailBot][Resume] Last processed: ${checkpoint.last_subject || "(none)"} (ID: ${checkpoint.last_message_id})`);
+  console.log(`[OpenMailBot][Resume] Starting from account_index=${checkpoint.account_index}, folder_index=${checkpoint.folder_index}\n`);
+  
+  let defaultUserId = userEmail;
+  if (!defaultUserId) {
+    if (accountId) {
+      try {
+        defaultUserId = await getAccountEmail(accountId);
+      } catch (e) {
+        console.warn(`[OpenMailBot][Resume] Could not get email for account: ${e.message}`);
+      }
+    }
+    if (!defaultUserId) {
+      defaultUserId = await getUserId();
+    }
+  }
+  
+  const backendUrl = await getBackendUrl();
+  const filters    = await _getMergedDomainFilters();
+  
+  let totalProcessed = 0;
+  const allAccounts = await browser.accounts.list();
+  const accounts = accountId
+    ? allAccounts.filter(a => a.id === accountId)
+    : allAccounts;
+  
+  console.log(`[OpenMailBot][Resume] Processing ${accounts.length} account(s)`);
+  
+  // Start from checkpoint account_index
+  for (let acctIdx = checkpoint.account_index || 0; acctIdx < accounts.length; acctIdx++) {
+    if (totalProcessed >= MAX_MSGS) break;
+    
+    const acc = accounts[acctIdx];
+    let accountEmail = defaultUserId;
+    try {
+      const email = await getAccountEmail(acc.id);
+      if (email) accountEmail = email;
+    } catch (e) {
+      console.warn(`[OpenMailBot][Resume] Could not get email for account, using default`);
+    }
+    
+    state.checkpoint.account_index = acctIdx;
+    state.checkpoint.account_id = acc.id;
+    
+    const allFolders = _collectAllFolders(acc.folders);
+    console.log(`[OpenMailBot][Resume] Account ${acctIdx}: ${acc.name} - ${allFolders.length} folder(s)`);
+    
+    // Start from checkpoint folder_index (reset if new account)
+    const folderStartIdx = acctIdx === (checkpoint.account_index || 0) ? (checkpoint.folder_index || 0) : 0;
+    
+    for (let folderIdx = folderStartIdx; folderIdx < allFolders.length; folderIdx++) {
+      if (totalProcessed >= MAX_MSGS) break;
+      
+      const folder = allFolders[folderIdx];
+      state.checkpoint.folder_index = folderIdx;
+      state.checkpoint.folder_path = folder.name;
+      
+      let page;
+      try {
+        page = await browser.messages.list(folder);
+      } catch (e) {
+        console.warn(`[OpenMailBot][Resume] Cannot list folder: ${folder.name}`);
+        continue;
+      }
+      
+      // If resuming within the same folder, try to restore page continuation
+      if (acctIdx === (checkpoint.account_index || 0) && 
+          folderIdx === (checkpoint.folder_index || 0) && 
+          checkpoint.message_page_id) {
+        try {
+          console.log(`[OpenMailBot][Resume] Restoring page: ${checkpoint.message_page_id}`);
+          page = await browser.messages.continueList(checkpoint.message_page_id);
+        } catch (e) {
+          console.warn(`[OpenMailBot][Resume] Could not restore page, starting fresh: ${e.message}`);
+          // Fallback: restart folder (page ID may have expired)
+          try {
+            page = await browser.messages.list(folder);
+          } catch (e2) {
+            console.warn(`[OpenMailBot][Resume] Cannot restart folder either`);
+            continue;
+          }
+        }
+      }
+      
+      let pageCount = 0;
+      while (page) {
+        pageCount++;
+        
+        // Check for pause
+        const pc = await browser.storage.local.get("bulk_job_pause");
+        if (pc.bulk_job_pause) {
+          console.log(`[OpenMailBot][Resume] ⏸ Pause detected during resuming`);
+          state.status = "paused";
+          state.paused_at = new Date().toISOString();
+          state.pause_reason = "user";
+          state.message_page_id = page.id;  // Save for resume
+          try {
+            await _safeStorageSet({ 
+              bulk_job_state: state,
+              bulk_job_pause: true 
+            }, "pause during resume");
+          } catch (e) {
+            console.error("[Resume] Could not save pause state:", e.message);
+          }
+          return;
+        }
+        
+        // Check for abort
+        const ac = await browser.storage.local.get("bulk_job_abort");
+        if (ac.bulk_job_abort) {
+          console.log(`[OpenMailBot][Resume] 🛑 Abort detected during resuming`);
+          state.status = "cancelled";
+          try {
+            await _safeStorageSet({ bulk_job_state: state }, "cancel during resume");
+          } catch (e) {
+            console.error("[Resume] Could not save cancel state:", e.message);
+          }
+          return;
+        }
+        
+        const rawMsgs = page.messages || [];
+        console.log(`[OpenMailBot][Resume] Page ${pageCount}: ${rawMsgs.length} message(s)`);
+        state.stats.threadsScanned += rawMsgs.length;
+        
+        // Filter messages
+        const msgs = rawMsgs.filter(m => {
+          const d = m.date ? new Date(m.date) : null;
+          if (!d || isNaN(d.getTime())) return false;
+          if (d < after || d > before) return false;
+          if (_shouldFilterEmail(m.author, filters)) { state.stats.filtered++; return false; }
+          if ((m.recipients||[]).some(r => _shouldFilterEmail(r, filters))) { state.stats.filtered++; return false; }
+          return true;
+        });
+        
+        state.stats.messagesFound += msgs.length;
+        
+        // Process batches
+        for (let i = 0; i < msgs.length; i += BATCH) {
+          if (totalProcessed >= MAX_MSGS) break;
+          
+          // Skip batches we already processed (for resume in middle of folder)
+          if (acctIdx === (checkpoint.account_index || 0) && 
+              folderIdx === (checkpoint.folder_index || 0) && 
+              pageCount === 1 && 
+              checkpoint.message_batch_index && 
+              Math.floor(i / BATCH) < checkpoint.message_batch_index) {
+            console.log(`[OpenMailBot][Resume] Skipping already-processed batch ${Math.floor(i/BATCH)}`);
+            continue;
+          }
+          
+          for (const msg of msgs.slice(i, i + BATCH)) {
+            if (totalProcessed >= MAX_MSGS) break;
+            
+            try {
+              const full = await browser.messages.getFull(msg.id);
+              const tid = _getCanonicalThreadId(msg, full);
+              const atts = await _getAttachments(msg.id);
+              
+              if (atts.length) {
+                const storeAttsUrl = `${backendUrl}/api/store-attachments`;
+                await _storeAtts(backendUrl, accountEmail, tid, String(msg.id), atts);
+              }
+              
+              const labelEmailUrl = `${backendUrl}/api/label-email`;
+              const msgData = _fmtMsg(msg, full);
+              const labelResult = await _labelEmailOnServer(backendUrl, accountEmail, tid, [msgData]);
+              const assignedLabel = labelResult && (labelResult.label || labelResult.category);
+              
+              if (assignedLabel) {
+                await _applyThunderbirdTag(msg.id, assignedLabel);
+              }
+              
+              state.stats.labeled++;
+              state.checkpoint.last_message_id = msg.id;
+              state.checkpoint.last_subject = msg.subject;
+              state.checkpoint.last_processed_time = new Date().toISOString();
+              totalProcessed++;
+            } catch (e) {
+              console.error(`[Resume] Error processing msg ${msg.id}:`, e.message);
+              state.stats.errors++;
+              totalProcessed++;
+            }
+            
+            await new Promise(r => setTimeout(r, DELAY_MS));
+          }
+          
+          state.offset = state.stats.labeled + state.stats.errors;
+          state.checkpoint.message_batch_index = Math.floor(i / BATCH) + 1;
+          try {
+            await _safeStorageSet({ bulk_job_state: state }, "update resume progress");
+          } catch (e) {
+            console.warn(`[Resume] Could not save progress: ${e.message}`);
+          }
+        }
+        
+        if (page.id) {
+          try {
+            page = await browser.messages.continueList(page.id);
+            state.checkpoint.message_page_id = page ? page.id : null;
+          } catch (e) {
+            console.warn(`[Resume] continueList failed: ${e.message}`);
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+      
+      // Reset page tracking for next folder
+      state.checkpoint.message_page_id = null;
+      state.checkpoint.message_batch_index = 0;
+    }
+  }
+  
+  const finalStatus = totalProcessed >= MAX_MSGS ? "done_limit" : "done";
+  console.log(`[OpenMailBot][Resume] ■ Finished | status=${finalStatus} | totalProcessed=${totalProcessed}`);
+  try {
+    await _safeStorageSet({ 
+      bulk_job_state: Object.assign({}, state, { status: finalStatus }) 
+    }, "save resume final status");
+  } catch (e) {
+    console.error(`[Resume] Could not save final status: ${e.message}`);
+  }
 }
 
 async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
@@ -837,8 +1180,12 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
   
   console.log(`[OpenMailBot][BulkIndex] Found ${accounts.length} mail account(s) to process${accountId ? ` (filtered to: ${accountId})` : ""}`);
   
-  for (const acc of accounts) {
+  for (let acctIdx = 0; acctIdx < accounts.length; acctIdx++) {
     if (totalProcessed >= MAX_MSGS) break;
+    
+    const acc = accounts[acctIdx];
+    state.checkpoint.account_index = acctIdx;
+    state.checkpoint.account_id = acc.id;
     
     // FIX: Get the email address for THIS specific account
     let accountEmail = defaultUserId;
@@ -858,9 +1205,13 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
     const allFolders = _collectAllFolders(acc.folders);
     console.log(`[OpenMailBot][BulkIndex] Found ${allFolders.length} folder(s) to scan`);
     
-    for (const folder of allFolders) {
+    for (let folderIdx = 0; folderIdx < allFolders.length; folderIdx++) {
       if (totalProcessed >= MAX_MSGS) break;
 
+      const folder = allFolders[folderIdx];
+      state.checkpoint.folder_index = folderIdx;
+      state.checkpoint.folder_path = folder.name;
+      
       console.log(`[OpenMailBot][BulkIndex] 📂 Scanning folder: "${folder.name}" (type=${folder.type||"unknown"})`);
 
       let page;
@@ -871,8 +1222,30 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
         continue;
       }
 
+      let pageNum = 0;
       while (page) {
-        // Abort check
+        pageNum++;
+        
+        // ── PAUSE CHECK ──────────────────────────────────────────
+        const pc = await browser.storage.local.get("bulk_job_pause");
+        if (pc.bulk_job_pause) {
+          console.log(`[OpenMailBot][BulkIndex] ⏸ Pause detected - saving checkpoint`);
+          state.status = "paused";
+          state.paused_at = new Date().toISOString();
+          state.pause_reason = "user";
+          state.checkpoint.message_page_id = page.id;  // Save pagination token
+          try {
+            await _safeStorageSet({ 
+              bulk_job_state: state,
+              bulk_job_pause: true 
+            }, "pause bulk job with checkpoint");
+          } catch (e) {
+            console.error("[OpenMailBot][BulkIndex] Could not save pause checkpoint:", e.message);
+          }
+          return;
+        }
+        
+        // ── ABORT CHECK ──────────────────────────────────────────
         const ac = await browser.storage.local.get("bulk_job_abort");
         if (ac.bulk_job_abort) {
           console.log(`[OpenMailBot][BulkIndex] 🛑 Abort detected`);
@@ -885,7 +1258,7 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
         }
 
         const rawMsgs = page.messages || [];
-        console.log(`[OpenMailBot][BulkIndex] Page has ${rawMsgs.length} message(s)`);
+        console.log(`[OpenMailBot][BulkIndex] Page ${pageNum} has ${rawMsgs.length} message(s)`);
         state.stats.threadsScanned += rawMsgs.length;
 
         // Filter by date and domain
@@ -905,6 +1278,25 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
         for (let i = 0; i < msgs.length; i += BATCH) {
           if (totalProcessed >= MAX_MSGS) break;
 
+          // ── PAUSE & ABORT CHECK IN BATCH ────────────────────────
+          const pc2 = await browser.storage.local.get("bulk_job_pause");
+          if (pc2.bulk_job_pause) {
+            console.log(`[OpenMailBot][BulkIndex] ⏸ Pause detected in batch - saving checkpoint`);
+            state.status = "paused";
+            state.paused_at = new Date().toISOString();
+            state.checkpoint.message_page_id = page.id;
+            state.checkpoint.message_batch_index = Math.floor(i / BATCH);
+            try {
+              await _safeStorageSet({ 
+                bulk_job_state: state,
+                bulk_job_pause: true 
+              }, "pause in batch");
+            } catch (e) {
+              console.error("[BulkIndex] Could not save pause in batch:", e.message);
+            }
+            return;
+          }
+          
           const ac2 = await browser.storage.local.get("bulk_job_abort");
           if (ac2.bulk_job_abort) {
             console.log(`[OpenMailBot][BulkIndex] 🛑 Abort detected in batch loop`);
@@ -954,7 +1346,11 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
                 await _applyThunderbirdTag(msg.id, assignedLabel);
               }
 
+              // ── UPDATE CHECKPOINT ────────────────────────────────────
               state.stats.labeled++;
+              state.checkpoint.last_message_id = msg.id;
+              state.checkpoint.last_subject = msg.subject;
+              state.checkpoint.last_processed_time = new Date().toISOString();
               totalProcessed++;
             } catch(e) {
               console.error(`[OpenMailBot][BulkIndex] ✗ Error processing msg_id=${msg.id} subject="${msg.subject}":`, e.message);
@@ -966,6 +1362,7 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
           }
 
           state.offset = state.stats.labeled + state.stats.errors;
+          state.checkpoint.message_batch_index = Math.floor(i / BATCH) + 1;
           try {
             await _safeStorageSet({ bulk_job_state: state }, "update bulk job progress");
           } catch (e) {
@@ -974,12 +1371,22 @@ async function _runBulkAsync(n, after, before, state, accountId, userEmail) {
         }
 
         if (page.id) {
-          try { page = await browser.messages.continueList(page.id); }
-          catch(e) { console.warn("[OpenMailBot] continueList:", e.message); break; }
+          try { 
+            page = await browser.messages.continueList(page.id);
+            state.checkpoint.message_page_id = page ? page.id : null;
+          }
+          catch(e) { 
+            console.warn("[OpenMailBot] continueList:", e.message); 
+            break; 
+          }
         } else {
           break;
         }
       }
+      
+      // Reset page tracking when moving to next folder
+      state.checkpoint.message_page_id = null;
+      state.checkpoint.message_batch_index = 0;
     }
   }
 
@@ -1211,6 +1618,38 @@ async function monitorNewEmails() {
 
     const backendUrl = await getBackendUrl();
     if (!backendUrl) { console.log("[OpenMailBot][Monitor] No backend URL — skipping"); return; }
+
+    // Load last check time (when monitor last ran)
+    const lastCheckData = await browser.storage.local.get(MONITOR_LAST_CHECK_KEY);
+    let lastCheck = lastCheckData[MONITOR_LAST_CHECK_KEY]
+      ? new Date(lastCheckData[MONITOR_LAST_CHECK_KEY])
+      : new Date(Date.now() - (MONITOR_STARTUP_CATCHUP_HRS * 60 * 60 * 1000));
+    
+    const now = new Date();
+
+    // ─── INACTIVITY CAP: Load from storage or use default ─────────────────────────
+    // Users can configure this in addon settings; defaults to MONITOR_MAX_INACTIVITY_HRS
+    let maxInactivityHrs = MONITOR_MAX_INACTIVITY_HRS;
+    try {
+      const storageData = await browser.storage.local.get(["monitor_inactivity_hours", "user_settings"]);
+      if (storageData.monitor_inactivity_hours) {
+        maxInactivityHrs = parseInt(storageData.monitor_inactivity_hours, 10) || MONITOR_MAX_INACTIVITY_HRS;
+      } else if (storageData.user_settings && storageData.user_settings.monitor_inactivity_hours) {
+        maxInactivityHrs = parseInt(storageData.user_settings.monitor_inactivity_hours, 10) || MONITOR_MAX_INACTIVITY_HRS;
+      }
+    } catch (e) {
+      console.warn(`[Monitor] Could not load inactivity cap from storage: ${e.message}`);
+    }
+
+    // ─── INACTIVITY CAP: If user hasn't been active for cap+ hours, only scan last cap hours ────
+    // This prevents processing huge backlogs when user is inactive (not an ideal customer)
+    const hoursSinceLastCheck = (now - lastCheck) / (1000 * 60 * 60);
+    if (hoursSinceLastCheck > maxInactivityHrs) {
+      const cappedTime = new Date(now.getTime() - (maxInactivityHrs * 60 * 60 * 1000));
+      console.log(`[OpenMailBot][Monitor] ⏱️ INACTIVITY CAP: Last check was ${hoursSinceLastCheck.toFixed(1)}h ago (> ${maxInactivityHrs}h threshold).`);
+      console.log(`[OpenMailBot][Monitor] ⏱️ Capping to last ${maxInactivityHrs} hours: ${lastCheck.toISOString()} → ${cappedTime.toISOString()}`);
+      lastCheck = cappedTime;
+    }
 
     // FIX: Save the "now" timestamp immediately as the new check boundary
     // This prevents other concurrent calls from scanning the same time window again
@@ -1855,6 +2294,8 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     runBulkProcess       : () => handleRunBulkProcess(message.data),
     getBulkJobStatus     : () => handleGetBulkJobStatus(message.data || {}),
     cancelBulkJob        : () => handleCancelBulkJob(message.data || {}),
+    pauseBulkJob         : () => handlePauseBulkJob(message.data || {}),
+    resumeBulkJob        : () => handleResumeBulkJob(message.data || {}),
     saveProcessMonths    : () => handleSaveProcessMonths(message.data),
     getProcessMonths     : () => handleGetProcessMonths(message.data || {}),
     getAccountsList      : () => handleGetAccountsList(),

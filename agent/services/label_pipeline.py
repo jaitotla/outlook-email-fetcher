@@ -16,7 +16,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_groq import ChatGroq
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # Import chat_structure from utils for Ollama structured output
 from agent.utils import chat_structure
@@ -937,6 +937,121 @@ Respond with a valid JSON object containing: label, category, topic, subtopic, s
         
         return self.label_email(email_data)
     
+    def _parse_email_timestamp(self, timestamp_str: str) -> Optional[datetime]:
+        """
+        Parse email timestamp in ISO 8601 format (e.g., 2026-07-15T14:30:45.123Z).
+        
+        Args:
+            timestamp_str: Timestamp string in ISO 8601 format
+            
+        Returns:
+            datetime object in UTC, or None if parsing fails
+        """
+        if not timestamp_str:
+            return None
+        
+        try:
+            # Handle ISO 8601 format with Z suffix
+            if isinstance(timestamp_str, str):
+                # Remove 'Z' if present and parse
+                if timestamp_str.endswith('Z'):
+                    timestamp_str = timestamp_str[:-1] + '+00:00'
+                
+                # Try parsing with timezone info
+                parsed_dt = datetime.fromisoformat(timestamp_str)
+                
+                # Ensure UTC timezone
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                else:
+                    # Convert to UTC if different timezone
+                    parsed_dt = parsed_dt.astimezone(timezone.utc)
+                
+                return parsed_dt
+            else:
+                # If already a datetime object, ensure it has UTC timezone
+                if isinstance(timestamp_str, datetime):
+                    if timestamp_str.tzinfo is None:
+                        return timestamp_str.replace(tzinfo=timezone.utc)
+                    return timestamp_str.astimezone(timezone.utc)
+                
+                return None
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to parse email timestamp '{timestamp_str}': {e}")
+            return None
+    
+    def is_email_inactive(self, email_timestamp: str, user_id: str, monitor_inactivity_hours: Optional[int] = None) -> bool:
+        """
+        Check if an email is older than the user's monitor_inactivity_hours setting.
+        
+        LOGIC:
+        - Get user's monitor_inactivity_hours setting (default: 12 hours)
+        - Parse email timestamp (ISO 8601 format: 2026-07-15T14:30:45.123Z)
+        - If (current_time - email_time) > monitor_inactivity_hours, email is INACTIVE
+        - INACTIVE emails are SKIPPED from the label pipeline (not processed)
+        - ACTIVE emails are processed normally
+        
+        Args:
+            email_timestamp: Email timestamp string (ISO 8601 format)
+            user_id: User ID for fetching monitor_inactivity_hours from settings
+            monitor_inactivity_hours: Override inactivity hours (if None, fetches from settings)
+            
+        Returns:
+            True if email is inactive (should be skipped), False if active (should process)
+        """
+        # Parse email timestamp
+        email_dt = self._parse_email_timestamp(email_timestamp)
+        if not email_dt:
+            logger.warning(f"⚠️  Could not parse email timestamp '{email_timestamp}' - treating as ACTIVE (will process)")
+            return False  # Process if we can't parse timestamp
+        
+        # Get monitor_inactivity_hours from user settings if not provided
+        if monitor_inactivity_hours is None:
+            try:
+                settings_manager = SettingsManager(user_id)
+                user_settings = settings_manager.get_settings(setting_type="general")
+                monitor_inactivity_hours = (user_settings or {}).get("monitor_inactivity_hours", 12)
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to fetch monitor_inactivity_hours from settings: {e}")
+                monitor_inactivity_hours = 12  # Default to 12 hours
+        
+        # Ensure monitor_inactivity_hours is a positive integer
+        try:
+            monitor_inactivity_hours = int(monitor_inactivity_hours)
+            if monitor_inactivity_hours < 0:
+                monitor_inactivity_hours = 12
+        except (ValueError, TypeError):
+            monitor_inactivity_hours = 12
+        
+        # Get current time in UTC
+        current_time = datetime.now(timezone.utc)
+        
+        # Calculate inactivity threshold
+        inactivity_threshold = current_time - timedelta(hours=monitor_inactivity_hours)
+        
+        # Check if email is older than inactivity threshold
+        is_inactive = email_dt < inactivity_threshold
+        
+        # Log the decision
+        time_diff_hours = (current_time - email_dt).total_seconds() / 3600
+        
+        if is_inactive:
+            logger.info(f"⏭️  SKIPPING INACTIVE EMAIL")
+            logger.info(f"   Email timestamp: {email_dt.isoformat()}")
+            logger.info(f"   Current time: {current_time.isoformat()}")
+            logger.info(f"   Email age: {time_diff_hours:.2f} hours")
+            logger.info(f"   Inactivity threshold: {monitor_inactivity_hours} hours")
+            logger.info(f"   Status: Email is {time_diff_hours - monitor_inactivity_hours:.2f} hours older than threshold")
+        else:
+            logger.info(f"✅ EMAIL IS ACTIVE - will process normally")
+            logger.info(f"   Email timestamp: {email_dt.isoformat()}")
+            logger.info(f"   Current time: {current_time.isoformat()}")
+            logger.info(f"   Email age: {time_diff_hours:.2f} hours")
+            logger.info(f"   Inactivity threshold: {monitor_inactivity_hours} hours")
+            logger.info(f"   Status: Email is within {monitor_inactivity_hours}-hour activity window")
+        
+        return is_inactive
+    
     def label_and_store_thread(self, thread_id: str, messages: List[Dict[str, Any]], user_id: str = None) -> Dict[str, Any]:
         """
         Label a thread with cache optimization and store it in SQLite database.
@@ -986,8 +1101,30 @@ Respond with a valid JSON object containing: label, category, topic, subtopic, s
         print(f"  Last Message ID: {last_message_id}")
         print(f"  Timestamp: {timestamp}")
         
-        # Step 2: CHECK CACHE - Return cached label if exists with matching message_id
-        print("\nStep 2: Checking cache for existing label...")
+        # Step 2: INACTIVITY CHECK - Skip processing if email is older than monitor_inactivity_hours
+        print("\nStep 2: Checking email activity status...")
+        if timestamp:
+            if self.is_email_inactive(timestamp, user_id):
+                # Email is inactive - SKIP processing
+                print("⏭️  EMAIL IS INACTIVE - Skipping pipeline processing")
+                inactive_result = {
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "label": None,
+                    "status": "SKIPPED_INACTIVE",
+                    "reason": f"Email timestamp {timestamp} exceeds monitor_inactivity_hours threshold",
+                    "timestamp": timestamp,
+                    "source": "inactivity_filter"
+                }
+                print("\n" + "="*70)
+                print("⏭️  Thread skipped due to inactivity!")
+                print("="*70)
+                return inactive_result
+        else:
+            logger.warning(f"⚠️  No timestamp found in email - will process normally")
+        
+        # Step 3: CHECK CACHE - Return cached label if exists with matching message_id
+        print("\nStep 3: Checking cache for existing label...")
         if last_message_id:
             cached_label = self.get_cached_label_if_exists(user_id, thread_id, last_message_id)
             if cached_label:
@@ -1007,14 +1144,14 @@ Respond with a valid JSON object containing: label, category, topic, subtopic, s
                 print("="*70)
                 return combined_result
         
-        # Step 3: CACHE MISS - Process through full pipeline
-        print("\nStep 3: CACHE MISS - Processing through label pipeline...")
+        # Step 4: CACHE MISS - Process through full pipeline
+        print("\nStep 4: CACHE MISS - Processing through label pipeline...")
         ollama_pipeline = OllamaEmailLabelPipeline()
         label_result = ollama_pipeline.label_thread(messages)
         print(f"✓ Label: {label_result.label}")
         
-        # Step 4: Store label in SQLite database with last_message_id
-        print("\nStep 4: Storing label in SQLite database with message tracking...")
+        # Step 5: Store label in SQLite database with last_message_id
+        print("\nStep 5: Storing label in SQLite database with message tracking...")
         
         label_data = {
             'label': label_result.label,

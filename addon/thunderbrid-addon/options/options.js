@@ -142,7 +142,8 @@ const DEFAULT_SETTINGS = {
   user_name: "",
   user_position: "",
   user_tone: "professional",
-  system_prompt: ""
+  system_prompt: "",
+  monitor_inactivity_hours: "12"
 };
 
 // Load the bundled addon_config.json

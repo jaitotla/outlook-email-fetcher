@@ -65,6 +65,9 @@ h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: #333; }
 .btn-danger-outline         { background: #fff; color: #d93025; border: 1px solid #d93025; }
 .btn-danger-outline:hover   { background: #fce8e6; }
 
+.btn-warning-outline        { background: #fff; color: #f57c00; border: 1px solid #f57c00; }
+.btn-warning-outline:hover  { background: #fff3e0; }
+
 /* deprecated alias */
 .btn-default { background: #fff; color: #333; border: 1px solid #dadce0; }
 .btn-default:hover { background: #f8f9fa; }
