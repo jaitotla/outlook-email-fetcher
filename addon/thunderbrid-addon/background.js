@@ -31,7 +31,7 @@ const MONITOR_MAX_IDS             = 5000;    // ring-buffer cap for processed-ID
 const OFFLINE_QUEUE_KEY           = "monitor_offline_queue"; // messages queued while offline
 const OFFLINE_QUEUE_MAX_AGE_MS    = 7 * 24 * 60 * 60 * 1000; // 7 days (cleanup old offline entries)
 const MONITOR_STARTUP_CATCHUP_HRS = 24;     // hours to look back when no stored lastCheck (first load / storage cleared)
-const MONITOR_MAX_INACTIVITY_HRS  = 1;     // 12-hour inactivity cap: if user hasn't checked in 12+ hours, only process last 12 hours to avoid huge backlog
+const MONITOR_MAX_INACTIVITY_HRS  = 12;     // 12-hour inactivity cap: if user hasn't checked in 12+ hours, only process last 12 hours to avoid huge backlog
 const STORAGE_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // cleanup every 6 hours
 
 // ─── MONITOR CONCURRENCY CONTROL ──────────────────────────────────────────────
@@ -223,22 +223,23 @@ async function _getMergedDomainFilters() {
 }
 
 const DEFAULT_SETTINGS = {
-  agent_url          : DEFAULT_FLASK_URL,
-  mode               : "manotr",
-  llm_provider       : "manotr",
-  llm_api_key        : "",
-  llm_model          : "gpt-4o-mini",
-  llm_base_url       : "",
-  embedding_provider : "manotr",
-  embedding_api_key  : "",
-  embedding_model    : "text-embedding-3-small",
-  vector_provider    : "manotr",
-  vector_url         : "",
-  vector_api_key     : "",
-  user_name          : "",
-  user_position      : "",
-  user_tone          : "professional",
-  system_prompt      : ""
+  agent_url                 : DEFAULT_FLASK_URL,
+  mode                      : "manotr",
+  llm_provider              : "manotr",
+  llm_api_key               : "",
+  llm_model                 : "gpt-4o-mini",
+  llm_base_url              : "",
+  embedding_provider        : "manotr",
+  embedding_api_key         : "",
+  embedding_model           : "text-embedding-3-small",
+  vector_provider           : "manotr",
+  vector_url                : "",
+  vector_api_key            : "",
+  user_name                 : "",
+  user_position             : "",
+  user_tone                 : "professional",
+  system_prompt             : "",
+  monitor_inactivity_hours  : "12"
 };
 
 /* keep a reference so other functions below can use DEFAULT_FLASK_SERVER_URL */

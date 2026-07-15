@@ -1205,7 +1205,8 @@ async function handleOnboardingSave() {
     user_position      : getVal("ob-user-position"),
     user_tone          : getVal("ob-user-tone")          || "professional",
     system_prompt      : getVal("ob-system-prompt"),
-    draft_font         : getVal("ob-draft-font")         || "arial"
+    draft_font         : getVal("ob-draft-font")         || "arial",
+    monitor_inactivity_hours: getVal("ob-monitor-inactivity-hours") || "12"
   };
 
   // Apply provider-specific model defaults if models are empty

@@ -985,7 +985,7 @@ Respond with a valid JSON object containing: label, category, topic, subtopic, s
         Check if an email is older than the user's monitor_inactivity_hours setting.
         
         LOGIC:
-        - Get user's monitor_inactivity_hours setting (default: 12 hours)
+        - Get user's monitor_inactivity_hours setting (default: 24 hours)
         - Parse email timestamp (ISO 8601 format: 2026-07-15T14:30:45.123Z)
         - If (current_time - email_time) > monitor_inactivity_hours, email is INACTIVE
         - INACTIVE emails are SKIPPED from the label pipeline (not processed)
@@ -1010,18 +1010,18 @@ Respond with a valid JSON object containing: label, category, topic, subtopic, s
             try:
                 settings_manager = SettingsManager(user_id)
                 user_settings = settings_manager.get_settings(setting_type="general")
-                monitor_inactivity_hours = (user_settings or {}).get("monitor_inactivity_hours", 12)
+                monitor_inactivity_hours = (user_settings or {}).get("monitor_inactivity_hours", 24)
             except Exception as e:
                 logger.warning(f"⚠️  Failed to fetch monitor_inactivity_hours from settings: {e}")
-                monitor_inactivity_hours = 12  # Default to 12 hours
+                monitor_inactivity_hours = 24  # Default to 24 hours
         
         # Ensure monitor_inactivity_hours is a positive integer
         try:
             monitor_inactivity_hours = int(monitor_inactivity_hours)
             if monitor_inactivity_hours < 0:
-                monitor_inactivity_hours = 12
+                monitor_inactivity_hours = 24
         except (ValueError, TypeError):
-            monitor_inactivity_hours = 12
+            monitor_inactivity_hours = 24
         
         # Get current time in UTC
         current_time = datetime.now(timezone.utc)
@@ -1085,9 +1085,14 @@ Respond with a valid JSON object containing: label, category, topic, subtopic, s
         last_message_id = last_message.get('message_id', None)
         timestamp = last_message.get('timestamp', None)
         
-        # Extract user_id if not provided
+        # Extract user_id - use function parameter first, then try message fields, then fallback
         if user_id is None:
-            user_id = last_message.get('user_id', 'unknown_user')
+            # Try to extract from message data
+            user_id = (
+                last_message.get('user_id') or 
+                last_message.get('from') or
+                'unknown_user'
+            )
         
         if isinstance(participants, str):
             participants = [participants]
@@ -1108,13 +1113,15 @@ Respond with a valid JSON object containing: label, category, topic, subtopic, s
                 # Email is inactive - SKIP processing
                 print("⏭️  EMAIL IS INACTIVE - Skipping pipeline processing")
                 inactive_result = {
-                    "thread_id": thread_id,
-                    "user_id": user_id,
-                    "label": None,
-                    "status": "SKIPPED_INACTIVE",
-                    "reason": f"Email timestamp {timestamp} exceeds monitor_inactivity_hours threshold",
-                    "timestamp": timestamp,
-                    "source": "inactivity_filter"
+                    "label_result": {
+                        "thread_id": thread_id,
+                        "user_id": user_id,
+                        "label": None,
+                        "status": "SKIPPED_INACTIVE",
+                        "reason": f"Email timestamp {timestamp} exceeds monitor_inactivity_hours threshold",
+                        "timestamp": timestamp,
+                        "source": "inactivity_filter"
+                    }
                 }
                 print("\n" + "="*70)
                 print("⏭️  Thread skipped due to inactivity!")
@@ -1130,14 +1137,16 @@ Respond with a valid JSON object containing: label, category, topic, subtopic, s
             if cached_label:
                 print("✅ CACHE HIT - Returning stored label immediately!")
                 combined_result = {
-                    "thread_id": thread_id,
-                    "user_id": user_id,
-                    "label": cached_label['label'],
-                    "last_process_message_id": cached_label['last_process_message_id'],
-                    "created_at": cached_label['created_at'],
-                    "updated_at": cached_label['updated_at'],
-                    "source": "cache",
-                    "status": "SUCCESS_CACHED"
+                    "label_result": {
+                        "thread_id": thread_id,
+                        "user_id": user_id,
+                        "label": cached_label['label'],
+                        "last_process_message_id": cached_label['last_process_message_id'],
+                        "created_at": cached_label['created_at'],
+                        "updated_at": cached_label['updated_at'],
+                        "source": "cache",
+                        "status": "SUCCESS_CACHED"
+                    }
                 }
                 print("\n" + "="*70)
                 print("✅ Returned cached label!")

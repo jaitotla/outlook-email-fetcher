@@ -1783,10 +1783,6 @@ def _run_simple_draft_pipeline(job_id: str, request: SimpleDraftRequest):
             except Exception as cache_err:
                 logger.warning(f"⚠️  Failed to cache draft (non-fatal): {cache_err}")
         
-        # ─ Cleanup stored email data and attachments after pipeline completes ─
-        logger.info(f"   [job {job_id}] Simple draft pipeline complete, starting cleanup...")
-        clean_thread_data(request.user_id, norm_thread_id)
-        
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -2144,9 +2140,9 @@ async def label_email_data(request: LogEmailRequest):
         thread_folder = os.path.join(log_dir, thread_id)
         os.makedirs(thread_folder, exist_ok=True)
         
-        # Save preprocessed messages with "preprocessed_" prefix
+        # Save preprocessed messages with thread_id as filename for draft pipeline compatibility
         last_msg_id = request.messages[-1].message_id if request.messages else thread_id
-        preprocessed_filename = f"{last_msg_id}.json"
+        preprocessed_filename = f"{thread_id}.json"
         preprocessed_filepath = os.path.join(thread_folder, preprocessed_filename)
         
         # Prepare output data with preprocessed messages
@@ -2180,6 +2176,7 @@ async def label_email_data(request: LogEmailRequest):
                 label_pipeline.label_and_store_thread,
                 thread_id=thread_id,
                 messages=processed_messages,
+                user_id=request.user_id,
             )
         )
         
@@ -2525,7 +2522,7 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
         thread_folder = os.path.join(user_dirs["log_emails"], thread_id)
         os.makedirs(thread_folder, exist_ok=True)
         last_msg_id = request.messages[-1].message_id if request.messages else thread_id
-        with open(os.path.join(thread_folder, f"{last_msg_id}.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(thread_folder, f"{thread_id}.json"), "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "thread_id": thread_id,
@@ -2587,6 +2584,7 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                 label_pipeline.label_and_store_thread,
                 thread_id=thread_id,
                 messages=processed_messages,
+                user_id=request.user_id,
             ),
         )
         label_name: str = label_and_store_result["label_result"]["label"]
@@ -2662,7 +2660,7 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                     user_id=request.user_id,
                     thread_id=thread_id,
                     last_message_id=last_msg_id,
-                    user_preferences=request.user_preferences  # May be None
+                    user_preferences=None  # Not available in LogEmailRequest
                 )
                 
                 # Run draft pipeline inline (awaitable)
@@ -2671,7 +2669,7 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                 auto_draft_result = await pipeline.process_email_request(
                     request.user_id,
                     thread_id,
-                    request.user_preferences,
+                    None,  # user_preferences not available in LogEmailRequest
                 )
                 
                 if auto_draft_result.get('success'):
@@ -2734,8 +2732,13 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
         )
         
         # ─ Cleanup stored email data and attachments after pipeline completes ─
-        logger.info(f"   [job {job_id}] Labeling complete, starting cleanup...")
-        clean_thread_data(request.user_id, thread_id)
+        # NOTE: If auto-draft was triggered, SimpleDraftPipeline handles cleanup
+        # Only cleanup here if auto-draft was NOT triggered
+        if auto_draft_result is None:
+            logger.info(f"   [job {job_id}] Labeling complete, starting cleanup...")
+            clean_thread_data(request.user_id, thread_id)
+        else:
+            logger.info(f"   [job {job_id}] Labeling complete (cleanup handled by auto-draft pipeline)")
         
         logger.info(f"✅ JOB COMPLETED SUCCESSFULLY")
         logger.info(f"   Label: '{label_name}'")

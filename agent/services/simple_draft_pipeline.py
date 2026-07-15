@@ -93,6 +93,43 @@ class SimpleDraftPipeline:
             logger.error(f"Error loading thread JSON {file_path}: {e}")
             return None
 
+    def cleanup_thread_data(self, user_id: str, thread_id: str):
+        """
+        Clean up temporary email data after draft processing is complete.
+        
+        Deletes:
+        - data/{user_id}/log_emails/{thread_id}/
+        - data/{user_id}/store_attachments/{thread_id}/
+        
+        This should be called at the END of pipeline processing to ensure
+        SimpleDraftPipeline has completed using all necessary data before cleanup.
+        """
+        try:
+            import shutil
+            
+            # Delete log_emails directory
+            log_thread_path = os.path.join(BASE_DATA_DIR, user_id, "log_emails", thread_id)
+            if os.path.exists(log_thread_path):
+                try:
+                    shutil.rmtree(log_thread_path)
+                    logger.info(f"   [cleanup] Deleted log_emails: {log_thread_path}")
+                except Exception as e:
+                    logger.warning(f"   [cleanup] Failed to delete log_emails {log_thread_path}: {str(e)}")
+            
+            # Delete store_attachments directory
+            attachments_thread_path = os.path.join(BASE_DATA_DIR, user_id, "store_attachments", thread_id)
+            if os.path.exists(attachments_thread_path):
+                try:
+                    shutil.rmtree(attachments_thread_path)
+                    logger.info(f"   [cleanup] Deleted attachments: {attachments_thread_path}")
+                except Exception as e:
+                    logger.warning(f"   [cleanup] Failed to delete attachments {attachments_thread_path}: {str(e)}")
+            
+            logger.info(f"✅ Cleanup complete for thread {thread_id}")
+            
+        except Exception as e:
+            logger.warning(f"Cleanup failed for thread {thread_id}: {str(e)}")
+
     # ------------------------------------------------------------------
     # Draft generation
     # ------------------------------------------------------------------
@@ -175,6 +212,7 @@ Please draft a professional email response that:
         1. Load email thread JSON from disk
         2. Send to LLMService to generate draft
         3. Return the generated draft
+        4. Clean up temporary data
 
         Args:
             user_id: User identifier (email address)
@@ -192,6 +230,8 @@ Please draft a professional email response that:
             # Step 1: Load email thread
             thread_data = self.get_thread_json_data(user_id, thread_id)
             if not thread_data:
+                # Clean up before returning error
+                self.cleanup_thread_data(user_id, thread_id)
                 return {
                     "success": False,
                     "error": f"Thread JSON not found for thread_id: {thread_id}",
@@ -210,6 +250,10 @@ Please draft a professional email response that:
             )
 
             logger.info("✅ Simple draft pipeline completed successfully")
+            
+            # Clean up before returning success
+            self.cleanup_thread_data(user_id, thread_id)
+            
             return {
                 "success": True,
                 "draft_content": draft_content,
@@ -219,6 +263,10 @@ Please draft a professional email response that:
         except Exception as e:
             logger.error(f"Simple draft pipeline error: {e}")
             logger.error(traceback.format_exc())
+            
+            # Clean up before returning error
+            self.cleanup_thread_data(user_id, thread_id)
+            
             return {
                 "success": False,
                 "error": str(e),
