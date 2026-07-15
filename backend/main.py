@@ -215,6 +215,11 @@ CONFIG = _load_config()
 _job_store: Dict[str, Dict[str, Any]] = {}
 _job_store_lock = threading.Lock()
 
+# In-memory auto-draft tracking for push notifications
+# Structure: {user_id: [{thread_id, draft_content, subject, created_at}, ...]}
+_auto_drafts: Dict[str, List[Dict[str, Any]]] = {}
+_auto_drafts_lock = threading.Lock()
+
 
 def _set_job(job_id: str, status: str, result: Any = None, error: str = None):
     with _job_store_lock:
@@ -224,6 +229,48 @@ def _set_job(job_id: str, status: str, result: Any = None, error: str = None):
             "error": error,
             "updated_at": datetime.utcnow().isoformat(),
         }
+
+
+def _register_auto_draft(user_id: str, thread_id: str, draft_content: str, subject: str = ""):
+    """
+    Register a newly auto-generated draft for push notification to Thunderbird.
+    
+    Args:
+        user_id: User's email address
+        thread_id: Thread ID
+        draft_content: The generated draft
+        subject: Email subject (for context)
+    """
+    with _auto_drafts_lock:
+        if user_id not in _auto_drafts:
+            _auto_drafts[user_id] = []
+        
+        _auto_drafts[user_id].append({
+            "thread_id": thread_id,
+            "draft_content": draft_content,
+            "subject": subject,
+            "created_at": datetime.utcnow().isoformat(),
+        })
+        logger.info(f"✅ Registered auto-draft for {user_id} — thread {thread_id}")
+
+
+def _get_auto_drafts(user_id: str, consume: bool = False) -> List[Dict[str, Any]]:
+    """
+    Get pending auto-drafts for a user.
+    
+    Args:
+        user_id: User's email address
+        consume: If True, clear the queue after returning (so they're only shown once)
+        
+    Returns:
+        List of pending auto-drafts
+    """
+    with _auto_drafts_lock:
+        drafts = _auto_drafts.get(user_id, [])
+        result = list(drafts)  # Make a copy
+        if consume:
+            _auto_drafts[user_id] = []
+        return result
 
 
 app = FastAPI(
@@ -1929,6 +1976,40 @@ async def get_job_status(job_id: str):
     return {"job_id": job_id, **job}
 
 
+@app.get("/api/auto-drafts/{user_id}")
+async def get_auto_drafts(user_id: str):
+    """
+    Get pending auto-generated drafts for a user.
+    
+    This endpoint allows Thunderbird to poll for new auto-drafts that were
+    generated from label-email-async (when "Escalation" or "Response" labels are triggered).
+    
+    When Thunderbird retrieves these drafts, it automatically consumes them
+    (they won't be returned again).
+    
+    Response:
+    {
+        "user_id": "user@example.com",
+        "auto_drafts": [
+            {
+                "thread_id": "...",
+                "draft_content": "...",
+                "subject": "...",
+                "created_at": "2026-07-15T14:45:06.123456Z"
+            },
+            ...
+        ],
+        "count": 2
+    }
+    """
+    drafts = _get_auto_drafts(user_id, consume=True)  # Consume after retrieving
+    return {
+        "user_id": user_id,
+        "auto_drafts": drafts,
+        "count": len(drafts),
+    }
+
+
 class SlackChannelsRequest(BaseModel):
     accessToken: str
 
@@ -2687,6 +2768,17 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
                             processing_info=auto_draft_result.get('processing_info', {})
                         )
                         logger.info(f"✅ [job {job_id}] Draft saved to cache")
+                        
+                        # ── REGISTER AUTO-DRAFT FOR THUNDERBIRD ──
+                        # Extract subject from first message for context
+                        subject = processed_messages[0].get('subject', 'Re: Thread') if processed_messages else 'Re: Thread'
+                        _register_auto_draft(
+                            user_id=request.user_id,
+                            thread_id=thread_id,
+                            draft_content=auto_draft_result.get('draft_content', ''),
+                            subject=subject
+                        )
+                        logger.info(f"✅ [job {job_id}] Auto-draft registered for Thunderbird push")
                     except Exception as cache_err:
                         logger.warning(f"⚠️  [job {job_id}] Failed to cache draft (non-fatal): {cache_err}")
                 else:
