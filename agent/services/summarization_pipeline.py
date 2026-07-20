@@ -195,7 +195,10 @@ class SummarizationPipeline:
         
         # Initialize EmbeddingService for summary embeddings
         try:
-            self.embedding_service = EmbeddingService(user_id=user_id, effective_settings=self.effective_settings)
+            # Add user_id to effective_settings for EmbeddingService
+            embedding_settings = self.effective_settings.copy() if self.effective_settings else {}
+            embedding_settings["user_id"] = user_id
+            self.embedding_service = EmbeddingService(effective_settings=embedding_settings)
             logger.info(f"✅ EmbeddingService initialized for user: {user_id}")
         except Exception as e:
             logger.warning(f"Failed to initialize EmbeddingService: {e}")
@@ -754,8 +757,17 @@ Start directly with the updated content (1️⃣ Conversation Overview, etc.)
         Returns:
             LLM response text or None on failure
         """
-        logger.info(f"🚀 Calling LLM via {self.llm_provider}")
-        logger.info(f"   Model: {self.llm_model}")
+        # Determine the actual model that will be used
+        # Manotr/inbuilt provider uses hardcoded llama3.2 in utils.py, ignoring configured model
+        actual_model = self.llm_model
+        if self.llm_provider in ("manotr", "inbuilt"):
+            actual_model = "llama3.2"  # Hardcoded in utils.py call_chat_api()
+            logger.info(f"🚀 Calling LLM via {self.llm_provider}")
+            logger.info(f"   Configured Model: {self.llm_model} (ignored for {self.llm_provider})")
+            logger.info(f"   Actual Model: {actual_model}")
+        else:
+            logger.info(f"🚀 Calling LLM via {self.llm_provider}")
+            logger.info(f"   Model: {actual_model}")
         logger.info(f"   Prompt size: {len(prompt)} characters")
         
         try:

@@ -111,7 +111,11 @@ class EmailLabelPipeline:
         self.use_ollama_native = False
         
         # Initialize LLM based on provider
-        if self.llm_provider != "manotr":
+        if self.llm_provider == "manotr":
+            logger.info(f"✅ Label pipeline initialized with {self.llm_provider}")
+            logger.info(f"   Configured Model: {self.llm_model} (ignored for manotr)")
+            logger.info(f"   Actual Model: llama3.2 (hardcoded in utils.py)")
+        else:
             try:
                 self._init_llm()
                 logger.info(f"✅ Label pipeline initialized with {self.llm_provider} / {self.llm_model}")

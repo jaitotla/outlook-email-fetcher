@@ -54,36 +54,63 @@ def setup_logger():
     logs_dir = os.path.join(os.path.dirname(__file__), "logs")
     os.makedirs(logs_dir, exist_ok=True)
     
-    # Create logger
+    # Create root logger
     logger = logging.getLogger("openmailbot.backend")
     logger.setLevel(logging.DEBUG)
     
     # Remove existing handlers to avoid duplicates
     logger.handlers = []
     
-    # Rotating file handler: 10MB per file, keep 5 files
+    # ─ MAIN LOG: app.log (ALL operations, all levels) ─
     log_file = os.path.join(logs_dir, "app.log")
-    rotating_handler = RotatingFileHandler(
+    main_handler = RotatingFileHandler(
         log_file,
         maxBytes=10 * 1024 * 1024,  # 10MB
         backupCount=4  # Keeps log, log.1, log.2, log.3, log.4 (5 total)
     )
-    rotating_handler.setLevel(logging.DEBUG)
+    main_handler.setLevel(logging.DEBUG)
     
-    # Console handler for stdout
+    # ─ OPERATIONS LOG: operations.log (DEBUG level for detailed pipeline operations) ─
+    ops_log_file = os.path.join(logs_dir, "operations.log")
+    ops_handler = RotatingFileHandler(
+        ops_log_file,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=4
+    )
+    ops_handler.setLevel(logging.DEBUG)
+    
+    # ─ ERRORS LOG: errors.log (ERROR level only) ─
+    error_log_file = os.path.join(logs_dir, "errors.log")
+    error_handler = RotatingFileHandler(
+        error_log_file,
+        maxBytes=5 * 1024 * 1024,  # 5MB
+        backupCount=4
+    )
+    error_handler.setLevel(logging.ERROR)
+    
+    # Console handler for stdout - NOW DEBUG LEVEL to see all details
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.DEBUG)  # Changed from INFO to DEBUG
     
     # Formatter
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    detailed_formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)-8s] %(name)s - %(funcName)s:%(lineno)d - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
-    rotating_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
+    simple_formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    
+    main_handler.setFormatter(detailed_formatter)
+    ops_handler.setFormatter(detailed_formatter)
+    error_handler.setFormatter(detailed_formatter)
+    console_handler.setFormatter(simple_formatter)
     
     # Add handlers to logger
-    logger.addHandler(rotating_handler)
+    logger.addHandler(main_handler)
+    logger.addHandler(ops_handler)
+    logger.addHandler(error_handler)
     logger.addHandler(console_handler)
     
     return logger
@@ -91,6 +118,8 @@ def setup_logger():
 # Initialize the logger
 logger = setup_logger()
 logger.info("🚀 OpenMailBot Backend Starting - Logging initialized")
+logger.debug(f"   Log files location: {os.path.join(os.path.dirname(__file__), 'logs')}")
+logger.debug(f"   Main log: app.log | Operations log: operations.log | Errors log: errors.log")
 
 # # ── Startup diagnostic logger ──────────────────────────────────────────────
 # logging.basicConfig(
@@ -1519,11 +1548,8 @@ async def sync_settings(request: SyncSettingsRequest, background_tasks: Backgrou
             "warning": "This endpoint receives plaintext. Consider POST /api/settings/encrypted for client-side encryption"
         }
     except Exception as e:
-        print(f"\n❌ [ERROR] Failed to sync settings for {request.user_id}", flush=True)
-        print(f"   Error: {str(e)}", flush=True)
-        import traceback
-        traceback.print_exc()
-        sys.stdout.flush()
+        logger.exception(f"❌ Failed to sync settings for {request.user_id}")
+        logger.error(f"   Error details: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to sync settings: {str(e)}"
@@ -1674,11 +1700,8 @@ async def sync_settings_encrypted(request: EncryptedSettingsRequest, background_
             detail=f"Decryption failed: {error_msg}. Try refreshing the public key cache on client."
         )
     except Exception as e:
-        print(f"\n❌ [ERROR] Failed to sync encrypted settings for {request.user_id}", flush=True)
-        print(f"   Error: {str(e)}", flush=True)
-        import traceback
-        traceback.print_exc()
-        sys.stdout.flush()
+        logger.exception(f"❌ Failed to sync encrypted settings for {request.user_id}")
+        logger.error(f"   Error details: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to sync encrypted settings: {str(e)}"
@@ -1717,8 +1740,7 @@ def _run_chat_pipeline(job_id: str, request: ChatWithThreadRequest):
         clean_thread_data(request.user_id, norm_thread_id)
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"❌ [job {job_id}] Chat pipeline error: {str(e)}")
         _set_job(job_id, "error", error=str(e))
 
 
@@ -1758,8 +1780,7 @@ async def reset_and_reprocess_thread(request: ChatWithThreadRequest):
             "reprocessed_result": result
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"❌ Reset and reprocess thread failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1795,8 +1816,7 @@ def _run_draft_pipeline(job_id: str, request: DraftWithAttachmentsRequest):
         clean_thread_data(request.user_id, norm_thread_id)
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"❌ [job {job_id}] Draft pipeline error: {str(e)}")
         _set_job(job_id, "error", error=str(e))
 
 
@@ -1831,8 +1851,7 @@ def _run_simple_draft_pipeline(job_id: str, request: SimpleDraftRequest):
                 logger.warning(f"⚠️  Failed to cache draft (non-fatal): {cache_err}")
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"❌ [job {job_id}] Simple draft pipeline error: {str(e)}")
         _set_job(job_id, "error", error=str(e))
 
 
@@ -1932,11 +1951,11 @@ async def summarize_thread(request: SummarizeThreadRequest, background_tasks: Ba
     job_id = str(uuid.uuid4())
     _set_job(job_id, "pending")
     
-    print(f"📋 /api/summarize-thread endpoint called")
-    print(f"   Job ID: {job_id}")
-    print(f"   User: {request.user_id}")
-    print(f"   Thread: {request.thread_id}")
-    print(f"   User Name: {request.user_name}")
+    logger.info(f"📋 /api/summarize-thread endpoint called")
+    logger.info(f"   Job ID: {job_id}")
+    logger.info(f"   User: {request.user_id}")
+    logger.info(f"   Thread: {request.thread_id}")
+    logger.info(f"   User Name: {request.user_name}")
     
     background_tasks.add_task(_run_summarization_pipeline, job_id, request)
     return {"job_id": job_id, "status": "pending"}
@@ -1960,9 +1979,7 @@ def _run_summarization_pipeline(job_id: str, request: SummarizeThreadRequest):
         clean_thread_data(request.user_id, norm_thread_id)
         
     except Exception as e:
-        print(f"❌ Summarization pipeline error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"❌ [job {job_id}] Summarization pipeline error: {str(e)}")
         _set_job(job_id, "error", error=str(e))
 
 
@@ -2132,9 +2149,7 @@ async def log_email_data(request: LogEmailRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Error saving clean emails for {request.user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2286,8 +2301,7 @@ async def label_email_data(request: LogEmailRequest):
         raise
     except Exception as e:
         logger.error(f"❌ Error labeling email: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"   Traceback details")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2850,7 +2864,6 @@ async def _run_label_and_push_to_gmail(job_id: str, request: LogEmailRequest):
         logger.error(f"╔════════════════════════════════════════════════════════════════╗")
         logger.error(f"║         BACKGROUND JOB: label-email-async FAILED              ║")
         logger.error(f"╚════════════════════════════════════════════════════════════════╝")
-        traceback.print_exc()
         try:
             lockbook.log_request(
                 thread_id=request.thread_id, label="error",

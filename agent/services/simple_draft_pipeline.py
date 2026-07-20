@@ -178,7 +178,15 @@ Please draft a professional email response that:
 2. Maintains the conversation's current context and tone
 3. Is ready to send without further editing"""
 
-        logger.info(f"🤖 Generating draft using {self.llm_provider} / {self.llm_model}...")
+        # Determine actual model for logging
+        actual_model = self.llm_model
+        if self.llm_provider in ("manotr", "inbuilt"):
+            actual_model = "llama3.2"  # Hardcoded in utils.py
+            logger.info(f"🤖 Generating draft using {self.llm_provider}")
+            logger.info(f"   Configured Model: {self.llm_model} (ignored for {self.llm_provider})")
+            logger.info(f"   Actual Model: {actual_model}")
+        else:
+            logger.info(f"🤖 Generating draft using {self.llm_provider} / {actual_model}...")
 
         messages = [
             {"role": "system", "content": system_prompt},

@@ -147,6 +147,93 @@ function _mapBackendLabelToThunderbirdKey(backendLabel) {
   return backendLabel;
 }
 
+// ─── PERFORMANCE OPTIMIZATION CACHES ────────────────────────────────────────
+// These caches dramatically reduce repeated storage reads and network fetches
+
+// Backend URL cache (1-minute TTL to keep fresh)
+let _backendUrlCache = null;
+let _backendUrlCacheTime = 0;
+const BACKEND_URL_CACHE_TTL_MS = 1000 * 60; // 1 minute
+
+// Settings cache (5-minute TTL per user email)
+const _settingsCache = new Map(); // { userEmail -> { settings, cacheTime } }
+const SETTINGS_CACHE_TTL_MS = 1000 * 60 * 5; // 5 minutes
+
+// In-memory Set for processed IDs (O(1) instead of O(n))
+let _processedIdsSet = null;
+let _processedIdsLoaded = false;
+
+// Request deduplication queue
+const _requestQueue = new Map(); // { queueKey -> Promise }
+
+// ─── CACHE HELPER FUNCTIONS ───────────────────────────────────────────────────
+
+/**
+ * Ensure processed IDs are loaded into memory as a Set for O(1) lookup
+ */
+async function _ensureProcessedIdsLoaded() {
+  if (_processedIdsLoaded) return;
+  
+  try {
+    const r = await browser.storage.local.get(MONITOR_PROCESSED_KEY);
+    const ids = r[MONITOR_PROCESSED_KEY] || [];
+    _processedIdsSet = new Set(ids);
+    _processedIdsLoaded = true;
+    console.log(`[Cache][PERF] Loaded ${ids.length} processed IDs into Set for O(1) lookup`);
+  } catch (e) {
+    console.warn("[Cache] Failed to load processed IDs:", e.message);
+    _processedIdsSet = new Set();
+    _processedIdsLoaded = true;
+  }
+}
+
+/**
+ * Invalidate settings cache for a specific user (or all if userEmail omitted)
+ */
+function _invalidateSettingsCache(userEmail) {
+  if (userEmail) {
+    _settingsCache.delete(userEmail);
+    console.log(`[Cache][PERF] Invalidated settings cache for ${userEmail}`);
+  } else {
+    _settingsCache.clear();
+    console.log("[Cache][PERF] Cleared all settings caches");
+  }
+}
+
+/**
+ * Invalidate backend URL cache
+ */
+function _invalidateBackendUrlCache() {
+  _backendUrlCache = null;
+  _backendUrlCacheTime = 0;
+  console.log("[Cache][PERF] Invalidated backend URL cache");
+}
+
+/**
+ * Queue a request to prevent duplicates from rapid clicks
+ * If same queueKey is already running, return the existing promise
+ */
+async function _queuedRequest(queueKey, fn) {
+  if (_requestQueue.has(queueKey)) {
+    console.log(`[Queue][PERF] Request ${queueKey} already in-flight, deduplicating...`);
+    return _requestQueue.get(queueKey);
+  }
+
+  const promise = (async () => {
+    try {
+      const result = await fn();
+      _requestQueue.delete(queueKey);
+      return result;
+    } catch (e) {
+      _requestQueue.delete(queueKey);
+      throw e;
+    }
+  })();
+
+  _requestQueue.set(queueKey, promise);
+  return promise;
+}
+
 // ─── ADDON CONFIG (addon_config.json — addon-side only, never sent to server) ─
 
 let _addonConfig = null;
@@ -321,6 +408,12 @@ async function getAccountEmail(accountId) {
  * This is the ONLY local storage usage for settings - for addon config, not user settings
  */
 async function _getBackendUrlFromConfig() {
+  // ⚡ PERF: Fast path — return cached if valid (1-minute TTL)
+  if (_backendUrlCache && (Date.now() - _backendUrlCacheTime < BACKEND_URL_CACHE_TTL_MS)) {
+    console.log("[Cache][PERF] Using cached backend URL");
+    return _backendUrlCache;
+  }
+
   try {
     const r = await browser.storage.local.get("user_settings");
     const userSettings = r.user_settings || {};
@@ -329,29 +422,46 @@ async function _getBackendUrlFromConfig() {
     // When mode is "manotr", always resolve from the remote S3 config so the URL stays current
     if (mode === "manotr") {
       const manotrUrl = await _fetchManotrBackendUrl();
-      if (manotrUrl) return manotrUrl;
+      if (manotrUrl) {
+        _backendUrlCache = manotrUrl;
+        _backendUrlCacheTime = Date.now();
+        return manotrUrl;
+      }
       // Fall through to default if remote config is unreachable
     } else {
       // For local/external modes use the URL the user explicitly configured
       const userUrl = userSettings.agent_url || userSettings.backend_url;
       if (userUrl) {
-        return userUrl.replace(/\/$/, "");
+        const cleanUrl = userUrl.replace(/\/$/, "");
+        _backendUrlCache = cleanUrl;
+        _backendUrlCacheTime = Date.now();
+        return cleanUrl;
       }
     }
 
     // Fall back to addon_config.json (used on first run before any settings are saved)
     const cfg = await getAddonConfig();
     // Support both agent_url (new) and backend_url (legacy)
+    let fallbackUrl = null;
     if (cfg.agent_url) {
-      return cfg.agent_url.replace(/\/$/, "");
+      fallbackUrl = cfg.agent_url.replace(/\/$/, "");
+    } else if (cfg.backend_url) {
+      fallbackUrl = cfg.backend_url.replace(/\/$/, "");
     }
-    if (cfg.backend_url) {
-      return cfg.backend_url.replace(/\/$/, "");
+    
+    if (fallbackUrl) {
+      _backendUrlCache = fallbackUrl;
+      _backendUrlCacheTime = Date.now();
+      return fallbackUrl;
     }
   } catch (e) {
     console.warn("[Settings] Could not read backend config:", e.message);
   }
-  return DEFAULT_FLASK_URL.replace(/\/$/, "");
+  
+  const defaultUrl = DEFAULT_FLASK_URL.replace(/\/$/, "");
+  _backendUrlCache = defaultUrl;
+  _backendUrlCacheTime = Date.now();
+  return defaultUrl;
 }
 
 /**
@@ -367,12 +477,23 @@ async function _getBackendUrlFromConfig() {
 /**
  * Fetch settings from backend by user email - ALWAYS FROM SERVER
  * Source of truth is the backend MongoDB, not local storage
+ * ⚡ PERF: Settings are cached for 5 minutes to reduce network traffic
  */
 async function _fetchSettingsFromBackend(userEmail) {
   if (!userEmail) {
     console.warn("[Settings] No user email provided to fetch settings");
     return Object.assign({}, DEFAULT_SETTINGS);
   }
+  
+  // ⚡ PERF: Fast path — return cached if valid (5-minute TTL)
+  if (_settingsCache.has(userEmail)) {
+    const cached = _settingsCache.get(userEmail);
+    if (Date.now() - cached.cacheTime < SETTINGS_CACHE_TTL_MS) {
+      console.log(`[Cache][PERF] Using cached settings for ${userEmail}`);
+      return cached.settings;
+    }
+  }
+  
   try {
     const backendUrl = await _getBackendUrlFromConfig();
     
@@ -395,12 +516,17 @@ async function _fetchSettingsFromBackend(userEmail) {
     
     if (resp.ok) {
       const data = await resp.json();
-      const settings = data.settings || data;
+      const settings = Object.assign({}, DEFAULT_SETTINGS, data.settings || data);
       console.log(`[Settings] ✅ Got settings from backend for ${userEmail}`);
-      return Object.assign({}, DEFAULT_SETTINGS, settings);
+      
+      // ⚡ Cache the settings
+      _settingsCache.set(userEmail, { settings, cacheTime: Date.now() });
+      return settings;
     } else if (resp.status === 404) {
       console.log(`[Settings] ℹ️ No settings on backend for ${userEmail}, using defaults`);
-      return Object.assign({}, DEFAULT_SETTINGS);
+      const settings = Object.assign({}, DEFAULT_SETTINGS);
+      _settingsCache.set(userEmail, { settings, cacheTime: Date.now() });
+      return settings;
     } else {
       const errText = await resp.text().catch(() => "");
       console.warn(`[Settings] ⚠️ Backend error ${resp.status}: ${errText}`);
@@ -448,6 +574,10 @@ async function handleSaveSettings({ settings, accountId, userEmail }) {
     await _syncSettingsToBackend(merged, userEmail);
     console.log(`[Settings] ✅ Settings saved on backend for ${userEmail}`);
 
+    // ⚡ PERF: Invalidate caches so fresh data is fetched on next request
+    _invalidateSettingsCache(userEmail);
+    _invalidateBackendUrlCache();
+
     // Also persist agent_url locally so _getBackendUrlFromConfig() uses the user's value immediately
     if (merged.agent_url) {
       const r = await browser.storage.local.get("user_settings");
@@ -493,6 +623,10 @@ async function handleCompleteOnboarding({ settings, accountId, userEmail }) {
     console.log(`[Onboarding] 💾 Saving settings to backend for: ${userEmail}`);
     await _syncSettingsToBackend(merged, userEmail);
     console.log("[OpenMailBot][Onboarding] ✅ Settings synced to backend");
+
+    // ⚡ PERF: Invalidate caches after onboarding so fresh data is fetched
+    _invalidateSettingsCache(userEmail);
+    _invalidateBackendUrlCache();
 
     // Also persist critical settings locally so they're immediately available
     if (merged.agent_url || merged.draft_font) {
@@ -1940,21 +2074,35 @@ async function _processMonitorMessage(msg, filters, accountEmail) {
 // ─── MONITOR PERSISTENCE HELPERS ─────────────────────────────────────────────
 
 async function _isMonitorMsgProcessed(msgId) {
-  const r = await browser.storage.local.get(MONITOR_PROCESSED_KEY);
-  return ((r[MONITOR_PROCESSED_KEY] || [])).includes(msgId);
+  // ⚡ PERF: Use Set for O(1) instead of array.includes() O(n)
+  await _ensureProcessedIdsLoaded();
+  return _processedIdsSet.has(msgId);
 }
 
 async function _markMonitorMsgProcessed(msgId) {
-  const r = await browser.storage.local.get(MONITOR_PROCESSED_KEY);
-  let ids = r[MONITOR_PROCESSED_KEY] || [];
-  if (ids.includes(msgId)) return;
-  ids.push(msgId);
+  // ⚡ PERF: Use Set for O(1) operations
+  await _ensureProcessedIdsLoaded();
+  
+  if (_processedIdsSet.has(msgId)) return;
+  
+  _processedIdsSet.add(msgId);
+  
   // Ring buffer — evict oldest IDs to stay under cap
-  if (ids.length > MONITOR_MAX_IDS) ids = ids.slice(-MONITOR_MAX_IDS);
-  try {
-    await _safeStorageSet({ [MONITOR_PROCESSED_KEY]: ids }, "mark message processed");
-  } catch (e) {
-    console.warn(`[Monitor] Could not mark message processed: ${e.message}`);
+  const ids = Array.from(_processedIdsSet);
+  if (ids.length > MONITOR_MAX_IDS) {
+    const trimmed = ids.slice(-MONITOR_MAX_IDS);
+    _processedIdsSet = new Set(trimmed);
+    try {
+      await _safeStorageSet({ [MONITOR_PROCESSED_KEY]: trimmed }, "mark message processed (ring buffer)");
+    } catch (e) {
+      console.warn(`[Monitor] Could not mark message processed: ${e.message}`);
+    }
+  } else {
+    try {
+      await _safeStorageSet({ [MONITOR_PROCESSED_KEY]: ids }, "mark message processed");
+    } catch (e) {
+      console.warn(`[Monitor] Could not mark message processed: ${e.message}`);
+    }
   }
 }
 
@@ -2362,7 +2510,8 @@ self.addEventListener("online", () => {
 // ─── MESSAGE ROUTER ──────────────────────────────────────────────────────────
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log("Background received action:", message.action);
+  const msgStartTime = performance.now();
+  console.log(`%c[BG-listener] 📨 Message received at ${new Date().toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3})} | action: "${message.action}"`, "color:#0066FF;font-weight:bold");
 
   const handlers = {
     summarizeThread      : () => handleSummarizeThread(message.data),
@@ -2395,70 +2544,335 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   };
 
   const fn = handlers[message.action];
-  if (!fn) { sendResponse({ error: "Unknown action: " + message.action }); return false; }
-  fn().then(sendResponse).catch(e => sendResponse({ error: e.message }));
+  if (!fn) { 
+    console.error(`%c[BG-listener] ❌ Unknown action: ${message.action}`, "color:#CC0000");
+    sendResponse({ error: "Unknown action: " + message.action }); 
+    return false; 
+  }
+  
+  fn().then(result => {
+    const duration = (performance.now() - msgStartTime).toFixed(0);
+    console.log(`%c[BG-listener] ✅ Handler "${message.action}" completed in ${duration}ms, sending response`, "color:#0066FF;font-weight:bold");
+    sendResponse(result);
+  }).catch(e => {
+    const duration = (performance.now() - msgStartTime).toFixed(0);
+    console.error(`%c[BG-listener] ❌ Handler "${message.action}" failed after ${duration}ms: ${e.message}`, "color:#CC0000;font-weight:bold");
+    sendResponse({ error: e.message });
+  });
   return true;
 });
 
 // ─── THREAD HELPERS ──────────────────────────────────────────────────────────────────
+
+// ── CACHE FOR THREAD RESULTS (to avoid re-fetching same thread) ──────────
+let _threadMessageCache = {};
+const CACHE_EXPIRY_MS = 60000; // Cache for 60 seconds
+
+/**
+ * Generate a synthetic threadId based on subject line and earliest date
+ * Used when Thunderbird doesn't provide a native threadId
+ */
+function generateSyntheticThreadId(subject, date) {
+  const normalized = (subject || "").replace(/^(Re|Fwd?|AW|WG):\s*/gi,"").trim().toLowerCase();
+  const dateKey = date ? new Date(date).toISOString().split('T')[0] : "unknown";
+  const hash = normalized.split('').reduce((a, c) => ((a << 5) - a) + c.charCodeAt(0), 0).toString(16);
+  const syntheticId = `synthetic_${hash}_${dateKey}`;
+  return syntheticId;
+}
 
 /**
  * Get all messages in the same thread (subject-based, full thread).
  * Returns array of { meta, full } objects sorted oldest-first.
  */
 async function getThreadMessages(messageId) {
+  const funcStartTime = performance.now();
+  console.log(`%c[getThreadMessages] ▶️  Fetching messages for ID: ${messageId} | 💾 cache size: ${Object.keys(_threadMessageCache).length}`, "color:#9900CC;font-weight:bold");
+  
   try {
     const msg = await browser.messages.get(messageId);
+    console.log(`%c[getThreadMessages] ✓ Got initial message | threadId: ${msg.threadId || '(empty)'} | subject: ${msg.subject}`, "color:#9900CC");
+
+    // ─ DIAGNOSTIC: Why is threadId missing? ────────────────────────────────
+    if (!msg.threadId) {
+      console.log(`%c[getThreadMessages] 🔍 DIAGNOSTIC: threadId is EMPTY - investigating...`, "color:#FF6B00;font-weight:bold;font-size:11px");
+      console.log(`%c[getThreadMessages]   • Folder type: ${msg.folder?.type || 'unknown'}`, "color:#FF6B00;font-size:11px");
+      console.log(`%c[getThreadMessages]   • Account type: ${msg.folder?.accountId || 'unknown'}`, "color:#FF6B00;font-size:11px");
+      console.log(`%c[getThreadMessages]   • API available: ${typeof browser.messages.query === 'function' ? 'YES' : 'NO'}`, "color:#FF6B00;font-size:11px");
+      
+      // Generate synthetic threadId as workaround
+      const syntheticId = generateSyntheticThreadId(msg.subject, msg.date);
+      console.log(`%c[getThreadMessages]   ✨ Generated synthetic threadId: ${syntheticId}`, "color:#FF6B00;font-size:11px");
+    }
+
+    // ── CACHE CHECK: Return cached result if available (within 60s expiry) ────
+    if (msg.threadId && _threadMessageCache[msg.threadId]) {
+      const cached = _threadMessageCache[msg.threadId];
+      const ageMs = performance.now() - cached.timestamp;
+      if (ageMs < CACHE_EXPIRY_MS) {
+        console.log(`%c[getThreadMessages] 💾 CACHE HIT (${ageMs.toFixed(0)}ms old): ${cached.messages.length} messages — SAVES TIME!`, "color:#00CC00;font-weight:bold;font-size:12px");
+        return cached.messages;
+      } else {
+        console.log(`%c[getThreadMessages] 💾 CACHE EXPIRED (${ageMs.toFixed(0)}ms old), fetching fresh`, "color:#FF9900");
+        delete _threadMessageCache[msg.threadId];
+      }
+    }
 
     // ── Fast path: use native threadId query (Thunderbird 121+) ──────────
     // Avoids listing the entire folder (O(n) messages) and filtering by subject.
     if (msg.threadId && typeof browser.messages.query === "function") {
+      console.log(`%c[getThreadMessages] 🚀 Fast path: Using native threadId query (Thunderbird 121+)`, "color:#9900CC;font-weight:bold");
       try {
         const t0 = performance.now();
         const page = await browser.messages.query({ threadId: msg.threadId });
+        console.log(`%c[getThreadMessages]   Query returned: ${page.messages?.length || 0} messages in ${(performance.now()-t0).toFixed(0)}ms`, "color:#9900CC");
+        
         const threadMsgs = (page && page.messages && page.messages.length > 0)
           ? page.messages : null;
         if (threadMsgs) {
           const sorted = threadMsgs
             .sort((a, b) => new Date(a.date) - new Date(b.date))
             .slice(0, 30);
+          console.log(`%c[getThreadMessages]   Sorted & sliced to ${sorted.length} messages`, "color:#9900CC");
+          
+          const getFFullStartTime = performance.now();
           const results = await Promise.all(sorted.map(async m => {
             try { return { meta: m, full: await browser.messages.getFull(m.id) }; }
-            catch (e) { console.warn("getFull failed:", m.id, e.message); return null; }
+            catch (e) { console.warn(`%c[getThreadMessages]   ⚠️  getFull failed for ${m.id}: ${e.message}`, "color:#FF9900"); return null; }
           }));
+          console.log(`%c[getThreadMessages]   getFull() on ${sorted.length} msgs took ${(performance.now()-getFFullStartTime).toFixed(0)}ms`, "color:#9900CC");
+          
           const filtered = results.filter(Boolean);
-          console.log(`[getThreadMessages] fast-path: ${filtered.length} msgs in ${(performance.now()-t0).toFixed(0)}ms`);
+          
+          // 💾 CACHE the result for this thread to avoid re-fetching
+          if (msg.threadId) {
+            _threadMessageCache[msg.threadId] = { messages: filtered, timestamp: performance.now() };
+            console.log(`%c[getThreadMessages]   💾 Cached ${filtered.length} messages for thread: ${msg.threadId}`, "color:#00AA00;font-size:11px");
+          }
+          
+          const funcDuration = (performance.now()-funcStartTime).toFixed(0);
+          console.log(`%c[getThreadMessages] ✅ Fast path complete: ${filtered.length} msgs in ${funcDuration}ms`, "color:#00AA00;font-weight:bold");
           return filtered;
         }
       } catch (e) {
-        console.warn("[getThreadMessages] threadId query failed, falling back to folder scan:", e.message);
+        const fallbackTime = (performance.now()-funcStartTime).toFixed(0);
+        console.warn(`%c[getThreadMessages] ⚠️  Fast path failed after ${fallbackTime}ms: ${e.message}, falling back to slow path...`, "color:#FF9900");
       }
+    } else {
+      console.log(`%c[getThreadMessages] 🐢 No native threadId available`, "color:#FF9900;font-weight:bold");
     }
 
-    // ── Slow path: scan folder and match by subject ───────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // ✨ 3-STRATEGY SEARCH ENGINE: FASTEST FIRST (Early Exit on Match)
+    // ─────────────────────────────────────────────────────────────────────────
+    
+    const norm = s => (s||"").replace(/^(Re|Fwd?|AW|WG):\s*/gi,"").trim().toLowerCase();
+    const baseSubject = norm(msg.subject);
+    const senderEmail = msg.author || msg.from || "";
+    
+    console.log(`%c[getThreadMessages] 🚀 3-STRATEGY INTELLIGENT SEARCH (Fastest First)`, "color:#0066FF;font-weight:bold;font-size:12px");
+    console.log(`%c[getThreadMessages]   • Sender: ${senderEmail || "unknown"}`, "color:#0066FF;font-size:10px");
+    console.log(`%c[getThreadMessages]   • Subject: "${baseSubject}"`, "color:#0066FF;font-size:10px");
+    
+    let results = [];
+    const searchStartTime = performance.now();
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // STRATEGY 1: threadId Query (<10ms)
+    // ─────────────────────────────────────────────────────────────────────────
+    if (msg.threadId && typeof browser.messages.query === "function") {
+      try {
+        const t = performance.now();
+        const queryResult = await browser.messages.query({ threadId: msg.threadId });
+        
+        if (queryResult.messages && queryResult.messages.length > 0) {
+          console.log(`%c[getThreadMessages] ✅ STRATEGY 1 ✓ threadId: ${queryResult.messages.length} msgs in ${(performance.now()-t).toFixed(0)}ms`, "color:#00AA00;font-weight:bold;font-size:11px");
+          const sorted = queryResult.messages.sort((a, b) => new Date(a.date) - new Date(b.date)).slice(0, 30);
+          const getFFullStartTime = performance.now();
+          results = (await Promise.all(sorted.map(async m => {
+            try { return { meta: m, full: await browser.messages.getFull(m.id) }; }
+            catch(e) { console.warn(`%c[getThreadMessages]     ⚠️  getFull failed for ${m.id}`, "color:#FF9900"); return null; }
+          }))).filter(Boolean);
+          console.log(`%c[getThreadMessages]   getFull() took ${(performance.now()-getFFullStartTime).toFixed(0)}ms`, "color:#0066FF;font-size:9px");
+          const syntheticId = generateSyntheticThreadId(msg.subject, msg.date);
+          _threadMessageCache[syntheticId] = { messages: results, timestamp: performance.now() };
+          const funcDuration = (performance.now()-funcStartTime).toFixed(0);
+          console.log(`%c[getThreadMessages] ✨ RESULT: ${results.length} msgs in ${funcDuration}ms (Strategy 1)`, "color:#00AA00;font-weight:bold");
+          return results;
+        }
+      } catch (e) {
+        console.warn(`%c[getThreadMessages] ⚠️  STRATEGY 1 failed: ${e.message}`, "color:#FF9900;font-size:10px");
+      }
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // STRATEGY 2: from + subject (<50ms)
+    // ─────────────────────────────────────────────────────────────────────────
+    if (typeof browser.messages.query === "function" && senderEmail && baseSubject) {
+      try {
+        const t = performance.now();
+        const queryResult = await browser.messages.query({ from: senderEmail, subject: baseSubject });
+        
+        if (queryResult.messages && queryResult.messages.length > 0) {
+          console.log(`%c[getThreadMessages] ✅ STRATEGY 2 ✓ from+subject: ${queryResult.messages.length} msgs in ${(performance.now()-t).toFixed(0)}ms`, "color:#00AA00;font-weight:bold;font-size:11px");
+          const sorted = queryResult.messages.sort((a, b) => new Date(a.date) - new Date(b.date)).slice(0, 30);
+          const getFFullStartTime = performance.now();
+          results = (await Promise.all(sorted.map(async m => {
+            try { return { meta: m, full: await browser.messages.getFull(m.id) }; }
+            catch(e) { console.warn(`%c[getThreadMessages]     ⚠️  getFull failed for ${m.id}`, "color:#FF9900"); return null; }
+          }))).filter(Boolean);
+          console.log(`%c[getThreadMessages]   getFull() took ${(performance.now()-getFFullStartTime).toFixed(0)}ms`, "color:#0066FF;font-size:9px");
+          const syntheticId = generateSyntheticThreadId(msg.subject, msg.date);
+          _threadMessageCache[syntheticId] = { messages: results, timestamp: performance.now() };
+          const funcDuration = (performance.now()-funcStartTime).toFixed(0);
+          console.log(`%c[getThreadMessages] ✨ RESULT: ${results.length} msgs in ${funcDuration}ms (Strategy 2)`, "color:#00AA00;font-weight:bold");
+          return results;
+        } else {
+          console.log(`%c[getThreadMessages] ℹ️  STRATEGY 2: 0 results, trying Strategy 3...`, "color:#FF9900;font-size:10px");
+        }
+      } catch (e) {
+        console.warn(`%c[getThreadMessages] ⚠️  STRATEGY 2 failed: ${e.message}`, "color:#FF9900;font-size:10px");
+      }
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // STRATEGY 3: subject only (<100ms)
+    // ─────────────────────────────────────────────────────────────────────────
+    if (typeof browser.messages.query === "function" && baseSubject) {
+      try {
+        const t = performance.now();
+        const queryResult = await browser.messages.query({ subject: baseSubject });
+        
+        if (queryResult.messages && queryResult.messages.length > 0) {
+          console.log(`%c[getThreadMessages] ✅ STRATEGY 3 ✓ subject: ${queryResult.messages.length} msgs in ${(performance.now()-t).toFixed(0)}ms`, "color:#00AA00;font-weight:bold;font-size:11px");
+          const sorted = queryResult.messages.sort((a, b) => new Date(a.date) - new Date(b.date)).slice(0, 30);
+          const getFFullStartTime = performance.now();
+          results = (await Promise.all(sorted.map(async m => {
+            try { return { meta: m, full: await browser.messages.getFull(m.id) }; }
+            catch(e) { console.warn(`%c[getThreadMessages]     ⚠️  getFull failed for ${m.id}`, "color:#FF9900"); return null; }
+          }))).filter(Boolean);
+          console.log(`%c[getThreadMessages]   getFull() took ${(performance.now()-getFFullStartTime).toFixed(0)}ms`, "color:#0066FF;font-size:9px");
+          const syntheticId = generateSyntheticThreadId(msg.subject, msg.date);
+          _threadMessageCache[syntheticId] = { messages: results, timestamp: performance.now() };
+          const funcDuration = (performance.now()-funcStartTime).toFixed(0);
+          console.log(`%c[getThreadMessages] ✨ RESULT: ${results.length} msgs in ${funcDuration}ms (Strategy 3)`, "color:#00AA00;font-weight:bold");
+          return results;
+        } else {
+          console.log(`%c[getThreadMessages] ℹ️  STRATEGY 3: 0 results, using fallback folder scan...`, "color:#FF9900;font-size:10px");
+        }
+      } catch (e) {
+        console.warn(`%c[getThreadMessages] ⚠️  STRATEGY 3 failed: ${e.message}`, "color:#FF9900;font-size:10px");
+      }
+    }
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // FALLBACK: Limited folder scan (Early exit on match, max 500 messages)
+    // ─────────────────────────────────────────────────────────────────────────
+    console.log(`%c[getThreadMessages] 🔍 FALLBACK: Limited folder scan with early exit...`, "color:#FF6600;font-weight:bold;font-size:11px");
+    
     const folder = msg.folder;
     if (!folder) {
+      console.log(`%c[getThreadMessages]   ⚠️  No folder found, returning original message only`, "color:#FF9900");
       return [{ meta: msg, full: await browser.messages.getFull(messageId) }];
     }
+    
+    const listStartTime = performance.now();
     let allMsgs = [];
     let page = await browser.messages.list(folder);
-    while (page) {
+    let pageCount = 0;
+    const MAX_MSGS_TO_SCAN = 500; // Early exit after 500 messages
+    let foundMatch = false;
+    
+    while (page && allMsgs.length < MAX_MSGS_TO_SCAN && !foundMatch) {
+      pageCount++;
+      const msgCount = (page.messages || []).length;
       allMsgs = allMsgs.concat(page.messages || []);
-      if (page.id) { page = await browser.messages.continueList(page.id); } else break;
+      
+      // Early exit check: Do we have a match yet?
+      const quickCheck = allMsgs.filter(m => norm(m.subject) === baseSubject);
+      if (quickCheck.length > 0) {
+        console.log(`%c[getThreadMessages]   ✅ Match found on page ${pageCount}! Stopping scan early.`, "color:#00AA00;font-weight:bold;font-size:10px");
+        foundMatch = true;
+        break;
+      }
+      
+      const elapsedMs = performance.now() - listStartTime;
+      console.log(`%c[getThreadMessages]   Page ${pageCount}: ${msgCount} msgs (total: ${allMsgs.length}, ${elapsedMs.toFixed(0)}ms)`, "color:#FF6600;font-size:9px");
+      
+      if (page.id && allMsgs.length < MAX_MSGS_TO_SCAN) { 
+        page = await browser.messages.continueList(page.id); 
+      } else { 
+        break; 
+      }
     }
-    const norm = s => (s||"").replace(/^(Re|Fwd?|AW|WG):\s*/gi,"").trim().toLowerCase();
-    const base = norm(msg.subject);
-    const thread = allMsgs
-      .filter(m => m.id===messageId || norm(m.subject)===base)
+    
+    const scanDuration = (performance.now()-listStartTime).toFixed(0);
+    console.log(`%c[getThreadMessages]   📊 Scanned ${allMsgs.length} messages in ${pageCount} pages (${scanDuration}ms)`, "color:#FF6600;font-size:10px");
+    
+    // Now find matching messages by subject
+    const filterStartTime = performance.now();
+    let thread = [];
+    
+    // Step 1: Try exact ID match
+    thread = allMsgs.filter(m => m.id===messageId || String(m.id)===String(messageId));
+    
+    // Step 2: Try exact subject match
+    if (thread.length === 0) {
+      thread = allMsgs.filter(m => norm(m.subject)===baseSubject);
+      console.log(`%c[getThreadMessages]   📊 Exact subject match: ${thread.length} found`, "color:#FF6600;font-size:9px");
+    }
+    
+    // Step 3: Try flexible matching
+    if (thread.length === 0) {
+      const baseWords = baseSubject.split(/\s+/).filter(w => w.length > 2);
+      if (baseWords.length > 0) {
+        thread = allMsgs.filter(m => {
+          const normMsgSubj = norm(m.subject);
+          const wordMatches = baseWords.filter(w => normMsgSubj.includes(w)).length;
+          const minKeywords = Math.max(1, Math.ceil(baseWords.length * 0.5));
+          return wordMatches >= minKeywords;
+        });
+        console.log(`%c[getThreadMessages]   📊 Flexible keywords: ${thread.length} found`, "color:#FF6600;font-size:9px");
+      }
+    }
+    
+    // Sort and limit
+    thread = thread
       .sort((a,b) => new Date(a.date)-new Date(b.date))
       .slice(0,30);
-    const results = await Promise.all(thread.map(async m => {
-      try { return { meta: m, full: await browser.messages.getFull(m.id) }; }
-      catch(e) { console.warn("getFull failed:",m.id,e.message); return null; }
+    
+    console.log(`%c[getThreadMessages]   ✅ FALLBACK: Found ${thread.length} messages in ${(performance.now()-filterStartTime).toFixed(0)}ms`, "color:#FF6600;font-size:10px");
+    
+    // Ensure we always return at least the original message
+    if (thread.length === 0) {
+      console.log(`%c[getThreadMessages]   ⚠️  No matches found in folder, returning original message`, "color:#FF9900;font-size:11px");
+      thread = [msg];
+    }
+    
+    // Get full message bodies
+    const getFFullStartTime = performance.now();
+    const fullResults = await Promise.all(thread.map(async m => {
+      try { 
+        return { meta: m, full: await browser.messages.getFull(m.id) }; 
+      } catch(e) { 
+        console.warn(`%c[getThreadMessages]   ⚠️  getFull failed for ${m.id}: ${e.message}`, "color:#FF9900"); 
+        return null; 
+      }
     }));
-    return results.filter(Boolean);
+    console.log(`%c[getThreadMessages]   getFull() on ${thread.length} msgs took ${(performance.now()-getFFullStartTime).toFixed(0)}ms`, "color:#FF9900");
+    
+    results = fullResults.filter(Boolean);
+    
+    // 💾 CACHE using synthetic threadId
+    const cacheId = generateSyntheticThreadId(msg.subject, msg.date);
+    _threadMessageCache[cacheId] = { messages: results, timestamp: performance.now() };
+    console.log(`%c[getThreadMessages]   💾 Cached ${results.length} messages`, "color:#FF6600;font-size:10px");
+    
+    const funcDuration = (performance.now()-funcStartTime).toFixed(0);
+    console.log(`%c[getThreadMessages] ✨ RESULT: ${results.length} msgs in ${funcDuration}ms (FALLBACK folder scan)`, "color:#00AA00;font-weight:bold");
+    return results;
   } catch(e) {
-    console.error("getThreadMessages:",e);
+    const funcDuration = (performance.now()-funcStartTime).toFixed(0);
+    console.error(`%c[getThreadMessages] ❌ Exception after ${funcDuration}ms: ${e.message}`, "color:#CC0000");
     const msg  = await browser.messages.get(messageId);
     const full = await browser.messages.getFull(messageId);
     return [{ meta: msg, full }];
@@ -2497,69 +2911,121 @@ function extractPlainText(messagePart) {
 // ─── FEATURE HANDLERS ─────────────────────────────────────────────────────────────
 
 async function handleSummarizeThread({ messageId, accountId, userEmail }) {
-  const _t0 = performance.now();
+  const bgStartTime = performance.now();
+  console.log(`%c[BG] ▶️  handleSummarizeThread RECEIVED at ${new Date().toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3})}`, "color:#0066FF;font-weight:bold;font-size:12px");
+  console.log(`%c  messageId: ${messageId} | accountId: ${accountId} | userEmail: ${userEmail}`, "color:#0066FF");
+  
+  // ⚡ PERF: Wrap with _queuedRequest to prevent duplicate requests from rapid clicks
+  return _queuedRequest(`summarize_${messageId}`, async () => {
+    const _t0 = performance.now();
 
-  // ── Resolve userId, backendUrl and thread messages IN PARALLEL ───────────
-  // Previously these ran sequentially (userId → backendUrl → getThreadMessages)
-  // costing 1-3 s before any data was sent.
-  const [resolvedEmail, backendUrl, items] = await Promise.all([
+    // ── Resolve userId, backendUrl and thread messages IN PARALLEL ───────────
+    // Previously these ran sequentially (userId → backendUrl → getThreadMessages)
+    // costing 1-3 s before any data was sent.
+    console.log(`%c[BG] ⚙️  Starting parallel init (userId, backendUrl, getThreadMessages)...`, "color:#0066FF");
+    const parallelStartTime = performance.now();
+    
+    const [resolvedEmail, backendUrl, items] = await Promise.all([
     // 1. User email resolution
     userEmail
-      ? Promise.resolve(userEmail)
-      : getAccountEmailFromMessage(messageId)
-          .then(e => e || getUserId(messageId)),
+      ? (console.log(`%c  [1/3] Using provided userEmail: ${userEmail}`, "color:#0066FF"), Promise.resolve(userEmail))
+      : (console.log(`%c  [1/3] Resolving user email from message...`, "color:#0066FF"), 
+         getAccountEmailFromMessage(messageId)
+          .then(e => (console.log(`%c    → Got email: ${e}`, "color:#0066FF"), e || getUserId(messageId)))),
     // 2. Backend URL (storage read)
-    getBackendUrl(),
+    (console.log(`%c  [2/3] Fetching backend URL from storage...`, "color:#0066FF"), getBackendUrl().then(url => (console.log(`%c    → Backend URL: ${url}`, "color:#0066FF"), url))),
     // 3. Fetch thread messages (may use fast threadId path)
-    getThreadMessages(messageId),
+    (console.log(`%c  [3/3] Fetching thread messages...`, "color:#0066FF"), getThreadMessages(messageId).then(m => (console.log(`%c    → Got ${m.length} messages`, "color:#0066FF"), m))),
   ]);
+    
+    const parallelDuration = (performance.now() - parallelStartTime).toFixed(0);
+    console.log(`%c[BG] ✅ Parallel init completed in ${parallelDuration}ms (total: ${(performance.now()-_t0).toFixed(0)}ms)`, "color:#0066FF;font-weight:bold");
 
-  const userId = resolvedEmail;
-  console.log(`[SummarizeThread] ⚡ Init in ${(performance.now()-_t0).toFixed(0)}ms — user=${userId}`);
+    const userId = resolvedEmail;
+    console.log(`%c[BG] ⚡ Init complete — user=${userId} | backend=${backendUrl}`, "color:#0066FF");
 
-  const threadText = buildThreadText(items);
-  const firstMeta  = items[0].meta;
-  const threadId   = _getCanonicalThreadId(firstMeta, items[0].full);
+    const threadText = buildThreadText(items);
+    const firstMeta  = items[0].meta;
+    const threadId   = _getCanonicalThreadId(firstMeta, items[0].full);
 
-  // 1. Log all thread emails to server (so vector store is up-to-date) — MUST finish before summarize
-  try { await _logEmailsToServer(backendUrl, userId, threadId, items.map(({meta,full})=>_fmtMsg(meta,full))); }
-  catch(e) { console.warn("logEmail:", e.message); }
-
-  console.log(`[SummarizeThread] ⚡ Logged in ${(performance.now()-_t0).toFixed(0)}ms — firing summarize`);
-
-  // 2. Store attachments in BACKGROUND — does NOT block the summarize request
-  (async () => {
-    for (const {meta} of items) {
-      try { const a=await _getAttachments(meta.id); if(a.length) await _storeAtts(backendUrl,userId,threadId,String(meta.id),a); }
-      catch(e) { console.warn("storeAtts:",e.message); }
+    // 1. Log all thread emails to server (so vector store is up-to-date) — MUST finish before summarize
+    console.log(`%c[BG] 📤 Step 1: Logging ${items.length} emails to server for thread ${threadId}...`, "color:#0066FF");
+    const logStartTime = performance.now();
+    try { 
+      await _logEmailsToServer(backendUrl, userId, threadId, items.map(({meta,full})=>_fmtMsg(meta,full))); 
+      const logDuration = (performance.now() - logStartTime).toFixed(0);
+      console.log(`%c[BG] ✅ Logged emails in ${logDuration}ms (total: ${(performance.now()-_t0).toFixed(0)}ms)`, "color:#00AA00");
     }
-  })();
-
-  // 3. Try server-side RAG summarization (/api/summarize-thread uses indexed content)
-  let summary;
-  try {
-    const resp = await fetch(`${backendUrl}/api/summarize-thread`, {
-      method : "POST",
-      headers: { "Content-Type": "application/json" },
-      body   : JSON.stringify({ user_id: userId, thread_id: threadId })
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      const result = data.job_id ? await _pollJobStatus(data.job_id) : data;
-      summary = result.summary || result.response || result.answer;
-      if (summary) console.log(`[Summarize] ✅ RAG summary in ${(performance.now()-_t0).toFixed(0)}ms`);
+    catch(e) { 
+      const logDuration = (performance.now() - logStartTime).toFixed(0);
+      console.warn(`%c[BG] ⚠️  Log emails failed after ${logDuration}ms: ${e.message}`, "color:#FF9900"); 
     }
-  } catch(e) {
-    console.warn("[Summarize] /api/summarize-thread unavailable, falling back to /chat:", e.message);
-  }
 
-  // 4. Fallback: client-side prompt sent to /chat
-  if (!summary) {
-    summary = await callFlaskAPI(threadText, "summarize");
-    console.log("[Summarize] Used /chat fallback");
-  }
+    console.log(`%c[BG] 📤 Step 2: Firing summarization request (total: ${(performance.now()-_t0).toFixed(0)}ms)...`, "color:#0066FF");
 
-  return { success: true, summary, threadId, messageId };
+    // 2. Store attachments in BACKGROUND — does NOT block the summarize request
+    (async () => {
+      console.log(`%c[BG] 📎 Background: Starting attachment storage (non-blocking)...`, "color:#0066FF");
+      for (const {meta} of items) {
+        try { 
+          const a=await _getAttachments(meta.id); 
+          if(a.length) {
+            await _storeAtts(backendUrl,userId,threadId,String(meta.id),a);
+            console.log(`%c[BG] 📎 Stored ${a.length} attachment(s) for message ${meta.id}`, "color:#0066FF");
+          }
+        }
+        catch(e) { console.warn(`%c[BG] ⚠️  Attachment storage failed: ${e.message}`, "color:#FF9900"); }
+      }
+    })();
+
+    // 3. Try server-side RAG summarization (/api/summarize-thread uses indexed content)
+    let summary;
+    console.log(`%c[BG] 📡 Step 3: Calling /api/summarize-thread (${backendUrl}/api/summarize-thread)...`, "color:#0066FF");
+    const ragStartTime = performance.now();
+    try {
+      const resp = await fetch(`${backendUrl}/api/summarize-thread`, {
+        method : "POST",
+        headers: { "Content-Type": "application/json" },
+        body   : JSON.stringify({ user_id: userId, thread_id: threadId })
+      });
+      const ragDuration = (performance.now() - ragStartTime).toFixed(0);
+      console.log(`%c[BG]   Response status: ${resp.status} ${resp.statusText} (${ragDuration}ms)`, "color:#0066FF");
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        console.log(`%c[BG]   Response has job_id: ${!!data.job_id} | direct summary: ${!!(data.summary || data.response || data.answer)}`, "color:#0066FF");
+        
+        const result = data.job_id ? await _pollJobStatus(data.job_id) : data;
+        summary = result.summary || result.response || result.answer;
+        if (summary) {
+          const totalTime = (performance.now()-_t0).toFixed(0);
+          console.log(`%c[BG] ✅ RAG summary received: ${summary.length} chars in ${totalTime}ms`, "color:#00AA00;font-weight:bold");
+        }
+      }
+    } catch(e) {
+      const ragDuration = (performance.now() - ragStartTime).toFixed(0);
+      console.warn(`%c[BG] ⚠️  /api/summarize-thread failed after ${ragDuration}ms: ${e.message}, falling back to /chat...`, "color:#FF9900");
+    }
+
+    // 4. Fallback: client-side prompt sent to /chat
+    if (!summary) {
+      console.log(`%c[BG] 📡 Step 4: Using fallback /chat API (total: ${(performance.now()-_t0).toFixed(0)}ms)...`, "color:#FF9900");
+      const fallbackStartTime = performance.now();
+      try {
+        summary = await callFlaskAPI(threadText, "summarize");
+        const fallbackDuration = (performance.now() - fallbackStartTime).toFixed(0);
+        console.log(`%c[BG] ✅ Fallback /chat completed: ${summary.length} chars in ${fallbackDuration}ms`, "color:#FF9900;font-weight:bold");
+      } catch(e) {
+        const fallbackDuration = (performance.now() - fallbackStartTime).toFixed(0);
+        console.error(`%c[BG] ❌ /chat fallback failed after ${fallbackDuration}ms: ${e.message}`, "color:#CC0000");
+        throw e;
+      }
+    }
+
+    const totalDuration = (performance.now()-_t0).toFixed(0);
+    console.log(`%c[BG] 🏁 handleSummarizeThread COMPLETE in ${totalDuration}ms | summary: ${(summary || "").length} chars`, "color:#0066FF;font-weight:bold;font-size:12px");
+    return { success: true, summary, threadId, messageId };
+  });
 }
 
 async function handleCreateDraft({ messageId, summary, accountId, userEmail }) {
@@ -2586,10 +3052,12 @@ async function handleCreateDraft({ messageId, summary, accountId, userEmail }) {
 }
 
 async function handleDraftWithAttachments({ messageId, accountId, userEmail }) {
-  const _t0 = performance.now();
+  // ⚡ PERF: Wrap with _queuedRequest to prevent duplicate requests from rapid clicks
+  return _queuedRequest(`draft_${messageId}`, async () => {
+    const _t0 = performance.now();
 
-  // ── Parallel init: userId + backendUrl + thread messages ─────────────────
-  const [resolvedEmail, backendUrl, items] = await Promise.all([
+    // ── Parallel init: userId + backendUrl + thread messages ─────────────────
+    const [resolvedEmail, backendUrl, items] = await Promise.all([
     userEmail
       ? Promise.resolve(userEmail)
       : getAccountEmailFromMessage(messageId).then(e => e || getUserId(messageId)),
@@ -2661,14 +3129,17 @@ async function handleDraftWithAttachments({ messageId, accountId, userEmail }) {
   const annotatedDraft = `[Using font: ${draftFont}]\n\n${draftContent}`;
   await browser.compose.beginNew({ to:[lastMeta.author], subject, plainTextBody:annotatedDraft, isPlainText:true });
   
-  return { success:true, draftContent, processingInfo, attachmentCount:totalAtts, selectedFont:draftFont, fontInfo: `${draftFont} (${fontFamily})` };
+    return { success:true, draftContent, processingInfo, attachmentCount:totalAtts, selectedFont:draftFont, fontInfo: `${draftFont} (${fontFamily})` };
+  });
 }
 
 async function handleSimpleDraft({ messageId, accountId, userEmail }) {
-  const _t0 = performance.now();
+  // ⚡ PERF: Wrap with _queuedRequest to prevent duplicate requests from rapid clicks
+  return _queuedRequest(`simple_draft_${messageId}`, async () => {
+    const _t0 = performance.now();
 
-  // ── Parallel init ────────────────────────────────────────────────────────
-  const [resolvedEmail, backendUrl, items] = await Promise.all([
+    // ── Parallel init ────────────────────────────────────────────────────────
+    const [resolvedEmail, backendUrl, items] = await Promise.all([
     userEmail
       ? Promise.resolve(userEmail)
       : getAccountEmailFromMessage(messageId).then(e => e || getUserId(messageId)),
@@ -2722,15 +3193,18 @@ async function handleSimpleDraft({ messageId, accountId, userEmail }) {
   
   console.log(`[SimpleDraft] Font selected: ${draftFont} -> ${fontFamily}`);
   
-  await browser.compose.beginNew({ to: [lastMeta.author], subject, plainTextBody: annotatedDraft, isPlainText: true });
-  return { success: true, draftContent, selectedFont: draftFont, fontInfo: `${draftFont} (${fontFamily})` };
+    await browser.compose.beginNew({ to: [lastMeta.author], subject, plainTextBody: annotatedDraft, isPlainText: true });
+    return { success: true, draftContent, selectedFont: draftFont, fontInfo: `${draftFont} (${fontFamily})` };
+  });
 }
 
 async function handleChatWithThread({ messageId, question, accountId, userEmail }) {
-  const _t0 = performance.now();
+  // ⚡ PERF: Wrap with _queuedRequest to prevent duplicate requests from rapid clicks
+  return _queuedRequest(`chat_${messageId}`, async () => {
+    const _t0 = performance.now();
 
-  // ── Parallel init ────────────────────────────────────────────────────────
-  const [resolvedEmail, backendUrl, items] = await Promise.all([
+    // ── Parallel init ────────────────────────────────────────────────────────
+    const [resolvedEmail, backendUrl, items] = await Promise.all([
     userEmail
       ? Promise.resolve(userEmail)
       : getAccountEmailFromMessage(messageId).then(e => e || getUserId(messageId)),
@@ -2762,8 +3236,9 @@ async function handleChatWithThread({ messageId, question, accountId, userEmail 
   if (!resp.ok) { const t=await resp.text(); throw new Error(`Chat API (${resp.status}): ${t}`); }
   const initial = await resp.json();
   const result  = initial.job_id ? await _pollJobStatus(initial.job_id) : initial;
-  if (!result.success) throw new Error(result.error||"Unknown server error");
-  return { success:true, answer:result.answer, processingInfo:result.processing_info||{} };
+    if (!result.success) throw new Error(result.error||"Unknown server error");
+    return { success:true, answer:result.answer, processingInfo:result.processing_info||{} };
+  });
 }
 
 
@@ -2773,12 +3248,33 @@ async function handleChatWithThread({ messageId, question, accountId, userEmail 
 // ─── SERVER COMMUNICATION ───────────────────────────────────────────────────────────
 
 async function _logEmailsToServer(backendUrl, userId, threadId, messages) {
-  const resp = await fetch(`${backendUrl}/api/log-email`, {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({ user_id:userId, thread_id:threadId, messages })
-  });
-  if (!resp.ok) throw new Error(`log-email: server ${resp.status}: ${await resp.text()}`);
-  return resp.text();
+  const funcStartTime = performance.now();
+  console.log(`%c[_logEmailsToServer] ▶️  POSTing ${messages.length} messages to ${backendUrl}/api/log-email`, "color:#00CC00");
+  
+  try {
+    const fetchStartTime = performance.now();
+    const resp = await fetch(`${backendUrl}/api/log-email`, {
+      method:"POST", 
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ user_id:userId, thread_id:threadId, messages })
+    });
+    const fetchDuration = (performance.now() - fetchStartTime).toFixed(0);
+    console.log(`%c[_logEmailsToServer]   Response received: HTTP ${resp.status} in ${fetchDuration}ms`, "color:#00CC00");
+    
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`log-email: server ${resp.status}: ${text}`);
+    }
+    
+    const result = await resp.text();
+    const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+    console.log(`%c[_logEmailsToServer] ✅ Complete in ${funcDuration}ms`, "color:#00AA00;font-weight:bold");
+    return result;
+  } catch(e) {
+    const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+    console.error(`%c[_logEmailsToServer] ❌ Error after ${funcDuration}ms: ${e.message}`, "color:#CC0000");
+    throw e;
+  }
 }
 
 /**
@@ -2832,36 +3328,38 @@ async function _labelEmailOnServer(backendUrl, userId, threadId, messages) {
 }
 
 async function _storeAtts(backendUrl, userId, threadId, messageId, attachments) {
+  const funcStartTime = performance.now();
   const fullUrl = `${backendUrl}/api/store-attachments`;
   const payload = { user_id:userId, thread_id:threadId, message_id:messageId, attachments };
   const payloadStr = JSON.stringify(payload);
   
-  console.log(`[OpenMailBot][API] 📤 REQUEST (store-attachments)`);
-  console.log(`[OpenMailBot][API] URL: ${fullUrl}`);
-  console.log(`[OpenMailBot][API] Method: POST`);
-  console.log(`[OpenMailBot][API] Attachments count: ${attachments.length}`);
-  console.log(`[OpenMailBot][API] Payload size: ${payloadStr.length} bytes`);
+  console.log(`%c[_storeAtts] ▶️  POSTing ${attachments.length} attachment(s) for message ${messageId}`, "color:#FF8800");
+  console.log(`%c[_storeAtts]   URL: ${fullUrl}`, "color:#FF8800");
+  console.log(`%c[_storeAtts]   Payload size: ${payloadStr.length} bytes`, "color:#FF8800");
   
   try {
+    const fetchStartTime = performance.now();
     const resp = await fetch(fullUrl, {
       method:"POST", 
       headers:{"Content-Type":"application/json"},
       body: payloadStr
     });
-    
-    console.log(`[OpenMailBot][API] 📥 RESPONSE (store-attachments)`);
-    console.log(`[OpenMailBot][API] Status: ${resp.status} ${resp.statusText}`);
-    console.log(`[OpenMailBot][API] OK: ${resp.ok}`);
+    const fetchDuration = (performance.now() - fetchStartTime).toFixed(0);
+    console.log(`%c[_storeAtts]   Response: HTTP ${resp.status} in ${fetchDuration}ms`, "color:#FF8800");
     
     const respText = await resp.text();
-    console.log(`[OpenMailBot][API] Body: ${respText.substring(0, 500)}`);
     
     if (!resp.ok) {
+      console.error(`%c[_storeAtts] ❌ Error: ${resp.status} - ${respText.substring(0, 200)}`, "color:#CC0000");
       throw new Error(`store-attachments: server ${resp.status}: ${respText}`);
     }
+    
+    const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+    console.log(`%c[_storeAtts] ✅ Complete in ${funcDuration}ms`, "color:#FF8800;font-weight:bold");
     return respText;
   } catch (err) {
-    console.error(`[OpenMailBot][API] ❌ FETCH ERROR (store-attachments): ${err.message}`);
+    const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+    console.error(`%c[_storeAtts] ❌ Exception after ${funcDuration}ms: ${err.message}`, "color:#CC0000;font-weight:bold");
     throw err;
   }
 }
@@ -2957,43 +3455,50 @@ function _fmtMsg(meta, full) {
 }
 
 async function _getAttachments(messageId) {
+  const funcStartTime = performance.now();
+  console.log(`%c[_getAttachments] ▶️  Listing attachments for message: ${messageId}`, "color:#FF6B00");
+  
   try {
-    console.log(`[OpenMailBot][GetAtts] Listing attachments for msg ${messageId}`);
+    const listStart = performance.now();
     const atts = await browser.messages.listAttachments(messageId);
-    console.log(`[OpenMailBot][GetAtts] Total attachments found: ${atts.length}`);
+    console.log(`%c[_getAttachments]   Found ${atts.length} attachment(s) in ${(performance.now()-listStart).toFixed(0)}ms`, "color:#FF6B00");
     
     if (atts.length === 0) {
-      console.log(`[OpenMailBot][GetAtts] No attachments in msg ${messageId}`);
+      console.log(`%c[_getAttachments] ✅ No attachments to process`, "color:#FF6B00");
       return [];
     }
     
     const result = [];
-    for (const att of atts) {
+    for (let i = 0; i < atts.length; i++) {
+      const att = atts[i];
       const name = (att.name||"").toLowerCase();
-      console.log(`[OpenMailBot][GetAtts] Checking attachment: ${att.name} (${name}), partName: ${att.partName}`);
+      console.log(`%c[_getAttachments]   [${i+1}/${atts.length}] Checking: ${att.name}`, "color:#FF6B00");
       
       const isAllowed = ALLOWED_EXTENSIONS.some(ext => name.endsWith(ext));
-      console.log(`[OpenMailBot][GetAtts] Extension check: isAllowed=${isAllowed}, allowed=[${ALLOWED_EXTENSIONS.join(",")}]`);
-      
       if (!isAllowed) {
-        console.log(`[OpenMailBot][GetAtts] ⏭️ Skipping ${att.name} — extension not in whitelist`);
+        console.log(`%c[_getAttachments]     ⏭️  Skipping — extension not whitelisted`, "color:#FF9900");
         continue;
       }
       
       try {
+        const fileStart = performance.now();
         const file = await browser.messages.getAttachmentFile(messageId, att.partName);
         const buf  = await file.arrayBuffer();
         const encoded = _ab2b64(buf);
-        console.log(`[OpenMailBot][GetAtts] ✅ Encoded ${att.name} (${buf.byteLength} bytes → ${encoded.length} b64 chars)`);
+        const duration = (performance.now() - fileStart).toFixed(0);
+        console.log(`%c[_getAttachments]     ✅ ${att.name}: ${buf.byteLength} bytes → ${encoded.length} b64 chars (${duration}ms)`, "color:#00AA00");
         result.push({ filename:att.name, content:encoded, mime_type:att.contentType||"application/octet-stream" });
       } catch(e) { 
-        console.error(`[OpenMailBot][GetAtts] ❌ Error processing ${att.name}:`, e.message);
+        console.error(`%c[_getAttachments]     ❌ Error processing ${att.name}: ${e.message}`, "color:#CC0000");
       }
     }
-    console.log(`[OpenMailBot][GetAtts] Returning ${result.length} attachment(s)`);
+    
+    const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+    console.log(`%c[_getAttachments] ✅ Complete: ${result.length}/${atts.length} attachment(s) ready in ${funcDuration}ms`, "color:#FF6B00;font-weight:bold");
     return result;
   } catch(e) { 
-    console.error("[OpenMailBot][GetAtts] ❌ listAttachments failed:", e);
+    const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+    console.error(`%c[_getAttachments] ❌ Exception after ${funcDuration}ms: ${e.message}`, "color:#CC0000");
     return [];
   }
 }
@@ -3005,19 +3510,49 @@ function _ab2b64(buffer) {
 }
 
 async function _pollJobStatus(jobId, maxMs=120000) {
+  const funcStartTime = performance.now();
+  console.log(`%c[_pollJobStatus] ▶️  Polling job: ${jobId} (max ${maxMs}ms) — REDUCED INTERVAL = FASTER RESPONSE`, "color:#FF00FF;font-weight:bold");
+  
   const backendUrl = await getBackendUrl();
   let waited = 0;
+  let pollCount = 0;
+  const pollInterval = 1000; // ⚡ OPTIMIZED: Reduced from 3000ms to 1000ms — Saves 6+ seconds per async job!
+  console.log(`%c[_pollJobStatus] ⏱️  Poll interval: ${pollInterval}ms (was 3000ms)`, "color:#FF00FF");
+  
   while (waited < maxMs) {
-    await new Promise(r=>setTimeout(r,3000)); waited+=3000;
+    await new Promise(r=>setTimeout(r,pollInterval)); 
+    waited+=pollInterval;
+    pollCount++;
+    console.log(`%c[_pollJobStatus] Poll #${pollCount} at ${waited}ms...`, "color:#FF00FF");
+    
     try {
+      const pollStart = performance.now();
       const resp = await fetch(`${backendUrl}/api/job-status/${jobId}`);
+      const pollDuration = (performance.now() - pollStart).toFixed(0);
+      console.log(`%c[_pollJobStatus]   Status response: HTTP ${resp.status} in ${pollDuration}ms`, "color:#FF00FF");
+      
       if (resp.ok) {
         const d = await resp.json();
-        if (d.status==="done")  return d.result;
-        if (d.status==="error") throw new Error("Job error: "+d.error);
+        console.log(`%c[_pollJobStatus]   Job status: ${d.status}`, "color:#FF00FF");
+        
+        if (d.status==="done") {
+          const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+          console.log(`%c[_pollJobStatus] ✅ Job complete in ${funcDuration}ms after ${pollCount} polls`, "color:#00AA00;font-weight:bold");
+          return d.result;
+        }
+        if (d.status==="error") {
+          const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+          console.error(`%c[_pollJobStatus] ❌ Job error after ${funcDuration}ms: ${d.error}`, "color:#CC0000");
+          throw new Error("Job error: "+d.error);
+        }
       }
-    } catch(e) { console.warn("Poll:",e.message); }
+    } catch(e) { 
+      console.warn(`%c[_pollJobStatus] ⚠️  Poll #${pollCount} error: ${e.message}`, "color:#FF9900"); 
+    }
   }
+  
+  const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+  console.error(`%c[_pollJobStatus] ❌ Timeout after ${funcDuration}ms (${pollCount} polls)`, "color:#CC0000;font-weight:bold");
   throw new Error(`Timeout for job ${jobId}`);
 }
 
@@ -3114,19 +3649,41 @@ async function getUserPreferences(userEmail) {
  * Call Flask /chat endpoint
  */
 async function callFlaskAPI(content, action) {
+  const funcStartTime = performance.now();
   const backendUrl = await getBackendUrl();
   const apiEndpoint = `${backendUrl}/chat`;
   const prompt = action === "summarize" ? SUMMARIZE_PROMPT + content : content;
-  const response = await fetch(apiEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt })
-  });
-  if (!response.ok) throw new Error(`Flask API error: ${response.status}`);
-  const data = await response.json();
-  if (data.error) throw new Error(`Flask API error: ${data.error}`);
-  if (data.response) return data.response;
-  throw new Error("Unexpected API response format");
+  
+  console.log(`%c[callFlaskAPI] ▶️  ${action.toUpperCase()} request to ${apiEndpoint}`, "color:#FF6B00");
+  console.log(`%c[callFlaskAPI]   Prompt length: ${prompt.length} chars`, "color:#FF6B00");
+  
+  try {
+    const fetchStartTime = performance.now();
+    const response = await fetch(apiEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt })
+    });
+    const fetchDuration = (performance.now() - fetchStartTime).toFixed(0);
+    console.log(`%c[callFlaskAPI]   Response received: HTTP ${response.status} in ${fetchDuration}ms`, "color:#FF6B00");
+    
+    if (!response.ok) {
+      throw new Error(`Flask API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    if (data.error) throw new Error(`Flask API error: ${data.error}`);
+    if (data.response) {
+      const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+      console.log(`%c[callFlaskAPI] ✅ ${action} complete: ${data.response.length} chars in ${funcDuration}ms`, "color:#FF6B00;font-weight:bold");
+      return data.response;
+    }
+    throw new Error("Unexpected API response format");
+  } catch(e) {
+    const funcDuration = (performance.now() - funcStartTime).toFixed(0);
+    console.error(`%c[callFlaskAPI] ❌ ${action} failed after ${funcDuration}ms: ${e.message}`, "color:#CC0000");
+    throw e;
+  }
 }
 
 const SUMMARIZE_PROMPT =

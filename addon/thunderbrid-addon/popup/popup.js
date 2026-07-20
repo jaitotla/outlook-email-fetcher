@@ -1014,13 +1014,31 @@ function hideStatus(id) {
 
 // ── SUMMARIZE ──────────────────────────────────────────
 async function handleSummarize() {
+  const popupStartTime = performance.now();
+  console.log(`%c[POPUP] ▶️  SUMMARIZE BUTTON CLICKED at ${new Date().toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3})}`, "color:#FF6B00;font-weight:bold;font-size:12px");
+  console.log(`%c  messageId: ${currentMessageId} | accountId: ${currentAccountId} | userEmail: ${currentAccountEmail}`, "color:#FF6B00");
+  
   try {
     showLoading("Analysing thread…");
+    console.log(`%c[POPUP] 📤 Sending 'summarizeThread' message to background...`, "color:#FF6B00");
+    
+    const msgStartTime = performance.now();
     const resp = await send("summarizeThread", { messageId: currentMessageId, accountId: currentAccountId, userEmail: currentAccountEmail });
+    const msgDuration = (performance.now() - msgStartTime).toFixed(0);
+    
+    console.log(`%c[POPUP] ✅ Response received in ${msgDuration}ms`, "color:#00AA00;font-weight:bold");
+    console.log(`%c  Summary length: ${(resp.summary || "").length} chars | threadId: ${resp.threadId}`, "color:#00AA00");
+    
     currentSummary = resp.summary || "";
     document.getElementById("summary-content").innerHTML = mdToHtml(currentSummary);
+    
+    const totalDuration = (performance.now() - popupStartTime).toFixed(0);
+    console.log(`%c[POPUP] ⏱️  TOTAL TIME (popup to display): ${totalDuration}ms`, "color:#0066FF;font-weight:bold;font-size:13px");
+    
     showView("summary-view");
   } catch (e) {
+    const errorDuration = (performance.now() - popupStartTime).toFixed(0);
+    console.error(`%c[POPUP] ❌ SUMMARY FAILED after ${errorDuration}ms: ${e.message}`, "color:#CC0000;font-weight:bold");
     showError("Summary failed: " + e.message);
   }
 }
@@ -1848,9 +1866,25 @@ function handleResumeBulkOk() {
 
 // ── HELPERS ────────────────────────────────────────────
 async function send(action, data) {
-  const resp = await browser.runtime.sendMessage({ action, data });
-  if (resp && resp.error) throw new Error(resp.error);
-  return resp;
+  const sendStartTime = performance.now();
+  console.log(`%c[POPUP-send] 📤 Message sent: "${action}"`, "color:#FF6B00");
+  
+  try {
+    const resp = await browser.runtime.sendMessage({ action, data });
+    const duration = (performance.now() - sendStartTime).toFixed(0);
+    
+    if (resp && resp.error) {
+      console.error(`%c[POPUP-send] ❌ Response error after ${duration}ms: ${resp.error}`, "color:#CC0000");
+      throw new Error(resp.error);
+    }
+    
+    console.log(`%c[POPUP-send] ✅ Response received in ${duration}ms`, "color:#00AA00");
+    return resp;
+  } catch(e) {
+    const duration = (performance.now() - sendStartTime).toFixed(0);
+    console.error(`%c[POPUP-send] ❌ Exception after ${duration}ms: ${e.message}`, "color:#CC0000");
+    throw e;
+  }
 }
 
 function setVal(id, val) {

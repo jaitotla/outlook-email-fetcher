@@ -117,7 +117,7 @@ def call_chat_api(prompt, timeout_seconds=300):
         # Use Ollama /api/chat directly
         url = ollama_url.rstrip('/') + '/api/chat'
         payload = {
-            "model": "llama3.2",  # Default model - can be configured
+            "model": "gemma4",  # Default model - can be configured
             "messages": [{"role": "user", "content": prompt}],
             "stream": False
         }
@@ -195,7 +195,7 @@ def call_embed_api(text):
 # DIRECT OLLAMA ACCESS
 # =============================================================================
 
-def ollama_generate_chat(prompt, ollama_model="llama3.2"):
+def ollama_generate_chat(prompt, ollama_model="gemma4"):
     """
     Direct call to Ollama's /api/generate endpoint.
     
