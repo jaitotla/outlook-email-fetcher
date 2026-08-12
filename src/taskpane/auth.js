@@ -4,7 +4,7 @@ const msalConfig = {
   auth: {
     clientId: "708b6c48-376c-4d05-8529-f256785836d9",
     authority: "https://login.microsoftonline.com/consumers",
-    redirectUri: "https://localhost:3000/auth.html",
+    redirectUri: "https://outlook-email-fetcher.vercel.app/auth.html",
   },
 };
 
