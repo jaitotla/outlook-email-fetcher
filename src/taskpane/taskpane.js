@@ -5,7 +5,24 @@
 
 /* global document, Office */
 
+import { PublicClientApplication } from "@azure/msal-browser";
+
 const BACKEND_URL = "https://lsdiedb39c.pagekite.me";
+
+const msalConfig = {
+  auth: {
+    clientId: "708b6c48-376c-4d05-8529-f256785836d9",
+    authority: "https://login.microsoftonline.com/consumers",
+    redirectUri: "https://outlook-email-fetcher.vercel.app/taskpane.html",
+  },
+  cache: {
+    cacheLocation: "localStorage",
+    storeAuthStateInCookie: true,
+  },
+};
+
+const msalInstance = new PublicClientApplication(msalConfig);
+const loginRequest = { scopes: ["Mail.ReadWrite", "MailboxSettings.ReadWrite", "User.Read"] };
 
 const CATEGORY_DEFINITIONS = [
   { displayName: "Response", color: "preset0" },
@@ -59,25 +76,42 @@ Office.onReady(async (info) => {
   }
 });
 
-// ─── OFFICE SSO SIGN-IN ─────────────────────────────────────────────────────
-// Replaces the old MSAL + displayDialogAsync flow, which broke due to
-// Cross-Origin-Opener-Policy (COOP) restrictions on Microsoft's login pages
-// interfering with popups/dialogs opened from within iframes.
-// Office.auth.getAccessToken() uses the identity of whoever is already
-// signed into Outlook — no separate popup or dialog needed at all.
+// ─── AUTH: loginRedirect directly on the task pane, no separate dialog ─────
+// Removes the auth.html/displayDialogAsync approach entirely, since COOP
+// headers on Microsoft's login pages broke cross-window messageParent
+// communication. This way, the same window that starts the redirect is the
+// same window that receives it back — no handoff needed.
 
 async function signIn() {
   try {
-    const token = await Office.auth.getAccessToken({
-      allowSignInPrompt: true,
-      allowConsentPrompt: true,
-    });
-    await fetchEmails(token);
+    await msalInstance.initialize();
+
+    const response = await msalInstance.handleRedirectPromise();
+    if (response) {
+      await fetchEmails(response.accessToken);
+      return;
+    }
+
+    const accounts = msalInstance.getAllAccounts();
+    if (accounts.length > 0) {
+      msalInstance.setActiveAccount(accounts[0]);
+      try {
+        const tokenResponse = await msalInstance.acquireTokenSilent({
+          ...loginRequest,
+          account: accounts[0],
+        });
+        await fetchEmails(tokenResponse.accessToken);
+      } catch (e) {
+        await msalInstance.loginRedirect(loginRequest);
+      }
+    } else {
+      await msalInstance.loginRedirect(loginRequest);
+    }
   } catch (error) {
-    console.error("Office SSO getAccessToken failed:", error);
+    console.error("Sign-in failed:", error);
     document.getElementById("app-body").innerHTML =
       `<p style="color:red; padding: 16px;">Sign-in failed: ${
-        error.message || error.code || "Unknown error"
+        error.message || error.errorCode || "Unknown error"
       }. Please try reopening the add-in.</p>`;
   }
 }
@@ -86,13 +120,7 @@ async function getAccessToken() {
   if (currentAccessToken) {
     return currentAccessToken;
   }
-  try {
-    const token = await Office.auth.getAccessToken({ allowSignInPrompt: false });
-    currentAccessToken = token;
-    return token;
-  } catch (e) {
-    throw new Error("Not signed in — please reopen the add-in");
-  }
+  throw new Error("Not signed in — please reopen the add-in");
 }
 
 async function fetchCurrentUserEmail(accessToken) {
