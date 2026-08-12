@@ -103,14 +103,16 @@
         <bt:String id="ActionButton.Tooltip" DefaultValue="Perform an action when clicked."/>
       </bt:LongStrings>
     </Resources>
-    <WebApplicationInfo>
-      <Id>708b6c48-376c-4d05-8529-f256785836d9</Id>
-      <Resource>api://outlook-email-fetcher.vercel.app/708b6c48-376c-4d05-8529-f256785836d9</Resource>
-      <Scopes>
-        <Scope>Mail.ReadWrite</Scope>
-        <Scope>MailboxSettings.ReadWrite</Scope>
-        <Scope>User.Read</Scope>
-      </Scopes>
-    </WebApplicationInfo>
+    <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1" xsi:type="VersionOverridesV1_1">
+      <WebApplicationInfo>
+        <Id>708b6c48-376c-4d05-8529-f256785836d9</Id>
+        <Resource>api://outlook-email-fetcher.vercel.app/708b6c48-376c-4d05-8529-f256785836d9</Resource>
+        <Scopes>
+          <Scope>Mail.ReadWrite</Scope>
+          <Scope>MailboxSettings.ReadWrite</Scope>
+          <Scope>User.Read</Scope>
+        </Scopes>
+      </WebApplicationInfo>
+    </VersionOverrides>
   </VersionOverrides>
 </OfficeApp>
