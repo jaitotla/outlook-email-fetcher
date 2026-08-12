@@ -6,17 +6,35 @@ const msalConfig = {
     authority: "https://login.microsoftonline.com/consumers",
     redirectUri: "https://outlook-email-fetcher.vercel.app/auth.html",
   },
+  cache: {
+    cacheLocation: "localStorage",
+  },
 };
 
 const msalInstance = new PublicClientApplication(msalConfig);
 const loginRequest = { scopes: ["Mail.ReadWrite", "MailboxSettings.ReadWrite", "User.Read"] };
 
+function sendResultToParent(payload) {
+  try {
+    if (Office.context && Office.context.ui && Office.context.ui.messageParent) {
+      Office.context.ui.messageParent(JSON.stringify(payload));
+    } else {
+      console.error("Office.context.ui not available — retrying in 300ms");
+      setTimeout(() => sendResultToParent(payload), 300);
+    }
+  } catch (e) {
+    console.error("messageParent failed:", e);
+  }
+}
+
 Office.onReady(async () => {
   await msalInstance.initialize();
-  const response = await msalInstance.handleRedirectPromise();
-  if (response) {
-    Office.context.ui.messageParent(JSON.stringify({ status: "success", token: response.accessToken }));
-  } else {
-    await msalInstance.loginRedirect(loginRequest);
+
+  try {
+    const response = await msalInstance.loginPopup(loginRequest);
+    sendResultToParent({ status: "success", token: response.accessToken });
+  } catch (e) {
+    console.error("loginPopup failed:", e);
+    sendResultToParent({ status: "error", message: e.message });
   }
 });
